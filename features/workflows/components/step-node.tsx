@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Check, AlertCircle } from "lucide-react";
 
 import {
   nodeRegistry,
@@ -19,9 +20,12 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
   // the run is actually live — once it ends, a node left marked running stops
   // spinning rather than hanging forever.
   const { steps, isLive } = useLatestRunSteps();
-  const status = steps.find((step) => step.nodeId === id)?.status;
+  const step = steps.find((s) => s.nodeId === id);
+  const status = step?.status;
   const isRunning = status === "running" && isLive;
+  const isDone = status === "done";
   const isFailed = status === "failed";
+  const isPending = status === "pending" && isLive;
 
   // A trigger starts the flow and takes no input, so it has no target handle.
   const hasTarget = kind !== "trigger";
@@ -29,9 +33,13 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
   return (
     <div
       className={cn(
-        "min-w-50 max-w-80 rounded-(--radius) border-2 border-border bg-card text-card-foreground",
-        isRunning && "border-blue-500",
-        isFailed && "border-destructive",
+        "min-w-50 max-w-80 rounded-(--radius) border-2 border-border bg-card text-card-foreground transition-all duration-200",
+        isRunning &&
+          "border-blue-500 shadow-md shadow-blue-500/20 ring-2 ring-blue-500/30",
+        isDone && "border-emerald-500/50",
+        isFailed &&
+          "border-destructive shadow-md shadow-destructive/20 ring-2 ring-destructive/30",
+        isPending && "opacity-60",
         selected && "ring-2 ring-ring ring-offset-2 ring-offset-background",
       )}
     >
@@ -44,20 +52,39 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
         />
       )}
 
-      <div className="flex items-center gap-2.5 px-3 py-2.5">
-        <div
-          className={cn(
-            "flex size-7 shrink-0 items-center justify-center rounded-md",
-            def.accent,
-          )}
-        >
-          {isRunning ? (
-            <Spinner className="size-4" />
-          ) : (
-            <Icon className="size-4" />
-          )}
+      <div className="flex items-center justify-between gap-2.5 px-3 py-2.5">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div
+            className={cn(
+              "flex size-7 shrink-0 items-center justify-center rounded-md transition-colors",
+              def.accent,
+              isDone &&
+                "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+            )}
+          >
+            {isRunning ? (
+              <Spinner className="size-4 text-blue-500" />
+            ) : isDone ? (
+              <Check className="size-4 text-emerald-500" />
+            ) : (
+              <Icon className="size-4" />
+            )}
+          </div>
+          <span className="text-sm font-semibold truncate">{title}</span>
         </div>
-        <span className="text-sm font-semibold">{title}</span>
+
+        {isRunning && (
+          <span className="relative flex size-2 shrink-0">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-blue-400 opacity-75" />
+            <span className="relative inline-flex size-2 rounded-full bg-blue-500" />
+          </span>
+        )}
+        {isDone && (
+          <Check className="size-3.5 shrink-0 text-emerald-500" />
+        )}
+        {isFailed && (
+          <AlertCircle className="size-3.5 shrink-0 text-destructive" />
+        )}
       </div>
 
       {fields.length > 0 && (
@@ -92,3 +119,4 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
 }
 
 export const StepNode = memo(StepNodeComponent);
+

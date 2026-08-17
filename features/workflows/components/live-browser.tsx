@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { Globe, Loader2, MonitorOff, WifiOff } from "lucide-react";
+import { useLatestRunSteps } from "@/features/workflows/components/workflow-runs-provider";
 
 // How often to retry fetching the live-view URL while we're waiting for the
 // Browserbase session to become available for debugging.
@@ -29,6 +30,12 @@ export function LiveBrowser({ sessionId, isRunLive }: LiveBrowserProps) {
   const [trackedSessionId, setTrackedSessionId] = useState<string | undefined>(
     undefined,
   );
+
+  // Reflect the currently running step from realtime Trigger.dev metadata
+  const { steps } = useLatestRunSteps();
+  const activeStep = isRunLive
+    ? steps.find((s) => s.status === "running")
+    : undefined;
 
   // When sessionId prop changes, reset everything for the new session.
   if (sessionId !== trackedSessionId) {
@@ -95,30 +102,44 @@ export function LiveBrowser({ sessionId, isRunLive }: LiveBrowserProps) {
   return (
     <div className="relative flex size-full flex-col overflow-hidden bg-black/95">
       {/* Header bar */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-background px-3 py-1.5">
-        <Globe className="size-3.5 text-muted-foreground" />
-        <span className="text-xs font-semibold text-foreground">
-          Live Browser
-        </span>
-        {status === "live" && (
-          <span className="ml-auto flex items-center gap-1.5 text-[10px] text-emerald-500">
-            <span className="relative flex size-1.5">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 py-1.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <Globe className="size-3.5 text-muted-foreground shrink-0" />
+          <span className="text-xs font-semibold text-foreground shrink-0">
+            Live Browser
+          </span>
+          {activeStep && isRunLive && (
+            <span className="flex items-center gap-1.5 rounded-full bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 text-[10px] font-medium text-blue-500 dark:text-blue-400 truncate max-w-[220px]">
+              <span className="relative flex size-1.5 shrink-0">
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex size-1.5 rounded-full bg-blue-500" />
+              </span>
+              <span className="truncate">Running: {activeStep.title}</span>
             </span>
-            LIVE
-          </span>
-        )}
-        {status === "connecting" && (
-          <span className="ml-auto text-[10px] text-muted-foreground">
-            Connecting…
-          </span>
-        )}
-        {status === "ended" && (
-          <span className="ml-auto text-[10px] text-muted-foreground">
-            Session ended
-          </span>
-        )}
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {status === "live" && (
+            <span className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-500">
+              <span className="relative flex size-1.5">
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
+              </span>
+              LIVE
+            </span>
+          )}
+          {status === "connecting" && (
+            <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <Loader2 className="size-2.5 animate-spin" />
+              Connecting…
+            </span>
+          )}
+          {status === "ended" && (
+            <span className="text-[10px] text-muted-foreground">
+              Session ended
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Content area */}
