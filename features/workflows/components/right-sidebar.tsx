@@ -405,7 +405,13 @@ function RunButton({ workflowId }: { workflowId: string }) {
         }
 
         startTransition(async () => {
-          await runWorkflowAction({ id: workflowId, graph });
+          try {
+            await runWorkflowAction({ id: workflowId, graph });
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : "Couldn't start the run.";
+            toast.error(message);
+          }
         });
       }}
     >

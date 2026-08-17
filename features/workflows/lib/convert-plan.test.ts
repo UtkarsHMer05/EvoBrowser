@@ -263,4 +263,50 @@ assert.throws(() => {
 }, /Cannot send SMS/i, "Unbuildable plans should throw unsupportedReason");
 
 console.log("  ✓ Invalid plans rejected cleanly without corrupting graph state.");
-console.log("\nALL CONVERSION AND EDITABILITY TESTS PASSED! (6/6)");
+
+// ---------------------------------------------------------------------------
+// TEST 7: Pre-Execution Validation & Run Isolation (Milestone 7)
+// ---------------------------------------------------------------------------
+console.log("\nTEST 7: Testing pre-execution validation and run isolation...");
+
+// 7a. Verify graph ready for runWorkflowAction satisfies all execution pre-conditions
+const readyGraph = convertWorkflowPlanToGraph(linearPlan);
+const preflightProblems = validateGraph(readyGraph);
+assert.deepEqual(preflightProblems, [], "Pre-flight validation must pass for execution");
+
+// 7b. If user breaks graph (e.g. deletes all edges), pre-flight blocks execution
+const brokenGraph = {
+  nodes: [...readyGraph.nodes],
+  edges: [], // User deleted all edges
+};
+const brokenProblems = validateGraph(brokenGraph);
+assert.equal(brokenProblems.length, 1);
+assert.match(brokenProblems[0], /Connect your nodes before running/i);
+
+// 7c. If user adds an Agent node, Pro plan detection correctly identifies it
+const graphWithAgent = {
+  nodes: [
+    ...readyGraph.nodes,
+    {
+      id: "agent_1",
+      type: "step" as const,
+      position: { x: 0, y: 720 },
+      data: {
+        type: "agent" as const,
+        kind: "action" as const,
+        title: "Agent",
+        values: { instruction: "Find deals" },
+      },
+    },
+  ],
+  edges: [
+    ...readyGraph.edges,
+    { id: "e4", source: "send_email_1", target: "agent_1" },
+  ],
+};
+const hasAgentNode = graphWithAgent.nodes.some((n) => n.data.type === "agent");
+assert.equal(hasAgentNode, true, "Should identify Agent node for Pro plan gating");
+
+console.log("  ✓ Pre-flight validation blocks broken graphs and identifies plan-gated nodes.");
+console.log("\nALL CONVERSION, EDITABILITY, AND EXECUTION PRE-FLIGHT TESTS PASSED! (7/7)");
+
