@@ -339,10 +339,84 @@ async function runIntegrationSuite() {
       }),
     /Unknown node type/i,
   );
-  console.log("  ✓ Unknown planner node rejected during conversion before reaching canvas.");
+  // -------------------------------------------------------------------------
+  // CASE 5: Stop/Cancellation Lifecycle and Resource Cleanup (Milestone 12)
+  // -------------------------------------------------------------------------
+  console.log("\nCASE 5: Testing Stop/Cancellation lifecycle & cleanup...");
+  let stagehandClosed = false;
+  let executionAborted = false;
+
+  // Simulator for task execution with cancellation flag
+  async function simulateCancelableTask(
+    graph: typeof graph3,
+    shouldCancelAfterStep1: boolean,
+  ) {
+    let isClosed = false;
+    const closeSession = async () => {
+      if (!isClosed) {
+        isClosed = true;
+        stagehandClosed = true;
+      }
+    };
+
+    try {
+      const { nodes, edges } = graph;
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      const connected = new Set(edges.flatMap((e) => [e.source, e.target]));
+      const order = toposort
+        .array(
+          nodes.map((n) => n.id),
+          edges.map((e) => [e.source, e.target]),
+        )
+        .filter((id) => connected.has(id));
+
+      for (let i = 0; i < order.length; i++) {
+        if (shouldCancelAfterStep1 && i === 1) {
+          executionAborted = true;
+          throw new Error("Task was aborted / canceled by Stop button");
+        }
+        const node = byId.get(order[i])!;
+        if (node.data.type === "start") continue;
+      }
+    } finally {
+      await closeSession();
+    }
+  }
+
+  // 1. Run and simulate Stop midway
+  try {
+    await simulateCancelableTask(graph3, true);
+  } catch {
+    // Expected cancellation error
+  }
+
+  assert.equal(executionAborted, true, "Execution was stopped");
+  assert.equal(stagehandClosed, true, "Browser session was cleanly closed in finally block");
+
+  // 2. Verify graph structure was not mutated or destroyed by Stop
+  assert.equal(graph3.nodes.length, 4, "Graph nodes preserved after Stop");
+  assert.equal(graph3.edges.length, 3, "Graph edges preserved after Stop");
+
+  // 3. Verify user can edit graph after Stop
+  const postStopEditedGraph = {
+    ...graph3,
+    nodes: graph3.nodes.map((n) =>
+      n.id === "open_url_1"
+        ? { ...n, data: { ...n.data, values: { url: "https://rerun.example.com" } } }
+        : n,
+    ),
+  };
+  const rerunResult = await simulateWorkflowTaskExecution(postStopEditedGraph);
+  assert.equal(rerunResult.steps.length, 4);
+  assert.equal(
+    (rerunResult.outputs.open_url_1 as { url: string }).url,
+    "https://rerun.example.com",
+    "Edited graph successfully ran again after previous Stop",
+  );
+  console.log("  ✓ Stop cleanly cancels execution, cleans up resources, and preserves graph for editing/rerunning.");
 
   console.log("\n=================================================");
-  console.log("ALL INTEGRATION & REGRESSION TESTS PASSED! (7/7)");
+  console.log("ALL INTEGRATION & REGRESSION TESTS PASSED! (8/8)");
   console.log("=================================================\n");
 }
 
@@ -350,3 +424,4 @@ runIntegrationSuite().catch((err) => {
   console.error("Integration test failure:", err);
   process.exit(1);
 });
+

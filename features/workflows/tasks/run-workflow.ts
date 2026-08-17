@@ -85,6 +85,24 @@ export const runWorkflowTask = task({
     // be returned in the run's output — a panel reads it there to fetch the replay
     // once the run finishes and the recording is available.
     let browserbaseSessionId: string | undefined;
+    let isClosed = false;
+
+    const closeStagehand = async () => {
+      if (stagehand && !isClosed) {
+        isClosed = true;
+        try {
+          await stagehand.close();
+        } catch (closeError) {
+          logger.warn("Error closing Stagehand session", {
+            error:
+              closeError instanceof Error
+                ? closeError.message
+                : String(closeError),
+          });
+        }
+      }
+    };
+
     const getStagehand = async () => {
       if (stagehand) return stagehand;
       stagehand = new Stagehand({
@@ -110,64 +128,66 @@ export const runWorkflowTask = task({
     // populated by the time we run it.
     const outputs: NodeOutputs = {};
 
-    for (let i = 0; i < order.length; i++) {
-      const id = order[i];
-      const step = steps[i];
-      const node = byId.get(id)!;
-      logger.log(`Running step: ${node.data.title}`);
+    try {
+      for (let i = 0; i < order.length; i++) {
+        const id = order[i];
+        const step = steps[i];
+        const node = byId.get(id)!;
+        logger.log(`Running step: ${node.data.title}`);
 
-      // A node with no executor (the start trigger) does no work and produces no
-      // output — mark it done rather than leaving it "pending", which reads as
-      // skipped forever in the console.
-      const executor = nodeExecutors[node.data.type];
-      if (!executor) {
-        step.status = "done";
-        publishSteps();
-        continue;
-      }
+        // A node with no executor (the start trigger) does no work and produces no
+        // output — mark it done rather than leaving it "pending", which reads as
+        // skipped forever in the console.
+        const executor = nodeExecutors[node.data.type];
+        if (!executor) {
+          step.status = "done";
+          publishSteps();
+          continue;
+        }
 
-      // Mark running before the executor and flush immediately: the "done" set
-      // below happens before the SDK's next background flush, so without forcing
-      // it here the "running" state is overwritten and the canvas never spins.
-      step.status = "running";
-      publishSteps();
-      await metadata.flush();
-
-      // Swap {{ nodeId.path }} placeholders for upstream output before running.
-      const values = Object.fromEntries(
-        Object.entries(node.data.values).map(([key, text]) => [
-          key,
-          interpolate({ text, outputs }),
-        ]),
-      );
-
-      // Time the executor so the console can show how long the step took, on
-      // both the success and failure paths.
-      const startedAt = Date.now();
-      try {
-        const output = await executor({ values, getStagehand });
-        outputs[id] = output;
-        step.output = output;
-      } catch (error) {
-        // Flush the "failed" state before the throw unwinds the run: a thrown run
-        // returns no output, so this flushed metadata is the only way the canvas
-        // ever learns which node failed — and the only place its error survives.
-        step.status = "failed";
-        step.durationMs = Date.now() - startedAt;
-        step.error = error instanceof Error ? error.message : String(error);
+        // Mark running before the executor and flush immediately: the "done" set
+        // below happens before the SDK's next background flush, so without forcing
+        // it here the "running" state is overwritten and the canvas never spins.
+        step.status = "running";
         publishSteps();
         await metadata.flush();
-        await stagehand?.close();
-        throw error;
+
+        // Swap {{ nodeId.path }} placeholders for upstream output before running.
+        const values = Object.fromEntries(
+          Object.entries(node.data.values).map(([key, text]) => [
+            key,
+            interpolate({ text, outputs }),
+          ]),
+        );
+
+        // Time the executor so the console can show how long the step took, on
+        // both the success and failure paths.
+        const startedAt = Date.now();
+        try {
+          const output = await executor({ values, getStagehand });
+          outputs[id] = output;
+          step.output = output;
+        } catch (error) {
+          // Flush the "failed" state before the throw unwinds the run: a thrown run
+          // returns no output, so this flushed metadata is the only way the canvas
+          // ever learns which node failed — and the only place its error survives.
+          step.status = "failed";
+          step.durationMs = Date.now() - startedAt;
+          step.error = error instanceof Error ? error.message : String(error);
+          publishSteps();
+          await metadata.flush();
+          throw error;
+        }
+
+        step.status = "done";
+        step.durationMs = Date.now() - startedAt;
+        publishSteps();
       }
 
-      step.status = "done";
-      step.durationMs = Date.now() - startedAt;
-      publishSteps();
+      return { steps, browserbaseSessionId };
+    } finally {
+      // Ensure the Browserbase session is always closed on success, failure, or cancellation
+      await closeStagehand();
     }
-
-    await stagehand?.close();
-
-    return { steps, browserbaseSessionId };
   },
 });

@@ -44,19 +44,8 @@ export function WorkflowShell({
   const liveRun = useLiveRun();
   const isRunLive = !!liveRun;
 
-  // Show the live browser panel when:
-  // 1. A run is currently executing, OR
-  // 2. A session ID is/was available (allows "ended" state to display gracefully)
-  const [hadSession, setHadSession] = useState(false);
-  if (liveBrowserbaseSessionId && !hadSession) {
-    setHadSession(true);
-  }
-  // Reset when there's no live run and session is gone
-  if (!isRunLive && !liveBrowserbaseSessionId && hadSession) {
-    // Delay reset so the "ended" state renders briefly
-    setTimeout(() => setHadSession(false), 5000);
-  }
-  const showLiveBrowser = isRunLive || hadSession;
+  // Show the live browser panel side-by-side with the canvas while a run is in flight.
+  const showLiveBrowser = isRunLive;
 
   // Mutation to replace the Liveblocks room's flow storage with the generated graph.
   // This automatically synchronizes to all connected clients and React Flow.
