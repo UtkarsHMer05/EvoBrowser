@@ -33,7 +33,7 @@ export async function createWorkflowAction(name: string) {
   Sentry.logger.info("Workflow created", { workflowId: workflow.id, orgId });
 
   revalidatePath("/workflows", "layout");
-  redirect(`/workflows/${workflow.id}`);
+  redirect(`/workflows/${workflow.id}?new=true`);
 }
 
 export async function deleteWorkflowAction(id: string) {

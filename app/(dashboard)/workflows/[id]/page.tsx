@@ -11,10 +11,14 @@ import { WorkflowRunsProvider } from "@/features/workflows/components/workflow-r
 
 export default async function Page({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const { id } = await params;
+  const search = await searchParams;
+  const isNew = search.new === "true" || search.new === "1";
   const { orgId } = await auth();
   if (!orgId) notFound();
 
@@ -51,7 +55,7 @@ export default async function Page({
     <Room roomId={id}>
       <ReactFlowProvider>
         <WorkflowRunsProvider workflowId={id} accessToken={runsToken}>
-          <WorkflowShell workflowId={id} />
+          <WorkflowShell workflowId={id} isNew={isNew} />
         </WorkflowRunsProvider>
       </ReactFlowProvider>
     </Room>
