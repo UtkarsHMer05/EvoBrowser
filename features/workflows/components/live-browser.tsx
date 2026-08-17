@@ -5,9 +5,11 @@ import { Globe, Loader2, MonitorOff, WifiOff } from "lucide-react";
 import { useLatestRunSteps } from "@/features/workflows/components/workflow-runs-provider";
 
 // How often to retry fetching the live-view URL while we're waiting for the
-// Browserbase session to become available for debugging.
-const RETRY_INTERVAL_MS = 2500;
-const MAX_RETRIES = 8;
+// Browserbase session to become available for debugging. Browserbase returns
+// 404 until the session is RUNNING, so we poll tightly — a 1s interval means
+// the view connects within ~1s of the session becoming ready.
+const RETRY_INTERVAL_MS = 1000;
+const MAX_RETRIES = 30;
 
 type LiveBrowserStatus =
   | "waiting" // No session ID yet; browser step hasn't started
@@ -29,6 +31,9 @@ interface LiveBrowserProps {
 export function LiveBrowser({ sessionId, runId, isRunLive }: LiveBrowserProps) {
   const [debugUrl, setDebugUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<LiveBrowserStatus>("waiting");
+  // Seconds spent in the "connecting" state, so the user sees the wait is
+  // progressing rather than looking frozen.
+  const [connectElapsed, setConnectElapsed] = useState(0);
   // Track the session ID that we last connected to, so we can reset on change.
   const [trackedSessionId, setTrackedSessionId] = useState<string | undefined>(
     undefined,
@@ -44,12 +49,20 @@ export function LiveBrowser({ sessionId, runId, isRunLive }: LiveBrowserProps) {
   if (sessionId !== trackedSessionId) {
     setTrackedSessionId(sessionId);
     setDebugUrl(null);
+    setConnectElapsed(0);
     if (!sessionId) {
       setStatus("waiting");
     } else {
       setStatus("connecting");
     }
   }
+
+  // Tick a visible "connecting for Ns" counter so the wait reads as progress.
+  useEffect(() => {
+    if (status !== "connecting") return;
+    const timer = setInterval(() => setConnectElapsed((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [status]);
 
   // When run ends and we were live or connecting, transition to "ended".
   if (
@@ -178,9 +191,16 @@ export function LiveBrowser({ sessionId, runId, isRunLive }: LiveBrowserProps) {
       {status === "connecting" && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-4 text-center">
           <Loader2 className="size-6 animate-spin text-muted-foreground/50" />
-          <p className="text-xs text-muted-foreground">
-            Connecting to live session…
-          </p>
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">
+              Connecting to live session…{" "}
+              <span className="tabular-nums">{connectElapsed}s</span>
+            </p>
+            <p className="text-[10px] text-muted-foreground/60">
+              The cloud browser is starting up. The view appears as soon as it
+              is ready.
+            </p>
+          </div>
         </div>
       )}
 
