@@ -1,6 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { useMutation } from "@liveblocks/react";
+import { LiveObject, LiveMap } from "@liveblocks/client";
+import type { Edge } from "@xyflow/react";
+import { toast } from "sonner";
 
 import {
   ResizableHandle,
@@ -9,6 +13,8 @@ import {
 } from "@/components/ui/resizable";
 
 import { planWorkflowAction } from "@/features/workflows/actions";
+import { convertWorkflowPlanToGraph } from "@/features/workflows/lib/convert-plan";
+import type { StepNodeType } from "@/features/workflows/nodes/node-registry";
 import { Canvas } from "./canvas";
 import { ConsolePanel } from "./console-panel";
 import { PlannerStart } from "./planner-start";
@@ -26,9 +32,54 @@ export function WorkflowShell({
   const [viewMode, setViewMode] = useState<"planner" | "canvas">(
     isNew ? "planner" : "canvas",
   );
+  const [isPreview, setIsPreview] = useState(false);
+
+  // Mutation to replace the Liveblocks room's flow storage with the generated graph.
+  // This automatically synchronizes to all connected clients and React Flow.
+  const applyWorkflowGraph = useMutation(
+    (
+      { storage },
+      { nodes, edges }: { nodes: StepNodeType[]; edges: Edge[] },
+    ) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const root = storage as any;
+      let flow = root.get("flow");
+
+      if (!flow) {
+        flow = new LiveObject({
+          nodes: new LiveMap(),
+          edges: new LiveMap(),
+        });
+        root.set("flow", flow);
+      }
+
+      const nodesMap = flow.get("nodes");
+      const edgesMap = flow.get("edges");
+
+      // Clear existing nodes and edges
+      for (const key of Array.from(nodesMap.keys())) {
+        nodesMap.delete(key);
+      }
+      for (const key of Array.from(edgesMap.keys())) {
+        edgesMap.delete(key);
+      }
+
+      // Insert new nodes and edges
+      for (const node of nodes) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        nodesMap.set(node.id, LiveObject.from(node as any));
+      }
+      for (const edge of edges) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        edgesMap.set(edge.id, LiveObject.from(edge as any));
+      }
+    },
+    [],
+  );
 
   const handleBuildManually = () => {
     setViewMode("canvas");
+    setIsPreview(false);
     if (
       typeof window !== "undefined" &&
       window.location.search.includes("new=")
@@ -41,15 +92,41 @@ export function WorkflowShell({
 
   const handleGenerate = async (goal: string) => {
     const result = await planWorkflowAction({ workflowId, goal });
-    if (!result.success) {
+
+    if (!result.success || !result.plan) {
       throw new Error(result.error || "Failed to generate workflow plan.");
     }
-    if (result.plan && !result.plan.canBuild) {
+
+    if (!result.plan.canBuild) {
       throw new Error(
         result.plan.unsupportedReason ||
           "This goal cannot be automated with the available workflow nodes.",
       );
     }
+
+    // Convert plan nodes & edges with deterministic layered DAG layout + validate
+    const { nodes, edges } = convertWorkflowPlanToGraph(result.plan);
+
+    // Apply the graph to Liveblocks storage so it appears on the canvas collaboratively
+    applyWorkflowGraph({ nodes, edges });
+
+    // Transition to the workflow canvas and show the preview indicator
+    setIsPreview(true);
+    setViewMode("canvas");
+
+    // Clean up ?new=true query param
+    if (
+      typeof window !== "undefined" &&
+      window.location.search.includes("new=")
+    ) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("new");
+      window.history.replaceState({}, "", url.pathname + url.search);
+    }
+
+    toast.success(
+      "Workflow plan generated! Review your steps and click Run when ready.",
+    );
   };
 
   if (viewMode === "planner") {
@@ -66,7 +143,10 @@ export function WorkflowShell({
       <ResizablePanel minSize="30rem">
         <ResizablePanelGroup orientation="vertical">
           <ResizablePanel minSize="18rem">
-            <Canvas />
+            <Canvas
+              isPreview={isPreview}
+              onDismissPreview={() => setIsPreview(false)}
+            />
           </ResizablePanel>
           <ResizableHandle />
           <ResizablePanel defaultSize="8rem" minSize="6rem">

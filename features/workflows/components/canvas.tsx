@@ -16,6 +16,7 @@ import { AvatarStack } from "@liveblocks/react-ui";
 
 import { StepNode } from "@/features/workflows/components/step-node";
 import type { StepNodeType } from "@/features/workflows/nodes/node-registry";
+import { Sparkles, X } from "lucide-react";
 
 import "@xyflow/react/dist/style.css";
 import "@liveblocks/react-ui/styles.css";
@@ -46,7 +47,12 @@ function useMounted() {
   );
 }
 
-export function Canvas() {
+interface CanvasProps {
+  isPreview?: boolean;
+  onDismissPreview?: () => void;
+}
+
+export function Canvas({ isPreview = false, onDismissPreview }: CanvasProps) {
   const { resolvedTheme } = useTheme();
   const mounted = useMounted();
   const colorMode: ColorMode = mounted
@@ -88,6 +94,27 @@ export function Canvas() {
       >
         <Controls />
         <Cursors />
+        {isPreview && (
+          <Panel position="top-center" className="mt-2">
+            <div className="flex items-center gap-2 rounded-full border border-primary/25 bg-background/95 px-3.5 py-1 text-xs font-medium shadow-sm backdrop-blur-md">
+              <Sparkles className="size-3.5 text-primary" />
+              <span>AI Workflow Preview</span>
+              <span className="text-muted-foreground">
+                • Review steps and click Run when ready
+              </span>
+              {onDismissPreview && (
+                <button
+                  type="button"
+                  onClick={onDismissPreview}
+                  className="ml-1 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                  aria-label="Dismiss preview indicator"
+                >
+                  <X className="size-3" />
+                </button>
+              )}
+            </div>
+          </Panel>
+        )}
         <Panel position="top-right">
           <AvatarStack />
         </Panel>
@@ -95,3 +122,4 @@ export function Canvas() {
     </div>
   );
 }
+
