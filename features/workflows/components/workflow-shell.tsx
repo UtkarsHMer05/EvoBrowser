@@ -15,8 +15,13 @@ import {
 import { planWorkflowAction } from "@/features/workflows/actions";
 import { convertWorkflowPlanToGraph } from "@/features/workflows/lib/convert-plan";
 import type { StepNodeType } from "@/features/workflows/nodes/node-registry";
+import {
+  useLiveBrowserbaseSessionId,
+  useLiveRun,
+} from "./workflow-runs-provider";
 import { Canvas } from "./canvas";
 import { ConsolePanel } from "./console-panel";
+import { LiveBrowser } from "./live-browser";
 import { PlannerStart } from "./planner-start";
 import { RightSidebar } from "./right-sidebar";
 
@@ -33,6 +38,25 @@ export function WorkflowShell({
     isNew ? "planner" : "canvas",
   );
   const [isPreview, setIsPreview] = useState(false);
+
+  // Live Browserbase session from Trigger.dev realtime metadata (Milestone 9).
+  const liveBrowserbaseSessionId = useLiveBrowserbaseSessionId();
+  const liveRun = useLiveRun();
+  const isRunLive = !!liveRun;
+
+  // Show the live browser panel when:
+  // 1. A run is currently executing, OR
+  // 2. A session ID is/was available (allows "ended" state to display gracefully)
+  const [hadSession, setHadSession] = useState(false);
+  if (liveBrowserbaseSessionId && !hadSession) {
+    setHadSession(true);
+  }
+  // Reset when there's no live run and session is gone
+  if (!isRunLive && !liveBrowserbaseSessionId && hadSession) {
+    // Delay reset so the "ended" state renders briefly
+    setTimeout(() => setHadSession(false), 5000);
+  }
+  const showLiveBrowser = isRunLive || hadSession;
 
   // Mutation to replace the Liveblocks room's flow storage with the generated graph.
   // This automatically synchronizes to all connected clients and React Flow.
@@ -143,10 +167,28 @@ export function WorkflowShell({
       <ResizablePanel minSize="30rem">
         <ResizablePanelGroup orientation="vertical">
           <ResizablePanel minSize="18rem">
-            <Canvas
-              isPreview={isPreview}
-              onDismissPreview={() => setIsPreview(false)}
-            />
+            {showLiveBrowser ? (
+              <ResizablePanelGroup orientation="horizontal">
+                <ResizablePanel minSize="20rem">
+                  <Canvas
+                    isPreview={isPreview}
+                    onDismissPreview={() => setIsPreview(false)}
+                  />
+                </ResizablePanel>
+                <ResizableHandle />
+                <ResizablePanel defaultSize="50%" minSize="16rem">
+                  <LiveBrowser
+                    sessionId={liveBrowserbaseSessionId}
+                    isRunLive={isRunLive}
+                  />
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            ) : (
+              <Canvas
+                isPreview={isPreview}
+                onDismissPreview={() => setIsPreview(false)}
+              />
+            )}
           </ResizablePanel>
           <ResizableHandle />
           <ResizablePanel defaultSize="8rem" minSize="6rem">
