@@ -19,6 +19,7 @@ import type {
   PlanWorkflowGoalInput,
   PlanWorkflowGoalResult,
 } from "@/features/workflows/lib/planner-types";
+import { generateWorkflowPlan } from "@/features/workflows/lib/planner-service";
 
 export async function createWorkflowAction(name: string) {
   const { orgId } = await auth();
@@ -171,16 +172,39 @@ export async function planWorkflowAction({
     goalLength: trimmedGoal.length,
   });
 
-  Sentry.logger.info("Workflow planner goal received", {
-    workflowId,
-    orgId,
-    goalLength: trimmedGoal.length,
-  });
+  try {
+    const plan = await generateWorkflowPlan({ goal: trimmedGoal });
 
-  // Milestone 4 will connect the AI planner implementation and generate nodes/graph.
-  return {
-    success: true,
-    message: "Goal captured successfully.",
-  };
+    Sentry.logger.info("Workflow plan generated", {
+      workflowId,
+      orgId,
+      canBuild: plan.canBuild,
+      nodeCount: plan.nodes.length,
+      edgeCount: plan.edges.length,
+    });
+
+    return {
+      success: true,
+      message: plan.canBuild
+        ? "Workflow plan generated successfully."
+        : plan.unsupportedReason,
+      plan,
+    };
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Failed to plan workflow.";
+
+    Sentry.logger.error("Workflow planning failed", {
+      workflowId,
+      orgId,
+      error: errorMessage,
+    });
+
+    return {
+      success: false,
+      error: errorMessage,
+    };
+  }
 }
+
 

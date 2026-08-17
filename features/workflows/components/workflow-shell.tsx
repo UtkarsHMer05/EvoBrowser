@@ -41,8 +41,14 @@ export function WorkflowShell({
 
   const handleGenerate = async (goal: string) => {
     const result = await planWorkflowAction({ workflowId, goal });
-    if (!result.success && result.error) {
-      throw new Error(result.error);
+    if (!result.success) {
+      throw new Error(result.error || "Failed to generate workflow plan.");
+    }
+    if (result.plan && !result.plan.canBuild) {
+      throw new Error(
+        result.plan.unsupportedReason ||
+          "This goal cannot be automated with the available workflow nodes.",
+      );
     }
   };
 
