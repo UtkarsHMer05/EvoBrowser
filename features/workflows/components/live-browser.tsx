@@ -19,11 +19,14 @@ type LiveBrowserStatus =
 interface LiveBrowserProps {
   /** The Browserbase session ID to show a live view for, or undefined if not yet available. */
   sessionId: string | undefined;
+  /** The Trigger.dev run id that owns the session — the live-view route uses it
+   *  to verify the caller is allowed to watch this session. */
+  runId: string | undefined;
   /** Whether the parent run is still executing. When false and we had a session, transition to "ended". */
   isRunLive: boolean;
 }
 
-export function LiveBrowser({ sessionId, isRunLive }: LiveBrowserProps) {
+export function LiveBrowser({ sessionId, runId, isRunLive }: LiveBrowserProps) {
   const [debugUrl, setDebugUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<LiveBrowserStatus>("waiting");
   // Track the session ID that we last connected to, so we can reset on change.
@@ -57,9 +60,11 @@ export function LiveBrowser({ sessionId, isRunLive }: LiveBrowserProps) {
     setStatus("ended");
   }
 
-  const fetchDebugUrl = useCallback(async (sid: string) => {
+  const fetchDebugUrl = useCallback(async (sid: string, rid: string) => {
     try {
-      const res = await fetch(`/api/live-view/${sid}`);
+      const res = await fetch(
+        `/api/live-view/${sid}?runId=${encodeURIComponent(rid)}`,
+      );
       if (!res.ok) return null;
       const data = await res.json();
       return data.debuggerFullscreenUrl as string | null;
@@ -69,14 +74,15 @@ export function LiveBrowser({ sessionId, isRunLive }: LiveBrowserProps) {
   }, []);
 
   useEffect(() => {
-    // Only try connecting when we have a session, no URL yet, and run is live.
-    if (!sessionId || debugUrl || !isRunLive || status === "unavailable") return;
+    // Only try connecting when we have a session and its run, no URL yet, and
+    // the run is live.
+    if (!sessionId || !runId || debugUrl || !isRunLive || status === "unavailable") return;
 
     let cancelled = false;
     let retries = 0;
 
     const tryConnect = async () => {
-      const url = await fetchDebugUrl(sessionId);
+      const url = await fetchDebugUrl(sessionId, runId);
       if (cancelled) return;
 
       if (url) {
@@ -97,7 +103,7 @@ export function LiveBrowser({ sessionId, isRunLive }: LiveBrowserProps) {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, debugUrl, isRunLive, status, fetchDebugUrl]);
+  }, [sessionId, runId, debugUrl, isRunLive, status, fetchDebugUrl]);
 
   return (
     <div className="relative flex size-full flex-col overflow-hidden bg-black/95">

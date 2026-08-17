@@ -83,20 +83,30 @@ interface LatestRunSteps {
   isLive: boolean;
 }
 
-// The steps of the most recent run, plus whether it's still going.
-export function useLatestRunSteps(): LatestRunSteps {
+// The most recent run regardless of status — used to notice when a run flips
+// from live to finished so the console can surface its completion summary.
+export function useLatestRun(): WorkflowRun | undefined {
   const { runs } = useWorkflowRuns();
 
-  return useMemo<LatestRunSteps>(() => {
-    const latest = runs.reduce<WorkflowRun | undefined>((newest, run) => {
-      if (!newest || run.createdAt > newest.createdAt) return run;
-      return newest;
-    }, undefined);
+  return useMemo(
+    () =>
+      runs.reduce<WorkflowRun | undefined>((newest, run) => {
+        if (!newest || run.createdAt > newest.createdAt) return run;
+        return newest;
+      }, undefined),
+    [runs],
+  );
+}
 
+// The steps of the most recent run, plus whether it's still going.
+export function useLatestRunSteps(): LatestRunSteps {
+  const latest = useLatestRun();
+
+  return useMemo<LatestRunSteps>(() => {
     if (!latest) return { steps: [], isLive: false };
 
     return { steps: stepsForRun(latest), isLive: isRunLive(latest) };
-  }, [runs]);
+  }, [latest]);
 }
 
 // The run currently in flight, if any — at most one is live at a time. A Stop

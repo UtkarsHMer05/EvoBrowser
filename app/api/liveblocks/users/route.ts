@@ -1,13 +1,22 @@
 import * as Sentry from "@sentry/nextjs";
 import { auth, clerkClient } from "@clerk/nextjs/server";
 
+import { resolveActiveOrgId } from "@/lib/auth";
+
 // `Liveblocks` is a global interface declared in liveblocks.config.ts.
 type UserInfo = Liveblocks["UserMeta"]["info"];
 
 export async function POST(request: Request) {
-  const { userId, orgId } = await auth();
+  const { userId } = await auth();
 
-  if (!userId || !orgId) {
+  if (!userId) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  let orgId: string;
+  try {
+    orgId = await resolveActiveOrgId();
+  } catch {
     return new Response("Unauthorized", { status: 401 });
   }
 

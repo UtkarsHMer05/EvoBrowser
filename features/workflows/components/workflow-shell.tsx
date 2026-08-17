@@ -168,6 +168,7 @@ export function WorkflowShell({
                 <ResizablePanel defaultSize="50%" minSize="16rem">
                   <LiveBrowser
                     sessionId={liveBrowserbaseSessionId}
+                    runId={liveRun?.id}
                     isRunLive={isRunLive}
                   />
                 </ResizablePanel>
@@ -181,7 +182,7 @@ export function WorkflowShell({
           </ResizablePanel>
           <ResizableHandle />
           <ResizablePanel defaultSize="8rem" minSize="6rem">
-            <ConsolePanel />
+            <ConsolePanel workflowId={workflowId} />
           </ResizablePanel>
         </ResizablePanelGroup>
       </ResizablePanel>

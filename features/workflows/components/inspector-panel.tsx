@@ -1,5 +1,6 @@
 "use client";
 
+import { useTransition } from "react";
 import prettyMilliseconds from "pretty-ms";
 import {
   CheckCircle2,
@@ -9,9 +10,12 @@ import {
   MonitorPlay,
   Clock,
   Layers,
+  Play,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { runWorkflowAction } from "@/features/workflows/actions";
 import { NodeIcon } from "@/features/workflows/components/node-icon";
 import { SessionReplay } from "@/features/workflows/components/session-replay";
 import {
@@ -19,6 +23,9 @@ import {
   type ConsoleRun,
 } from "@/features/workflows/components/workflow-runs-provider";
 import type { ConsoleSelection } from "@/features/workflows/components/logs-panel";
+import { validateGraph } from "@/features/workflows/lib/validate-graph";
+import type { StepNodeType } from "@/features/workflows/nodes/node-registry";
+import { useReactFlow } from "@xyflow/react";
 
 // A short, centered note for when there's nothing concrete to show.
 function Note({ children }: { children: React.ReactNode }) {
@@ -31,14 +38,42 @@ function Note({ children }: { children: React.ReactNode }) {
 
 function RunSummary({
   run,
+  workflowId,
   onSelect,
 }: {
   run: ConsoleRun;
+  workflowId: string;
   onSelect?: (selection: ConsoleSelection) => void;
 }) {
   const isCompleted = run.status === "COMPLETED" && !run.isLive;
   const isFailed = run.status === "FAILED";
   const isCanceled = run.status === "CANCELED";
+
+  // Run Again re-runs the graph as it exists on the canvas right now — any
+  // edits made since the summarized run are what gets executed. Same
+  // validate-then-trigger path as the sidebar's Run button; nothing runs
+  // automatically.
+  const { getNodes, getEdges } = useReactFlow<StepNodeType>();
+  const [isRerunning, startRerun] = useTransition();
+
+  const handleRunAgain = () => {
+    const graph = { nodes: getNodes(), edges: getEdges() };
+    const problems = validateGraph(graph);
+    if (problems.length > 0) {
+      toast.error(problems[0]);
+      return;
+    }
+
+    startRerun(async () => {
+      try {
+        await runWorkflowAction({ id: workflowId, graph });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Couldn't start the run.";
+        toast.error(message);
+      }
+    });
+  };
 
   return (
     <div className="flex size-full flex-col overflow-y-auto">
@@ -127,19 +162,33 @@ function RunSummary({
           </div>
         )}
 
-        {/* Replay action */}
-        {run.browserbaseSessionId && !run.isLive && onSelect && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="w-full justify-center text-xs h-8"
-            onClick={() =>
-              onSelect({ kind: "replay", runId: run.id })
-            }
-          >
-            <MonitorPlay className="size-3.5 mr-1.5" />
-            Watch Session Replay
-          </Button>
+        {/* Replay + rerun actions */}
+        {!run.isLive && (
+          <div className="flex flex-col gap-1.5">
+            {run.browserbaseSessionId && onSelect && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full justify-center text-xs h-8"
+                onClick={() =>
+                  onSelect({ kind: "replay", runId: run.id })
+                }
+              >
+                <MonitorPlay className="size-3.5 mr-1.5" />
+                Watch Session Replay
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="secondary"
+              className="w-full justify-center text-xs h-8"
+              disabled={isRerunning}
+              onClick={handleRunAgain}
+            >
+              <Play className="size-3.5 mr-1.5" />
+              Run Again
+            </Button>
+          </div>
         )}
 
         {/* Node outputs & step breakdown */}
@@ -194,9 +243,11 @@ function RunSummary({
 // whole run's session replay, or run completion summary.
 export function InspectorPanel({
   selection,
+  workflowId,
   onSelect,
 }: {
   selection: ConsoleSelection;
+  workflowId: string;
   onSelect?: (selection: ConsoleSelection) => void;
 }) {
   const runs = useConsoleRuns();
@@ -205,7 +256,9 @@ export function InspectorPanel({
   // A run's completion overview summary
   if (selection.kind === "summary") {
     if (!run) return <Note>This run is no longer available.</Note>;
-    return <RunSummary run={run} onSelect={onSelect} />;
+    return (
+      <RunSummary run={run} workflowId={workflowId} onSelect={onSelect} />
+    );
   }
 
   // A run's replay stands for the whole session — play it instead of any step.

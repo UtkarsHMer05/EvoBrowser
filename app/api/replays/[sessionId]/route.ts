@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 import { NotFoundError } from "@browserbasehq/sdk";
 
 import { getBrowserbaseClient } from "@/lib/browserbase";
+import { resolveActiveOrgId } from "@/lib/auth";
 
 // Proxies a Browserbase session's replay so the browser can play it back. The
 // retrieval needs the secret API key, so it can only happen server-side — the
@@ -16,8 +17,15 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
-  const { userId, orgId, has } = await auth();
-  if (!userId || !orgId) {
+  const { userId, has } = await auth();
+  if (!userId) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  let orgId: string;
+  try {
+    orgId = await resolveActiveOrgId();
+  } catch {
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -32,8 +40,9 @@ export async function GET(
 
   // Session replay is a Pro feature. Gate it here, not just in the UI, so a
   // non-pro org can't pull a recording by calling the route directly. `has`
-  // evaluates the active org, which we've confirmed exists above.
-  if (!has({ plan: "pro" })) {
+  // evaluates the active org and is fail-closed: if the plan claim is absent it
+  // denies rather than grants.
+  if (!has?.({ plan: "pro" })) {
     Sentry.logger.warn("Session replay denied — Pro plan required", {
       orgId,
       sessionId,

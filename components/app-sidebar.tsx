@@ -1,6 +1,5 @@
 import * as React from "react";
 import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
-import { auth } from "@clerk/nextjs/server";
 
 import {
   Sidebar,
@@ -12,11 +11,17 @@ import {
 import { createWorkflowAction } from "@/features/workflows/actions";
 import { WorkflowNav } from "@/features/workflows/components/workflow-nav";
 import { listWorkflows } from "@/features/workflows/data";
+import { resolveActiveOrgId } from "@/lib/auth";
 
 export async function AppSidebar({
   ...props
 }: React.ComponentProps<typeof Sidebar>) {
-  const { orgId } = await auth();
+  let orgId: string | undefined;
+  try {
+    orgId = await resolveActiveOrgId();
+  } catch {
+    orgId = undefined;
+  }
   const workflows = orgId ? await listWorkflows(orgId) : [];
 
   return (

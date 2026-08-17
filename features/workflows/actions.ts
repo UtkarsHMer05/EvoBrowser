@@ -9,6 +9,7 @@ import { redirect } from "next/navigation";
 import type { runWorkflowTask } from "@/features/workflows/tasks/run-workflow";
 
 import { getLiveblocksClient } from "@/lib/liveblocks";
+import { resolveActiveOrgId } from "@/lib/auth";
 import {
   createWorkflow,
   deleteWorkflow,
@@ -22,11 +23,7 @@ import type {
 import { generateWorkflowPlan } from "@/features/workflows/lib/planner-service";
 
 export async function createWorkflowAction(name: string) {
-  const { orgId } = await auth();
-
-  if (!orgId) {
-    throw new Error("No active organization");
-  }
+  const orgId = await resolveActiveOrgId();
 
   Sentry.getIsolationScope().setAttributes({
     action: "createWorkflowAction",
@@ -37,16 +34,14 @@ export async function createWorkflowAction(name: string) {
 
   Sentry.logger.info("Workflow created", { workflowId: workflow.id, orgId });
 
-  revalidatePath("/workflows", "layout");
+  // The sidebar's workflow list is rendered by the root (dashboard) layout, so
+  // invalidate from "/" — there is no /workflows layout to revalidate.
+  revalidatePath("/", "layout");
   redirect(`/workflows/${workflow.id}?new=true`);
 }
 
 export async function deleteWorkflowAction(id: string) {
-  const { orgId } = await auth();
-
-  if (!orgId) {
-    throw new Error("No active organization");
-  }
+  const orgId = await resolveActiveOrgId();
 
   Sentry.getIsolationScope().setAttributes({
     action: "deleteWorkflowAction",
@@ -69,7 +64,7 @@ export async function deleteWorkflowAction(id: string) {
 
   Sentry.logger.info("Workflow deleted", { workflowId: id, orgId });
 
-  revalidatePath("/workflows", "layout");
+  revalidatePath("/", "layout");
   redirect("/");
 }
 
@@ -80,15 +75,15 @@ export async function runWorkflowAction({
   id: string;
   graph: WorkflowGraph;
 }) {
-  const { orgId, has } = await auth();
-
-  if (!orgId) {
-    throw new Error("No active organization");
-  }
+  // Resolve the org robustly — the active-org claim can be missing from a
+  // session token snapshot even for a signed-in user with an active org, so
+  // fall back to the verified membership list rather than failing the run.
+  const orgId = await resolveActiveOrgId();
+  const { has } = await auth();
 
   // The Agent node is Pro-only. Enforce it here rather than in the run task: the
   // action holds the Clerk session (and has()), while the Trigger.dev task runs
-  // with no auth context. has() evaluates the active org, confirmed above.
+  // with no auth context.
   Sentry.getIsolationScope().setAttributes({
     action: "runWorkflowAction",
     orgId,
@@ -96,7 +91,7 @@ export async function runWorkflowAction({
   });
 
   const hasAgentNode = graph.nodes.some((node) => node.data.type === "agent");
-  if (hasAgentNode && !has({ plan: "pro" })) {
+  if (hasAgentNode && !has?.({ plan: "pro" })) {
     Sentry.logger.warn("Workflow run denied — Agent node requires Pro plan", {
       workflowId: id,
       orgId,
@@ -132,8 +127,7 @@ export async function runWorkflowAction({
 }
 
 export async function cancelWorkflowRunAction(runId: string) {
-  const { orgId } = await auth();
-  if (!orgId) throw new Error("No active organization");
+  const orgId = await resolveActiveOrgId();
 
   Sentry.getIsolationScope().setAttributes({
     action: "cancelWorkflowRunAction",
@@ -150,11 +144,7 @@ export async function planWorkflowAction({
   workflowId,
   goal,
 }: PlanWorkflowGoalInput): Promise<PlanWorkflowGoalResult> {
-  const { orgId } = await auth();
-
-  if (!orgId) {
-    throw new Error("No active organization");
-  }
+  const orgId = await resolveActiveOrgId();
 
   const trimmedGoal = goal.trim();
   if (!trimmedGoal) {

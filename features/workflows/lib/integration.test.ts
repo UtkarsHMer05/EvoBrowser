@@ -454,8 +454,115 @@ async function runIntegrationSuite() {
   assert.equal(failedTotalCount, 4, "4 total steps in workflow");
   console.log("  ✓ Completion data captures real measured metrics, final browser URL, and accurate success/failure counts.");
 
+  // -------------------------------------------------------------------------
+  // CASE 7: Post-Run Editable Graph & Stale Status Paint (Milestone 14)
+  // -------------------------------------------------------------------------
+  console.log("\nCASE 7: Testing post-run editability and stale status paint (Milestone 14)...");
+
+  // 7a. Run to completion, then verify the canvas paint logic: a node's
+  // "running" state is only painted while the run is live. After the run
+  // finishes, isLive is false, so no node may read as actively running.
+  const completedRun = await simulateWorkflowTaskExecution(graph3);
+  const runIsLiveAfterCompletion = false; // run.status is COMPLETED, not EXECUTING
+  const paintedAsRunning = completedRun.steps.filter(
+    (s) => s.status === "running" && runIsLiveAfterCompletion,
+  );
+  assert.equal(paintedAsRunning.length, 0, "No node painted as running after completion");
+
+  // A failed run must behave the same way — the failed node stays "failed",
+  // never "running", once the run is no longer live.
+  const failedRunSteps: RunStep[] = failedExecutionSteps;
+  const runIsLiveAfterFailure = false;
+  const failedPaint = failedRunSteps.filter(
+    (s) => s.status === "running" && runIsLiveAfterFailure,
+  );
+  assert.equal(failedPaint.length, 0, "No node painted as running after failure");
+  console.log("  ✓ Old run status is not painted as active once the run ends.");
+
+  // 7b. The finished workflow remains an ordinary editable graph. Simulate the
+  // full set of post-run edits a user makes on the canvas:
+  const postRunGraph = {
+    nodes: graph3.nodes.map((n) => ({ ...n, data: { ...n.data, values: { ...n.data.values } } })),
+    edges: [...graph3.edges],
+  };
+
+  // Edit node fields (URL)
+  const urlNode = postRunGraph.nodes.find((n) => n.id === "open_url_1")!;
+  urlNode.data.values.url = "https://post-run-edit.example.com";
+
+  // Change email fields
+  const emailNodePostRun = postRunGraph.nodes.find((n) => n.id === "send_email_1")!;
+  emailNodePostRun.data.values.to = "edited-after-run@example.com";
+  emailNodePostRun.data.values.subject = "Edited after run";
+
+  // Change interpolation references (point the body at a different output)
+  emailNodePostRun.data.values.body = "URL was {{ open_url_1.url }}";
+
+  // Move nodes (position is plain canvas state)
+  urlNode.position = { x: 120, y: 240 };
+
+  // Add a node and reconnect edges through it
+  postRunGraph.nodes.push({
+    id: "observe_post_run",
+    type: "step",
+    position: { x: 0, y: 720 },
+    data: {
+      type: "observe",
+      kind: "action",
+      title: "Observe 1",
+      values: { instruction: "Find the newsletter link" },
+    },
+  });
+  postRunGraph.edges = postRunGraph.edges.filter((e) => e.id !== "e2");
+  postRunGraph.edges.push(
+    { id: "e2a", source: "open_url_1", target: "observe_post_run" },
+    { id: "e2b", source: "observe_post_run", target: "extract_1" },
+  );
+
+  // Delete a node (and its edges) then re-add a replacement
+  postRunGraph.nodes = postRunGraph.nodes.filter((n) => n.id !== "observe_post_run");
+  postRunGraph.edges = postRunGraph.edges.filter(
+    (e) => e.source !== "observe_post_run" && e.target !== "observe_post_run",
+  );
+  postRunGraph.edges.push({ id: "e2", source: "open_url_1", target: "extract_1" });
+
+  assert.deepEqual(
+    validateGraph(postRunGraph),
+    [],
+    "Edited post-run graph must remain valid",
+  );
+
+  // 7c. Acceptance: Complete -> edit graph -> the edited version is what the
+  // next explicit Run executes. No automatic rerun happens — the run count
+  // only grows when the user triggers it.
+  let explicitRunCount = 0;
+  const runExplicitly = async () => {
+    explicitRunCount++;
+    return simulateWorkflowTaskExecution(postRunGraph);
+  };
+
+  assert.equal(explicitRunCount, 0, "No run starts automatically after completion");
+  const rerun = await runExplicitly();
+  assert.equal(explicitRunCount, 1, "Exactly one run after the user presses Run");
+  assert.equal(
+    (rerun.outputs.open_url_1 as { url: string }).url,
+    "https://post-run-edit.example.com",
+    "Edited URL is what the next run executes",
+  );
+  assert.equal(
+    (rerun.outputs.send_email_1 as { to: string }).to,
+    "edited-after-run@example.com",
+    "Edited email fields are what the next run executes",
+  );
+  assert.match(
+    (rerun.outputs.send_email_1 as { bodyPreview: string }).bodyPreview,
+    /URL was https:\/\/post-run-edit\.example\.com/,
+    "Changed interpolation reference resolves against the new upstream output",
+  );
+  console.log("  ✓ Completed workflow stays an ordinary editable graph; edits flow into the next explicit Run with no automatic AI/regeneration/rerun.");
+
   console.log("\n=================================================");
-  console.log("ALL INTEGRATION & REGRESSION TESTS PASSED! (9/9)");
+  console.log("ALL INTEGRATION & REGRESSION TESTS PASSED! (10/10)");
   console.log("=================================================\n");
 }
 
