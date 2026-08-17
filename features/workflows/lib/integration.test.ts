@@ -1,0 +1,352 @@
+import assert from "node:assert/strict";
+import toposort from "toposort";
+import { convertWorkflowPlanToGraph } from "./convert-plan";
+import { validateGraph } from "./validate-graph";
+import { interpolate, type NodeOutputs } from "./interpolate";
+import type { WorkflowPlan } from "./planner-types";
+import type { RunStep } from "../tasks/run-workflow";
+
+// Mock executor simulator replicating the task loop from runWorkflowTask
+async function simulateWorkflowTaskExecution(graph: {
+  nodes: ReturnType<typeof convertWorkflowPlanToGraph>["nodes"];
+  edges: ReturnType<typeof convertWorkflowPlanToGraph>["edges"];
+}) {
+  const problems = validateGraph(graph);
+  if (problems.length > 0) {
+    throw new Error(`Pre-flight validation failed: ${problems.join(" ")}`);
+  }
+
+  const { nodes, edges } = graph;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const connected = new Set(edges.flatMap((e) => [e.source, e.target]));
+
+  const order = toposort
+    .array(
+      nodes.map((n) => n.id),
+      edges.map((e) => [e.source, e.target]),
+    )
+    .filter((id) => connected.has(id));
+
+  const steps: RunStep[] = order.map((nodeId) => {
+    const node = byId.get(nodeId)!;
+    return {
+      nodeId,
+      type: node.data.type,
+      title: node.data.title,
+      status: "pending",
+    };
+  });
+
+  const outputs: NodeOutputs = {};
+
+  // Mock executor registry simulating node outputs without opening real browsers or sending emails
+  const mockExecutors: Record<
+    string,
+    (values: Record<string, string>) => Promise<unknown>
+  > = {
+    "open-url": async (values) => ({
+      url: values.url,
+      title: `Page for ${values.url}`,
+    }),
+    extract: async (values) => ({
+      extraction: `Extracted data for instruction: "${values.instruction}"`,
+    }),
+    observe: async (values) => ({
+      matches: [{ selector: "#btn-1", description: values.instruction }],
+    }),
+    agent: async (values) => ({
+      success: true,
+      message: `Agent completed instruction: "${values.instruction}"`,
+      completed: true,
+    }),
+    act: async (values) => ({
+      success: true,
+      message: `Act executed: "${values.instruction}"`,
+      url: "https://example.com/acted",
+    }),
+    "send-email": async (values) => ({
+      id: `email_mock_${Date.now()}`,
+      to: values.to,
+      subject: values.subject,
+      bodyPreview: values.body.slice(0, 50),
+    }),
+  };
+
+  for (let i = 0; i < order.length; i++) {
+    const id = order[i];
+    const step = steps[i];
+    const node = byId.get(id)!;
+
+    // Start node has no executor
+    if (node.data.type === "start") {
+      step.status = "done";
+      continue;
+    }
+
+    step.status = "running";
+    const startedAt = Date.now();
+
+    // Interpolate input values
+    const interpolatedValues = Object.fromEntries(
+      Object.entries(node.data.values).map(([key, text]) => [
+        key,
+        interpolate({ text, outputs }),
+      ]),
+    );
+
+    const executor = mockExecutors[node.data.type];
+    if (!executor) {
+      throw new Error(`Missing executor for node type: ${node.data.type}`);
+    }
+
+    const output = await executor(interpolatedValues);
+    outputs[id] = output;
+    step.output = output;
+    step.status = "done";
+    step.durationMs = Date.now() - startedAt;
+  }
+
+  return { steps, outputs };
+}
+
+async function runIntegrationSuite() {
+  console.log("=================================================");
+  console.log("MILESTONE 8: REGRESSION & INTEGRATION TEST SUITE");
+  console.log("=================================================\n");
+
+  // -------------------------------------------------------------------------
+  // CASE 1: Start -> Open URL -> Extract
+  // -------------------------------------------------------------------------
+  console.log("CASE 1: Testing Start -> Open URL -> Extract...");
+  const planCase1: WorkflowPlan = {
+    version: "1.0",
+    name: "Hacker News Scraper",
+    canBuild: true,
+    nodes: [
+      { id: "start_1", type: "start", title: "Start", values: {} },
+      {
+        id: "open_url_1",
+        type: "open-url",
+        title: "Open Hacker News",
+        values: { url: "https://news.ycombinator.com" },
+      },
+      {
+        id: "extract_1",
+        type: "extract",
+        title: "Extract Top Stories",
+        values: { instruction: "Extract the top 5 articles with points" },
+      },
+    ],
+    edges: [
+      { id: "e1", source: "start_1", target: "open_url_1" },
+      { id: "e2", source: "open_url_1", target: "extract_1" },
+    ],
+  };
+
+  const graph1 = convertWorkflowPlanToGraph(planCase1);
+  const result1 = await simulateWorkflowTaskExecution(graph1);
+
+  assert.equal(result1.steps.length, 3);
+  assert.equal(result1.steps[0].status, "done");
+  assert.equal(result1.steps[1].status, "done");
+  assert.equal(result1.steps[2].status, "done");
+  assert.match(
+    (result1.outputs.extract_1 as { extraction: string }).extraction,
+    /top 5 articles/i,
+  );
+  console.log("  ✓ Case 1 executed in topological order with correct step metadata.");
+
+  // -------------------------------------------------------------------------
+  // CASE 2: Start -> Open URL -> Agent
+  // -------------------------------------------------------------------------
+  console.log("\nCASE 2: Testing Start -> Open URL -> Agent...");
+  const planCase2: WorkflowPlan = {
+    version: "1.0",
+    name: "Autonomous Product Analysis",
+    canBuild: true,
+    nodes: [
+      { id: "start_1", type: "start", title: "Start", values: {} },
+      {
+        id: "open_url_1",
+        type: "open-url",
+        title: "Open Store",
+        values: { url: "https://store.example.com" },
+      },
+      {
+        id: "agent_1",
+        type: "agent",
+        title: "Analyze Competitor Pricing",
+        values: { instruction: "Search for electronics deals and compare prices" },
+      },
+    ],
+    edges: [
+      { id: "e1", source: "start_1", target: "open_url_1" },
+      { id: "e2", source: "open_url_1", target: "agent_1" },
+    ],
+  };
+
+  const graph2 = convertWorkflowPlanToGraph(planCase2);
+  const result2 = await simulateWorkflowTaskExecution(graph2);
+
+  assert.equal(result2.steps.length, 3);
+  assert.equal(result2.steps[2].type, "agent");
+  assert.equal(
+    (result2.outputs.agent_1 as { completed: boolean }).completed,
+    true,
+  );
+  console.log("  ✓ Case 2 executed Agent node and returned structured completion output.");
+
+  // -------------------------------------------------------------------------
+  // CASE 3: Start -> Open URL -> Extract -> Send Email (with Interpolation)
+  // -------------------------------------------------------------------------
+  console.log("\nCASE 3: Testing Start -> Open URL -> Extract -> Send Email (with Interpolation)...");
+  const planCase3: WorkflowPlan = {
+    version: "1.0",
+    name: "News Digest Email Pipeline",
+    canBuild: true,
+    nodes: [
+      { id: "start_1", type: "start", title: "Start", values: {} },
+      {
+        id: "open_url_1",
+        type: "open-url",
+        title: "Open Blog",
+        values: { url: "https://blog.example.com" },
+      },
+      {
+        id: "extract_1",
+        type: "extract",
+        title: "Extract Article Summary",
+        values: { instruction: "Summarize recent posts" },
+      },
+      {
+        id: "send_email_1",
+        type: "send-email",
+        title: "Send Summary Email",
+        values: {
+          to: "alex@example.com",
+          subject: "Summary for {{ open_url_1.title }}",
+          body: "Hello,\n\nHere is your summary:\n{{ extract_1.extraction }}\n\nSource: {{ open_url_1.url }}",
+        },
+      },
+    ],
+    edges: [
+      { id: "e1", source: "start_1", target: "open_url_1" },
+      { id: "e2", source: "open_url_1", target: "extract_1" },
+      { id: "e3", source: "extract_1", target: "send_email_1" },
+    ],
+  };
+
+  const graph3 = convertWorkflowPlanToGraph(planCase3);
+  const result3 = await simulateWorkflowTaskExecution(graph3);
+
+  assert.equal(result3.steps.length, 4);
+  const emailOutput = result3.outputs.send_email_1 as {
+    to: string;
+    subject: string;
+    bodyPreview: string;
+  };
+  assert.equal(emailOutput.to, "alex@example.com");
+  assert.equal(
+    emailOutput.subject,
+    "Summary for Page for https://blog.example.com",
+  );
+  assert.match(emailOutput.bodyPreview, /Extracted data/);
+  console.log("  ✓ Case 3 passed through interpolation and simulated email executor successfully.");
+
+  // -------------------------------------------------------------------------
+  // CASE 4: Post-Generation User Edits Flow Through Execution
+  // -------------------------------------------------------------------------
+  console.log("\nCASE 4: Verifying user edits made after generation are executed...");
+  const editedGraph = {
+    nodes: graph3.nodes.map((n) => {
+      if (n.id === "open_url_1") {
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            values: { url: "https://edited-news.org" },
+          },
+        };
+      }
+      return n;
+    }),
+    edges: [...graph3.edges],
+  };
+
+  const result4 = await simulateWorkflowTaskExecution(editedGraph);
+  const openUrlOutput = result4.outputs.open_url_1 as { url: string };
+  assert.equal(
+    openUrlOutput.url,
+    "https://edited-news.org",
+    "User's edited URL was executed",
+  );
+  console.log("  ✓ Post-generation user edits flowed cleanly into execution output.");
+
+  // -------------------------------------------------------------------------
+  // INVALID CASES: Pre-flight & schema error boundaries
+  // -------------------------------------------------------------------------
+  console.log("\nINVALID CASES: Testing rejection of invalid graphs...");
+
+  // 1. Missing Start
+  const noStartGraph = {
+    nodes: graph1.nodes.filter((n) => n.data.type !== "start"),
+    edges: [{ id: "e1", source: "open_url_1", target: "extract_1" }],
+  };
+  const noStartProblems = validateGraph(noStartGraph);
+  assert.equal(noStartProblems.length, 1);
+  assert.match(
+    noStartProblems[0],
+    /A workflow needs exactly one Start trigger/i,
+  );
+  console.log("  ✓ Missing Start trigger rejected by validateGraph.");
+
+  // 2. Cycle in graph
+  const cyclicGraph = {
+    nodes: [...graph1.nodes],
+    edges: [
+      { id: "e1", source: "start_1", target: "open_url_1" },
+      { id: "e2", source: "open_url_1", target: "extract_1" },
+      { id: "e3", source: "extract_1", target: "open_url_1" }, // cycle!
+    ],
+  };
+  const cycleProblems = validateGraph(cyclicGraph);
+  assert.equal(cycleProblems.length, 1);
+  assert.match(cycleProblems[0], /Workflow has a cycle/i);
+  console.log("  ✓ Cyclic graph detected and blocked before execution.");
+
+  // 3. Disconnected / no-edge graph
+  const disconnectedGraph = {
+    nodes: [...graph1.nodes],
+    edges: [],
+  };
+  const disconnectedProblems = validateGraph(disconnectedGraph);
+  assert.equal(disconnectedProblems.length, 1);
+  assert.match(disconnectedProblems[0], /Connect your nodes before running/i);
+  console.log("  ✓ Disconnected graph with no edges rejected by validateGraph.");
+
+  // 4. Unknown planner node type
+  assert.throws(
+    () =>
+      convertWorkflowPlanToGraph({
+        version: "1.0",
+        name: "Unknown Node",
+        canBuild: true,
+        nodes: [
+          { id: "start_1", type: "start", title: "Start", values: {} },
+          { id: "bad_1", type: "unknown_custom_node", title: "Bad", values: {} },
+        ],
+        edges: [{ id: "e1", source: "start_1", target: "bad_1" }],
+      }),
+    /Unknown node type/i,
+  );
+  console.log("  ✓ Unknown planner node rejected during conversion before reaching canvas.");
+
+  console.log("\n=================================================");
+  console.log("ALL INTEGRATION & REGRESSION TESTS PASSED! (7/7)");
+  console.log("=================================================\n");
+}
+
+runIntegrationSuite().catch((err) => {
+  console.error("Integration test failure:", err);
+  process.exit(1);
+});
