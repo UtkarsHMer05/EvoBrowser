@@ -98,6 +98,10 @@ export const runWorkflowTask = task({
       });
       await stagehand.init();
       browserbaseSessionId = stagehand.browserbaseSessionID;
+      if (browserbaseSessionId) {
+        metadata.set("browserbaseSessionId", browserbaseSessionId);
+        await metadata.flush();
+      }
       return stagehand;
     };
 

@@ -108,11 +108,28 @@ export function useLiveRun(): WorkflowRun | undefined {
 }
 
 // The Browserbase session id a finished run drove, read from its final output so
-// a panel can fetch the replay. Only the output carries it — the recording lags
-// the session close, so the live metadata never has it — so an in-flight or
-// failed run reports undefined.
+// a panel can fetch the replay.
 function sessionIdForRun(run: WorkflowRun): string | undefined {
   return run.output?.browserbaseSessionId;
+}
+
+// Live Browserbase session id published in realtime metadata while the run is executing.
+function liveSessionIdForRun(run: WorkflowRun): string | undefined {
+  const metadataSessionId = run.metadata?.browserbaseSessionId as
+    | string
+    | undefined;
+  return metadataSessionId ?? run.output?.browserbaseSessionId;
+}
+
+// Hook that returns the live Browserbase session ID for the currently executing run.
+// Returns undefined before any browser node initializes Stagehand or when no run is active.
+export function useLiveBrowserbaseSessionId(): string | undefined {
+  const liveRun = useLiveRun();
+
+  return useMemo(() => {
+    if (!liveRun) return undefined;
+    return liveSessionIdForRun(liveRun);
+  }, [liveRun]);
 }
 
 // One run flattened for the console: its identity and status, whether it's still
@@ -125,6 +142,8 @@ export interface ConsoleRun {
   steps: RunStep[];
   // The Browserbase session id to replay, present only once the run has finished.
   browserbaseSessionId?: string;
+  // The live Browserbase session id available while the run is executing.
+  liveBrowserbaseSessionId?: string;
 }
 
 // Every run, newest first, with its steps resolved — the full history a console
@@ -143,6 +162,7 @@ export function useConsoleRuns(): ConsoleRun[] {
           isLive: isRunLive(run),
           steps: stepsForRun(run),
           browserbaseSessionId: sessionIdForRun(run),
+          liveBrowserbaseSessionId: liveSessionIdForRun(run),
         })),
     [runs],
   );
