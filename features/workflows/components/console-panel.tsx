@@ -44,7 +44,7 @@ export function ConsolePanel() {
         <>
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize="20rem" minSize="12rem">
-            <InspectorPanel selection={selected} />
+            <InspectorPanel selection={selected} onSelect={toggle} />
           </ResizablePanel>
         </>
       )}

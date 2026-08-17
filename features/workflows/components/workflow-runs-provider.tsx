@@ -144,6 +144,14 @@ export interface ConsoleRun {
   browserbaseSessionId?: string;
   // The live Browserbase session id available while the run is executing.
   liveBrowserbaseSessionId?: string;
+  // The final URL the browser navigated to, if a browser was used.
+  finalUrl?: string;
+  // Total duration of the workflow execution in milliseconds.
+  durationMs?: number;
+  // Step completion statistics.
+  completedCount: number;
+  failedCount: number;
+  totalCount: number;
 }
 
 // Every run, newest first, with its steps resolved — the full history a console
@@ -155,15 +163,39 @@ export function useConsoleRuns(): ConsoleRun[] {
     () =>
       [...runs]
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-        .map((run) => ({
-          id: run.id,
-          status: run.status,
-          createdAt: run.createdAt,
-          isLive: isRunLive(run),
-          steps: stepsForRun(run),
-          browserbaseSessionId: sessionIdForRun(run),
-          liveBrowserbaseSessionId: liveSessionIdForRun(run),
-        })),
+        .map((run) => {
+          const steps = stepsForRun(run);
+          const completedCount = steps.filter((s) => s.status === "done").length;
+          const failedCount = steps.filter((s) => s.status === "failed").length;
+          const totalCount = steps.length;
+
+          // Measured run duration: prefer task output duration, fallback to metadata or sum of step durations
+          const durationMs =
+            (run.output?.durationMs as number | undefined) ??
+            (run.metadata?.durationMs as number | undefined) ??
+            (steps.length > 0
+              ? steps.reduce((sum, s) => sum + (s.durationMs ?? 0), 0)
+              : undefined);
+
+          const finalUrl =
+            (run.output?.finalUrl as string | undefined) ??
+            (run.metadata?.finalUrl as string | undefined);
+
+          return {
+            id: run.id,
+            status: run.status,
+            createdAt: run.createdAt,
+            isLive: isRunLive(run),
+            steps,
+            browserbaseSessionId: sessionIdForRun(run),
+            liveBrowserbaseSessionId: liveSessionIdForRun(run),
+            finalUrl,
+            durationMs,
+            completedCount,
+            failedCount,
+            totalCount,
+          };
+        }),
     [runs],
   );
 }

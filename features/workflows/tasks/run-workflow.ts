@@ -52,6 +52,7 @@ export const runWorkflowTask = task({
       )
       .filter((id) => connected.has(id));
 
+    const workflowStartedAt = Date.now();
     logger.log(`Running workflow ${workflow.name}`, { steps: order.length });
 
     // Seed every step as "pending" up front and publish, so the canvas can render
@@ -175,6 +176,7 @@ export const runWorkflowTask = task({
           step.durationMs = Date.now() - startedAt;
           step.error = error instanceof Error ? error.message : String(error);
           publishSteps();
+          metadata.set("durationMs", Date.now() - workflowStartedAt);
           await metadata.flush();
           throw error;
         }
@@ -184,7 +186,29 @@ export const runWorkflowTask = task({
         publishSteps();
       }
 
-      return { steps, browserbaseSessionId };
+      // Obtain the final URL reached by the active browser page before closing session
+      let finalUrl: string | undefined;
+      if (stagehand) {
+        try {
+          const pages = stagehand.context?.pages();
+          const activePage =
+            pages && pages.length > 0 ? pages[pages.length - 1] : undefined;
+          if (activePage) {
+            finalUrl = activePage.url();
+          }
+        } catch {
+          // Non-critical if URL cannot be retrieved from page
+        }
+      }
+
+      const durationMs = Date.now() - workflowStartedAt;
+      if (finalUrl) {
+        metadata.set("finalUrl", finalUrl);
+      }
+      metadata.set("durationMs", durationMs);
+      await metadata.flush();
+
+      return { steps, browserbaseSessionId, finalUrl, durationMs };
     } finally {
       // Ensure the Browserbase session is always closed on success, failure, or cancellation
       await closeStagehand();

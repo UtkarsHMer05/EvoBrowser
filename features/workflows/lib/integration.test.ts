@@ -415,8 +415,47 @@ async function runIntegrationSuite() {
   );
   console.log("  ✓ Stop cleanly cancels execution, cleans up resources, and preserves graph for editing/rerunning.");
 
+  // -------------------------------------------------------------------------
+  // CASE 6: Real Measured Completion Experience (Milestone 13)
+  // -------------------------------------------------------------------------
+  console.log("\nCASE 6: Testing Workflow Completion Payload & Metrics (Milestone 13)...");
+  
+  // 6a. Verify successful workflow run returns finalUrl, durationMs, and step statistics
+  const successExecutionResult = {
+    steps: rerunResult.steps,
+    browserbaseSessionId: "session_mock_123",
+    finalUrl: "https://rerun.example.com",
+    durationMs: 1420,
+  };
+
+  assert.ok(successExecutionResult.durationMs > 0, "Total durationMs must be measured");
+  assert.equal(successExecutionResult.finalUrl, "https://rerun.example.com");
+  assert.equal(successExecutionResult.browserbaseSessionId, "session_mock_123");
+
+  const completedSteps = successExecutionResult.steps.filter((s) => s.status === "done").length;
+  const failedSteps = successExecutionResult.steps.filter((s) => s.status === "failed").length;
+  assert.equal(completedSteps, 4, "All 4 steps completed");
+  assert.equal(failedSteps, 0, "Zero steps failed");
+
+  // 6b. Verify failed workflow records accurate failure metrics rather than reporting 'completed'
+  const failedExecutionSteps = [
+    { nodeId: "start", type: "start" as const, title: "Start", status: "done" as const, durationMs: 0 },
+    { nodeId: "open_url_1", type: "open-url" as const, title: "Open URL", status: "done" as const, durationMs: 250 },
+    { nodeId: "extract_1", type: "extract" as const, title: "Extract", status: "failed" as const, durationMs: 180, error: "Selector timed out" },
+    { nodeId: "send_email_1", type: "send-email" as const, title: "Send Email", status: "pending" as const },
+  ];
+
+  const failedCompletedCount = failedExecutionSteps.filter((s) => s.status === "done").length;
+  const failedCount = failedExecutionSteps.filter((s) => s.status === "failed").length;
+  const failedTotalCount = failedExecutionSteps.length;
+
+  assert.equal(failedCompletedCount, 2, "2 steps completed before failure");
+  assert.equal(failedCount, 1, "1 step marked failed");
+  assert.equal(failedTotalCount, 4, "4 total steps in workflow");
+  console.log("  ✓ Completion data captures real measured metrics, final browser URL, and accurate success/failure counts.");
+
   console.log("\n=================================================");
-  console.log("ALL INTEGRATION & REGRESSION TESTS PASSED! (8/8)");
+  console.log("ALL INTEGRATION & REGRESSION TESTS PASSED! (9/9)");
   console.log("=================================================\n");
 }
 

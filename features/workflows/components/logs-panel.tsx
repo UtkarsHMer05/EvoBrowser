@@ -27,9 +27,18 @@ export interface ReplaySelection {
   runId: string;
 }
 
-// What the console can have selected: one step's output, or one run's replay.
+// The completion summary of a whole run.
+export interface SummarySelection {
+  kind: "summary";
+  runId: string;
+}
+
+// What the console can have selected: one step's output, one run's replay, or run summary.
 // Only one is active at a time.
-export type ConsoleSelection = StepSelection | ReplaySelection;
+export type ConsoleSelection =
+  | StepSelection
+  | ReplaySelection
+  | SummarySelection;
 
 // One step row: the node's icon, its title, and how long it took. It spins while
 // running, reads red when it failed, and dims when it never ran. Clicking it
@@ -140,38 +149,75 @@ export function LogsPanel({
 
   return (
     <div className="flex size-full flex-col gap-3 overflow-y-auto p-2">
-      {runs.map((run) => (
-        <div key={run.id} className="flex flex-col gap-0.5">
-          <div className="flex items-center gap-2 px-2 py-1 text-xs font-medium text-muted-foreground">
-            <span>{run.createdAt.toLocaleTimeString()}</span>
-            <span className="lowercase">{run.status}</span>
+      {runs.map((run) => {
+        const isSummarySelected =
+          selected?.kind === "summary" && selected.runId === run.id;
+
+        const statusLabel = run.isLive
+          ? "Running…"
+          : run.status === "COMPLETED"
+            ? "Completed"
+            : run.status === "FAILED"
+              ? "Failed"
+              : run.status === "CANCELED"
+                ? "Stopped"
+                : run.status.toLowerCase();
+
+        return (
+          <div key={run.id} className="flex flex-col gap-0.5">
+            <button
+              type="button"
+              onClick={() => onSelect({ kind: "summary", runId: run.id })}
+              className={cn(
+                "flex items-center justify-between rounded px-2 py-1 text-left text-xs transition-colors hover:bg-accent",
+                isSummarySelected && "bg-accent font-medium",
+              )}
+            >
+              <div className="flex items-center gap-1.5">
+                <span className="font-medium text-foreground">
+                  {statusLabel}
+                </span>
+                <span className="text-[10px] text-muted-foreground">
+                  {run.createdAt.toLocaleTimeString()}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-[10px] tabular-nums text-muted-foreground">
+                <span>
+                  {run.completedCount}/{run.totalCount} steps
+                </span>
+                {run.durationMs != null && (
+                  <span>• {prettyMilliseconds(run.durationMs)}</span>
+                )}
+              </div>
+            </button>
+
+            {run.steps.map((step) => (
+              <StepRow
+                key={step.nodeId}
+                run={run}
+                step={step}
+                isSelected={
+                  selected?.kind === "step" &&
+                  selected.runId === run.id &&
+                  selected.nodeId === step.nodeId
+                }
+                onSelect={onSelect}
+              />
+            ))}
+            {/* A recording only exists once the run has finished — its session id
+                is present and it's no longer live. */}
+            {run.browserbaseSessionId && !run.isLive && (
+              <ReplayRow
+                run={run}
+                isSelected={
+                  selected?.kind === "replay" && selected.runId === run.id
+                }
+                onSelect={onSelect}
+              />
+            )}
           </div>
-          {run.steps.map((step) => (
-            <StepRow
-              key={step.nodeId}
-              run={run}
-              step={step}
-              isSelected={
-                selected?.kind === "step" &&
-                selected.runId === run.id &&
-                selected.nodeId === step.nodeId
-              }
-              onSelect={onSelect}
-            />
-          ))}
-          {/* A recording only exists once the run has finished — its session id
-              is present and it's no longer live. */}
-          {run.browserbaseSessionId && !run.isLive && (
-            <ReplayRow
-              run={run}
-              isSelected={
-                selected?.kind === "replay" && selected.runId === run.id
-              }
-              onSelect={onSelect}
-            />
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
