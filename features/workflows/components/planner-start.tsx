@@ -6,6 +6,10 @@ import { Sparkles, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+
+// Maximum allowed characters for the automation goal prompt.
+export const MAX_PROMPT_LENGTH = 2000;
 
 // Example prompts shown as light suggestions below the input so a blank screen
 // never feels empty. Clicking one fills the textarea.
@@ -21,10 +25,9 @@ interface PlannerStartProps {
 
   /**
    * Called when the user submits a prompt. The component enters a loading state
-   * until the returned promise settles. Not wired to an AI API yet — Milestone 4
-   * will supply the real implementation; for now callers can pass a no-op.
+   * until the returned promise settles. Receives the clean, trimmed goal text.
    */
-  onGenerate?: (prompt: string) => Promise<void>;
+  onGenerate?: (goal: string) => Promise<void>;
 }
 
 export function PlannerStart({
@@ -33,25 +36,49 @@ export function PlannerStart({
 }: PlannerStartProps) {
   const [prompt, setPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const canGenerate = prompt.trim().length > 0 && !isGenerating;
+  const trimmedPrompt = prompt.trim();
+  const isOverLimit = prompt.length > MAX_PROMPT_LENGTH;
+  const isEmpty = trimmedPrompt.length === 0;
+  const canGenerate = !isEmpty && !isOverLimit && !isGenerating;
 
   const handleGenerate = useCallback(async () => {
     if (!canGenerate || !onGenerate) return;
+
     setIsGenerating(true);
+    setError(null);
+
     try {
-      await onGenerate(prompt.trim());
+      await onGenerate(trimmedPrompt);
+    } catch (err) {
+      // Preserve prompt in state and display the error feedback so user can edit & retry.
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to process automation goal. Please try again.";
+      setError(message);
     } finally {
       setIsGenerating(false);
     }
-  }, [canGenerate, onGenerate, prompt]);
+  }, [canGenerate, onGenerate, trimmedPrompt]);
 
-  // Submit on Cmd/Ctrl + Enter when the textarea is focused.
+  // Submit on Cmd/Ctrl + Enter only. Plain Enter creates a regular multiline newline.
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       handleGenerate();
     }
+  };
+
+  const handlePromptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setPrompt(e.target.value);
+    if (error) setError(null);
+  };
+
+  const handleSelectExample = (example: string) => {
+    setPrompt(example);
+    if (error) setError(null);
   };
 
   return (
@@ -71,27 +98,58 @@ export function PlannerStart({
           </p>
         </div>
 
-        {/* Prompt input */}
-        <div className="flex w-full flex-col gap-3">
-          <Textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="e.g. Go to Hacker News, extract the top 5 posts, and email me the titles and links…"
-            disabled={isGenerating}
-            rows={4}
-            className="min-h-28 resize-none text-sm"
-            autoFocus
-          />
+        {/* Prompt input + validation feedback */}
+        <div className="flex w-full flex-col gap-2">
+          <div className="relative flex flex-col gap-1.5 text-left">
+            <Textarea
+              value={prompt}
+              onChange={handlePromptChange}
+              onKeyDown={handleKeyDown}
+              placeholder="e.g. Go to Hacker News, extract the top 5 posts, and email me the titles and links…"
+              disabled={isGenerating}
+              rows={4}
+              aria-invalid={isOverLimit || Boolean(error)}
+              aria-describedby="prompt-feedback prompt-counter"
+              className={cn(
+                "min-h-28 resize-none text-sm",
+                isOverLimit && "border-destructive focus-visible:ring-destructive/20",
+              )}
+              autoFocus
+            />
+
+            {/* Validation & Character count row */}
+            <div className="flex items-center justify-between px-1 text-xs text-muted-foreground">
+              <div id="prompt-feedback" className="truncate pr-2">
+                {isOverLimit ? (
+                  <span className="text-destructive">
+                    Prompt exceeds maximum limit of {MAX_PROMPT_LENGTH.toLocaleString()} characters.
+                  </span>
+                ) : error ? (
+                  <span role="alert" className="text-destructive">
+                    {error}
+                  </span>
+                ) : null}
+              </div>
+              <span
+                id="prompt-counter"
+                className={cn(
+                  "shrink-0 tabular-nums",
+                  isOverLimit ? "font-semibold text-destructive" : "text-muted-foreground/80",
+                )}
+              >
+                {prompt.length.toLocaleString()} / {MAX_PROMPT_LENGTH.toLocaleString()}
+              </span>
+            </div>
+          </div>
 
           {/* Example prompt chips */}
-          <div className="flex flex-wrap justify-center gap-1.5">
+          <div className="flex flex-wrap justify-center gap-1.5 pt-1">
             {EXAMPLE_PROMPTS.map((example) => (
               <button
                 key={example}
                 type="button"
                 disabled={isGenerating}
-                onClick={() => setPrompt(example)}
+                onClick={() => handleSelectExample(example)}
                 className="rounded-md border border-border bg-card px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
               >
                 {example.length > 50
@@ -145,3 +203,4 @@ export function PlannerStart({
     </div>
   );
 }
+

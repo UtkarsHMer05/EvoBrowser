@@ -15,6 +15,10 @@ import {
   saveWorkflowGraph,
 } from "@/features/workflows/data";
 import { WorkflowGraph } from "@/lib/db/schema";
+import type {
+  PlanWorkflowGoalInput,
+  PlanWorkflowGoalResult,
+} from "@/features/workflows/lib/planner-types";
 
 export async function createWorkflowAction(name: string) {
   const { orgId } = await auth();
@@ -140,3 +144,43 @@ export async function cancelWorkflowRunAction(runId: string) {
 
   Sentry.logger.info("Workflow run cancelled", { runId, orgId });
 }
+
+export async function planWorkflowAction({
+  workflowId,
+  goal,
+}: PlanWorkflowGoalInput): Promise<PlanWorkflowGoalResult> {
+  const { orgId } = await auth();
+
+  if (!orgId) {
+    throw new Error("No active organization");
+  }
+
+  const trimmedGoal = goal.trim();
+  if (!trimmedGoal) {
+    throw new Error("Goal prompt cannot be empty.");
+  }
+
+  if (trimmedGoal.length > 2000) {
+    throw new Error("Goal prompt exceeds maximum length of 2000 characters.");
+  }
+
+  Sentry.getIsolationScope().setAttributes({
+    action: "planWorkflowAction",
+    orgId,
+    workflowId,
+    goalLength: trimmedGoal.length,
+  });
+
+  Sentry.logger.info("Workflow planner goal received", {
+    workflowId,
+    orgId,
+    goalLength: trimmedGoal.length,
+  });
+
+  // Milestone 4 will connect the AI planner implementation and generate nodes/graph.
+  return {
+    success: true,
+    message: "Goal captured successfully.",
+  };
+}
+

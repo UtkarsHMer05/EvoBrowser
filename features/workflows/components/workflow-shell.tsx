@@ -8,6 +8,7 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 
+import { planWorkflowAction } from "@/features/workflows/actions";
 import { Canvas } from "./canvas";
 import { ConsolePanel } from "./console-panel";
 import { PlannerStart } from "./planner-start";
@@ -38,8 +39,20 @@ export function WorkflowShell({
     }
   };
 
+  const handleGenerate = async (goal: string) => {
+    const result = await planWorkflowAction({ workflowId, goal });
+    if (!result.success && result.error) {
+      throw new Error(result.error);
+    }
+  };
+
   if (viewMode === "planner") {
-    return <PlannerStart onBuildManually={handleBuildManually} />;
+    return (
+      <PlannerStart
+        onBuildManually={handleBuildManually}
+        onGenerate={handleGenerate}
+      />
+    );
   }
 
   return (
