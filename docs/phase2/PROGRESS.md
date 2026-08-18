@@ -7,7 +7,8 @@ Commit subjects follow `phase2(mNN): <description>`.
 | :--- | :--- | :--- | :--- |
 | M01 | Reconcile the real Phase-1 source and archive | ✅ DONE | `39fa8e1` |
 | M02 | Certify and freeze the Phase-1 behavioral baseline | ✅ DONE | `0ef8ea8` |
-| M03 | Phase-2 architecture, invariants, and progress scaffold | ✅ DONE | *(recorded below)* |
+| M03 | Phase-2 architecture, invariants, and progress scaffold | ✅ DONE | `a3e3210` |
+| M04 | Bootstrap the reproducible C++20 toolchain | ✅ DONE | *(recorded below)* |
 
 ---
 
@@ -78,5 +79,34 @@ Commit subjects follow `phase2(mNN): <description>`.
     the publication gate.
   - `docs/phase2/PROGRESS.md` — this scaffold (already created in M01).
 - **Phase-1 regression:** N/A (docs-only change; no app code touched).
+- **Human action:** none.
+- **COMMIT:** `a3e3210` — `phase2(m03): define phase2 architecture and failure model`
+
+---
+
+## M04 — Bootstrap the reproducible C++20 toolchain
+
+- **BASE_SHA:** `a3e3210`
+- **What changed:** created `engine/` — `CMakeLists.txt` (C++20, no
+  extensions, `-Wall -Wextra -Wpedantic -Werror` on project code, git SHA
+  baked into the binary), `core/include/evo/version.hpp` +
+  `core/src/version.cpp` (build metadata + compile-time jthread detection),
+  `app/smoke_main.cpp` (prints metadata only), `tests/toolchain_test.cpp`
+  (proves C++20 mode, jthread cooperative stop + RAII join, steady_clock
+  monotonicity). Added engine build-tree ignores to `.gitignore`. Wrote
+  `docs/phase2/BUILDING_ENGINE.md` with exact setup commands and sanitizer
+  rules. No gRPC/Redis/Postgres deps yet (per milestone no-go list); no
+  global installs; no production app code touched.
+- **Dependency strategy note:** vcpkg is not installed on this machine; the
+  core engine (M04–M15) needs only the C++ standard library, so no dependency
+  manager is required yet. The manifest-vs-FetchContent decision for
+  gRPC/Redis/Postgres is deferred to M16/M18 when those deps actually land.
+- **Validation:**
+  - `cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release` → ✅
+  - `cmake --build engine/build` → ✅ clean under -Werror
+  - `ctest --test-dir engine/build --output-on-failure` → ✅ 1/1 passed
+  - `./engine/build/evo-smoke` → `evo-engine v0.1.0 (Release) commit=a3e3210 compiler=clang 21.0.0 cxx=202002 jthread=yes`
+- **Phase-1 regression:** N/A (no TypeScript/app code touched; `.gitignore`
+  change is additive ignores only).
 - **Human action:** none.
 - **COMMIT:** *(phase2 branch, recorded in git log)*

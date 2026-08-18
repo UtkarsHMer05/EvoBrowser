@@ -44,3 +44,10 @@ next-env.d.ts
 .trigger
 # Sentry Config File
 .env.sentry-build-plugin
+
+# C++ engine (Phase 2) build trees and caches
+/engine/build*/
+/engine/.cache/
+/engine/vcpkg_installed/
+/engine/benchmarks/results/
+compile_commands.json
