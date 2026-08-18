@@ -11,6 +11,7 @@ import {
   Clock,
   Layers,
   Play,
+  FileText,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -18,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { runWorkflowAction } from "@/features/workflows/actions";
 import { NodeIcon } from "@/features/workflows/components/node-icon";
 import { SessionReplay } from "@/features/workflows/components/session-replay";
+import { StepOutputView } from "@/features/workflows/components/step-output-view";
 import {
   useConsoleRuns,
   type ConsoleRun,
@@ -40,10 +42,12 @@ function RunSummary({
   run,
   workflowId,
   onSelect,
+  onShowResults,
 }: {
   run: ConsoleRun;
   workflowId: string;
   onSelect?: (selection: ConsoleSelection) => void;
+  onShowResults?: (runId: string) => void;
 }) {
   const isCompleted = run.status === "COMPLETED" && !run.isLive;
   const isFailed = run.status === "FAILED";
@@ -165,6 +169,17 @@ function RunSummary({
         {/* Replay + rerun actions */}
         {!run.isLive && (
           <div className="flex flex-col gap-1.5">
+            {onShowResults && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full justify-center text-xs h-8"
+                onClick={() => onShowResults(run.id)}
+              >
+                <FileText className="size-3.5 mr-1.5" />
+                View Full Results
+              </Button>
+            )}
             {run.browserbaseSessionId && onSelect && (
               <Button
                 size="sm"
@@ -245,10 +260,12 @@ export function InspectorPanel({
   selection,
   workflowId,
   onSelect,
+  onShowResults,
 }: {
   selection: ConsoleSelection;
   workflowId: string;
   onSelect?: (selection: ConsoleSelection) => void;
+  onShowResults?: (runId: string) => void;
 }) {
   const runs = useConsoleRuns();
   const run = runs.find((r) => r.id === selection.runId);
@@ -257,7 +274,12 @@ export function InspectorPanel({
   if (selection.kind === "summary") {
     if (!run) return <Note>This run is no longer available.</Note>;
     return (
-      <RunSummary run={run} workflowId={workflowId} onSelect={onSelect} />
+      <RunSummary
+        run={run}
+        workflowId={workflowId}
+        onSelect={onSelect}
+        onShowResults={onShowResults}
+      />
     );
   }
 
@@ -280,20 +302,14 @@ export function InspectorPanel({
         <NodeIcon type={step.type} />
         <span className="truncate text-xs font-semibold">{step.title}</span>
       </div>
-      {step.error ? (
-        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs text-destructive">
-          {step.error}
-        </pre>
-      ) : step.output !== undefined ? (
-        <pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-xs">
-          {JSON.stringify(step.output, null, 2)}
-        </pre>
-      ) : step.status === "pending" ? (
+      {step.status === "pending" ? (
         <Note>This step hasn&apos;t run yet.</Note>
       ) : step.status === "running" ? (
         <Note>Waiting for this step to finish…</Note>
       ) : (
-        <Note>This step produced no output.</Note>
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <StepOutputView step={step} />
+        </div>
       )}
     </div>
   );

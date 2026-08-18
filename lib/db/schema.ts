@@ -30,3 +30,15 @@ export const liveViewConnections = pgTable("live_view_connections", {
 });
 
 export type LiveViewConnection = typeof liveViewConnections.$inferSelect;
+
+// Per-run artifacts for the results popup. The run task saves a final
+// screenshot of the browser (base64 JPEG) before closing the session; the
+// results dialog fetches it through an org-checked API route.
+export const runArtifacts = pgTable("run_artifacts", {
+  runId: text("run_id").primaryKey(),
+  orgId: text("org_id").notNull(),
+  screenshotBase64: text("screenshot_base64"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type RunArtifact = typeof runArtifacts.$inferSelect;

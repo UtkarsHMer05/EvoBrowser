@@ -13,8 +13,9 @@ import {
   LogsPanel,
   type ConsoleSelection,
 } from "@/features/workflows/components/logs-panel";
+import { RunResultsDialog } from "@/features/workflows/components/run-results-dialog";
 import {
-  useLatestRun,
+  useConsoleRuns,
   useLatestRunSteps,
 } from "@/features/workflows/components/workflow-runs-provider";
 
@@ -31,23 +32,31 @@ function isSameSelection(a: ConsoleSelection, b: ConsoleSelection) {
 // selected step's output or the selected run's replay. Clicking the active
 // selection again clears it.
 //
-// When a run finishes, fails, or is stopped, its completion summary opens here
-// automatically (Milestone 14). It stays a dismissible console selection — the
-// canvas above is never replaced, and closing the selection returns the console
-// to its plain logs view so the graph can be edited and run again.
+// When a run finishes, fails, or is stopped, its readable results popup opens
+// automatically and the completion summary opens in the console (Milestone 14).
+// Both are dismissible — the canvas above is never replaced, and closing them
+// returns the console to its plain logs view so the graph can be edited and run
+// again.
 export function ConsolePanel({ workflowId }: { workflowId: string }) {
   const [selected, setSelected] = useState<ConsoleSelection | null>(null);
+  // The run whose results popup is open (null = closed). Tracked by id so the
+  // dialog can show a historical run, not just the latest.
+  const [resultsRunId, setResultsRunId] = useState<string | null>(null);
 
-  // Surface the completion summary the moment the latest run flips from live
-  // to finished. A ref tracks the previous live state so a page load that
-  // starts with an already-finished run doesn't force the panel open.
-  const latestRun = useLatestRun();
+  const runs = useConsoleRuns();
+  const latestRun = runs[0]; // useConsoleRuns sorts newest first
+  const resultsRun = runs.find((r) => r.id === resultsRunId);
+
+  // Surface the results popup + completion summary the moment the latest run
+  // flips from live to finished. A ref tracks the previous live state so a page
+  // load that starts with an already-finished run doesn't force either open.
   const { isLive } = useLatestRunSteps();
   const wasLiveRef = useRef(false);
 
   useEffect(() => {
     if (wasLiveRef.current && !isLive && latestRun) {
       setSelected({ kind: "summary", runId: latestRun.id });
+      setResultsRunId(latestRun.id);
     }
     wasLiveRef.current = isLive;
   }, [isLive, latestRun]);
@@ -71,10 +80,23 @@ export function ConsolePanel({ workflowId }: { workflowId: string }) {
               selection={selected}
               workflowId={workflowId}
               onSelect={toggle}
+              onShowResults={(runId) => {
+                setSelected({ kind: "summary", runId });
+                setResultsRunId(runId);
+              }}
             />
           </ResizablePanel>
         </>
       )}
+      <RunResultsDialog
+        run={resultsRun}
+        workflowId={workflowId}
+        open={resultsRunId !== null}
+        onOpenChange={(open) => {
+          if (!open) setResultsRunId(null);
+        }}
+        onSelect={toggle}
+      />
     </ResizablePanelGroup>
   );
 }

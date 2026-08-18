@@ -44,6 +44,9 @@ interface SimRun {
       connectedBeforeSteps: boolean;
       waitTicks: number;
     };
+    // Final screenshot artifact captured in the task's finally block
+    // (Milestone 18) — present whenever the run drove a browser.
+    artifact?: { screenshot?: string };
   };
   // Final output, present only for COMPLETED runs (a thrown or canceled run
   // returns no output — exactly like the real Trigger.dev task).
@@ -272,6 +275,11 @@ async function executeWorkflow(graph: Graph, options: SimOptions = {}): Promise<
     // A failed or canceled run returns no output; its steps survive in metadata.
     return run;
   } finally {
+    // The real task captures a final screenshot artifact before closing the
+    // session, on every exit path — mirror that here.
+    if (sessionId) {
+      run.metadata.artifact = { screenshot: `screenshot_of_${sessionId}` };
+    }
     closeStagehand(); // finally cleanup runs on success, failure, AND cancel
   }
 }
@@ -629,7 +637,24 @@ async function runLifecycleSuite() {
     undefined,
     "Non-browser run opens no session",
   );
-  console.log("  ✓ Watched runs wait for the view; unwatched runs time out and proceed; non-browser runs skip the gate.");
+
+  // Final screenshot artifact (Milestone 18): captured on every exit path for
+  // browser runs, absent for non-browser runs.
+  assert.ok(
+    watchedRun.metadata.artifact?.screenshot,
+    "Browser run captured a final screenshot artifact",
+  );
+  assert.equal(
+    unwatchedRun.metadata.artifact?.screenshot !== undefined,
+    true,
+    "Unwatched browser run still captured a screenshot",
+  );
+  assert.equal(
+    gateEmailRun.metadata.artifact,
+    undefined,
+    "Non-browser run has no screenshot artifact",
+  );
+  console.log("  ✓ Watched runs wait for the view; unwatched runs time out and proceed; non-browser runs skip the gate; browser runs capture a final screenshot.");
 
   // -------------------------------------------------------------------------
   // FINAL: no automatic execution anywhere in the lifecycle

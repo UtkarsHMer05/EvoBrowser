@@ -11,6 +11,7 @@ import {
   clearLiveViewConnection,
   getWorkflow,
   isLiveViewConnected,
+  saveRunArtifact,
 } from "@/features/workflows/data";
 import type { NodeType } from "@/features/workflows/nodes/node-registry";
 
@@ -54,7 +55,11 @@ export type RunStep = {
 // sessions) gets layered on from here.
 export const runWorkflowTask = task({
   id: "run-workflow",
-  run: async ({ workflowId, orgId }: { workflowId: string; orgId: string }) => {
+  run: async (
+    { workflowId, orgId }: { workflowId: string; orgId: string },
+    { ctx },
+  ) => {
+    const runId = ctx.run.id;
     const workflow = await getWorkflow(orgId, workflowId);
     if (!workflow?.graph)
       throw new Error(`Workflow ${workflowId} has no graph`);
@@ -123,6 +128,29 @@ export const runWorkflowTask = task({
                 : String(closeError),
           });
         }
+      }
+    };
+
+    // Capture a final screenshot of the browser before the session closes, so
+    // the results popup can show what the automation ended on — success,
+    // failure, or stop alike. Stored as a base64 JPEG run artifact.
+    const captureFinalScreenshot = async (): Promise<string | undefined> => {
+      if (!stagehand || isClosed) return undefined;
+      try {
+        const pages = stagehand.context?.pages();
+        const activePage =
+          pages && pages.length > 0 ? pages[pages.length - 1] : undefined;
+        if (!activePage) return undefined;
+        const buffer = await activePage.screenshot({
+          type: "jpeg",
+          quality: 70,
+        });
+        return buffer.toString("base64");
+      } catch (error) {
+        logger.warn("Could not capture final screenshot", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return undefined;
       }
     };
 
@@ -272,6 +300,18 @@ export const runWorkflowTask = task({
 
       return { steps, browserbaseSessionId, finalUrl, durationMs };
     } finally {
+      // Grab the final screenshot before the session closes, then persist it as
+      // a run artifact for the results popup. Both are best-effort — a capture
+      // or save failure must never mask the run's real outcome.
+      const screenshotBase64 = await captureFinalScreenshot();
+      try {
+        await saveRunArtifact({ runId, orgId, screenshotBase64 });
+      } catch (error) {
+        logger.warn("Error saving run artifact", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       // Ensure the Browserbase session is always closed on success, failure, or cancellation
       await closeStagehand();
       // Drop the live-view handshake row so it doesn't linger after the run.

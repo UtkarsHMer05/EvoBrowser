@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db";
 import {
   WorkflowGraph,
   liveViewConnections,
+  runArtifacts,
   workflows,
 } from "@/lib/db/schema";
 import { validateGraph } from "@/features/workflows/lib/validate-graph";
@@ -84,4 +85,34 @@ export async function clearLiveViewConnection(sessionId: string) {
   await getDb()
     .delete(liveViewConnections)
     .where(eq(liveViewConnections.sessionId, sessionId));
+}
+
+// --- Run artifacts (final screenshot for the results popup) ----------------
+// The run task upserts a row per run before closing the browser; the results
+// dialog reads it through an org-checked API route.
+
+export async function saveRunArtifact({
+  runId,
+  orgId,
+  screenshotBase64,
+}: {
+  runId: string;
+  orgId: string;
+  screenshotBase64?: string;
+}) {
+  await getDb()
+    .insert(runArtifacts)
+    .values({ runId, orgId, screenshotBase64 })
+    .onConflictDoUpdate({
+      target: runArtifacts.runId,
+      set: { screenshotBase64 },
+    });
+}
+
+export async function getRunArtifact(orgId: string, runId: string) {
+  const [row] = await getDb()
+    .select()
+    .from(runArtifacts)
+    .where(and(eq(runArtifacts.runId, runId), eq(runArtifacts.orgId, orgId)));
+  return row;
 }
