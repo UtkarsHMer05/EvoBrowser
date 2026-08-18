@@ -41,6 +41,7 @@ add_library(evo_scheduler_core STATIC
   core/src/scheduler.cpp
   core/src/bench.cpp
   core/src/state_machine.cpp
+  core/src/ready_queue.cpp
 )
 target_include_directories(evo_scheduler_core PUBLIC core/include)
 target_compile_features(evo_scheduler_core PUBLIC cxx_std_20)
@@ -90,3 +91,10 @@ target_compile_options(evo_state_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME state COMMAND evo_state_test)
+
+add_executable(evo_ready_queue_test tests/ready_queue_test.cpp)
+target_link_libraries(evo_ready_queue_test PRIVATE evo_scheduler_core)
+target_compile_options(evo_ready_queue_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME ready_queue COMMAND evo_ready_queue_test)
