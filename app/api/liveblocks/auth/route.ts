@@ -1,11 +1,11 @@
 import * as Sentry from "@sentry/nextjs";
-import { auth, currentUser } from "@clerk/nextjs/server";
+import { currentUser } from "@clerk/nextjs/server";
 
 import { getLiveblocksClient } from "@/lib/liveblocks";
-import { resolveActiveOrgId } from "@/lib/auth";
+import { readAuthWithRetry, resolveActiveOrgId } from "@/lib/auth";
 
 export async function POST() {
-  const { userId } = await auth();
+  const { userId } = await readAuthWithRetry();
 
   if (!userId) {
     return new Response("Unauthorized", { status: 401 });

@@ -9,6 +9,18 @@ export interface GenerateWorkflowPlanOptions {
   goal: string;
 }
 
+// Transient gateway errors worth retrying: request timeout, rate limit, and the
+// 5xx family (a 502 "gateway error: backend" is the classic transient blip).
+// 401 is deliberately NOT retried — it's a configuration problem, not a blip.
+const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 3;
+
+// The outcome of a single provider call, so the retry loop can tell a
+// transient failure (retry) from a permanent one (surface immediately).
+type AttemptResult =
+  | { ok: true; content: string }
+  | { ok: false; retryable: boolean; message: string };
+
 /**
  * Server-only service that sends the user's natural language goal and the derived
  * node catalog to the configured AI provider (TokenRouter) and returns a validated
@@ -92,41 +104,64 @@ You MUST respond with valid JSON matching this exact structure:
   ]
 }`;
 
-  let rawResponseText = "";
-  try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: goal },
-        ],
-        temperature: 0.1,
-        max_tokens: 3000,
-        response_format: { type: "json_object" },
-      }),
-    });
+  // One provider call. Network errors and transient statuses (429/5xx) are
+  // reported as retryable; auth failures and empty responses are not.
+  const callProviderOnce = async (): Promise<AttemptResult> => {
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: goal },
+          ],
+          temperature: 0.1,
+          max_tokens: 3000,
+          response_format: { type: "json_object" },
+        }),
+      });
+    } catch (error) {
+      // Network-level failure (DNS, connection reset, timeout) — transient.
+      return {
+        ok: false,
+        retryable: true,
+        message: `AI Provider communication error: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
       if (response.status === 401) {
-        throw new Error(
-          "AI Provider authentication failed (401 Unauthorized). Please verify TOKENROUTER_API_KEY.",
-        );
+        return {
+          ok: false,
+          retryable: false,
+          message:
+            "AI Provider authentication failed (401 Unauthorized). Please verify TOKENROUTER_API_KEY.",
+        };
       }
       if (response.status === 429) {
-        throw new Error(
-          "AI Provider rate limit exceeded (429 Too Many Requests). Please try again in a moment.",
-        );
+        return {
+          ok: false,
+          retryable: true,
+          message:
+            "AI Provider rate limit exceeded (429 Too Many Requests). Please try again in a moment.",
+        };
       }
-      throw new Error(
-        `AI Provider request failed with status ${response.status}: ${errorText || response.statusText}`,
-      );
+      return {
+        ok: false,
+        retryable: RETRYABLE_STATUSES.has(response.status),
+        message: `AI Provider request failed with status ${response.status}: ${
+          errorText || response.statusText
+        }`,
+      };
     }
 
     const data = await response.json();
@@ -134,15 +169,38 @@ You MUST respond with valid JSON matching this exact structure:
 
     if (!messageContent) {
       // Some reasoning models return content inside message or reasoning
-      throw new Error(
-        "AI Provider returned an empty response content. Please try again or check the model configuration.",
-      );
+      return {
+        ok: false,
+        retryable: true,
+        message:
+          "AI Provider returned an empty response content. Please try again or check the model configuration.",
+      };
     }
 
-    rawResponseText = messageContent;
-  } catch (error) {
-    if (error instanceof Error) throw error;
-    throw new Error(`AI Provider communication error: ${String(error)}`);
+    return { ok: true, content: messageContent };
+  };
+
+  // Retry transient failures with a short backoff so a single gateway blip
+  // (e.g. a 502) doesn't fail the whole generation.
+  let rawResponseText = "";
+  let lastError = "";
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const result = await callProviderOnce();
+    if (result.ok) {
+      rawResponseText = result.content;
+      break;
+    }
+
+    lastError = result.message;
+    if (!result.retryable || attempt === MAX_ATTEMPTS) {
+      throw new Error(result.message);
+    }
+
+    await new Promise((r) => setTimeout(r, 1000 * attempt));
+  }
+
+  if (!rawResponseText) {
+    throw new Error(lastError || "AI Provider returned no content.");
   }
 
   // Parse JSON

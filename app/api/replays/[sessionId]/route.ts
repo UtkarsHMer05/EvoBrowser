@@ -1,9 +1,8 @@
 import * as Sentry from "@sentry/nextjs";
-import { auth } from "@clerk/nextjs/server";
 import { NotFoundError } from "@browserbasehq/sdk";
 
 import { getBrowserbaseClient } from "@/lib/browserbase";
-import { resolveActiveOrgId } from "@/lib/auth";
+import { readAuthWithRetry, resolveActiveOrgId } from "@/lib/auth";
 
 // Proxies a Browserbase session's replay so the browser can play it back. The
 // retrieval needs the secret API key, so it can only happen server-side — the
@@ -17,7 +16,7 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
-  const { userId, has } = await auth();
+  const { userId, has } = await readAuthWithRetry();
   if (!userId) {
     return new Response("Unauthorized", { status: 401 });
   }

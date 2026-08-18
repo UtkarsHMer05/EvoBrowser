@@ -1,6 +1,19 @@
 import * as Sentry from "@sentry/nextjs";
 import { auth, clerkClient } from "@clerk/nextjs/server";
 
+// Read the Clerk session once. Under heavy load (a slow dev server queuing
+// requests, or a transient Clerk backend hiccup) `auth()` can come back without
+// a userId even for a signed-in user; a single short retry recovers that case.
+// A genuinely signed-out user still fails fast after the retry.
+export async function readAuthWithRetry() {
+  let result = await auth();
+  if (!result.userId) {
+    await new Promise((r) => setTimeout(r, 300));
+    result = await auth();
+  }
+  return result;
+}
+
 // Resolves the organization the current request should operate on.
 //
 // `auth().orgId` reflects the *active organization* claim carried by the
@@ -15,7 +28,7 @@ import { auth, clerkClient } from "@clerk/nextjs/server";
 // on the session token claim. Throws when the user is not signed in or has no
 // organization membership at all.
 export async function resolveActiveOrgId(): Promise<string> {
-  const { userId, orgId } = await auth();
+  const { userId, orgId } = await readAuthWithRetry();
 
   if (!userId) {
     throw new Error("Not authenticated");

@@ -1,9 +1,8 @@
 import * as Sentry from "@sentry/nextjs";
-import { auth } from "@clerk/nextjs/server";
 import { runs } from "@trigger.dev/sdk";
 import { NextResponse } from "next/server";
 
-import { resolveActiveOrgId } from "@/lib/auth";
+import { readAuthWithRetry, resolveActiveOrgId } from "@/lib/auth";
 import {
   getWorkflow,
   markLiveViewConnected,
@@ -21,7 +20,7 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
-  const { userId } = await auth();
+  const { userId } = await readAuthWithRetry();
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

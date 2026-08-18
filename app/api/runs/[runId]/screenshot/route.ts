@@ -1,9 +1,8 @@
 import * as Sentry from "@sentry/nextjs";
-import { auth } from "@clerk/nextjs/server";
 import { runs } from "@trigger.dev/sdk";
 import { NextResponse } from "next/server";
 
-import { resolveActiveOrgId } from "@/lib/auth";
+import { readAuthWithRetry, resolveActiveOrgId } from "@/lib/auth";
 import { getRunArtifact } from "@/features/workflows/data";
 import type { runWorkflowTask } from "@/features/workflows/tasks/run-workflow";
 
@@ -17,7 +16,7 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ runId: string }> },
 ) {
-  const { userId } = await auth();
+  const { userId } = await readAuthWithRetry();
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

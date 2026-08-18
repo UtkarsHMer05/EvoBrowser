@@ -1,10 +1,9 @@
-import { auth } from "@clerk/nextjs/server";
 import { auth as triggerAuth } from "@trigger.dev/sdk";
 import { notFound } from "next/navigation";
 import { ReactFlowProvider } from "@xyflow/react";
 
 import { getLiveblocksClient } from "@/lib/liveblocks";
-import { resolveActiveOrgId } from "@/lib/auth";
+import { readAuthWithRetry, resolveActiveOrgId } from "@/lib/auth";
 import { getWorkflow } from "@/features/workflows/data";
 import { Room } from "@/features/workflows/components/room";
 import { WorkflowShell } from "@/features/workflows/components/workflow-shell";
@@ -20,7 +19,7 @@ export default async function Page({
   const { id } = await params;
   const search = await searchParams;
   const isNew = search.new === "true" || search.new === "1";
-  const { userId } = await auth();
+  const { userId } = await readAuthWithRetry();
   if (!userId) notFound();
 
   let orgId: string;
