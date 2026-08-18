@@ -12,6 +12,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M05 | Implement the canonical C++ DAG model | ✅ DONE | `19722f1` |
 | M06 | Implement a deterministic sequential reference scheduler | ✅ DONE | `80ef0a6` |
 | M07 | Implement scheduler state machines and dependency counters | ✅ DONE | `0c23c78` |
+| M08 | Implement a thread-safe blocking ready queue | ✅ DONE | `78f8fc6` |
 
 ---
 
@@ -234,3 +235,42 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Phase-1 regression:** N/A (no TypeScript/app code touched).
 - **Human action:** none.
 - **COMMIT:** `0c23c78` — `phase2(m07): add scheduler state machine and dependency counters`
+
+## M08 — Implement a thread-safe blocking ready queue
+
+- **Commit:** `78f8fc6`
+- **Files:** `engine/core/include/evo/ready_queue.hpp`, `engine/core/src/ready_queue.cpp`,
+  `engine/tests/ready_queue_test.cpp`, `engine/CMakeLists.txt`
+- **Design:**
+  - `evo::ReadyQueue` — thread-safe FIFO with `std::mutex` + `std::condition_variable_any`.
+  - `max_size == 0` → unbounded; `max_size > 0` → push blocks when full (backpressure).
+  - `pop(stop_token)` — honors `std::stop_token` via `std::stop_callback` that calls
+    `notify_one`; drains remaining items before returning `nullopt` on stop.
+  - `try_pop()` — non-blocking, returns `nullopt` if empty.
+  - `close()` — idempotent; sets `closed_`, notifies all waiters on both condition
+    variables; `push` returns false, `pop` blocks are woken with `nullopt`.
+- **Test coverage (9 sub-tests):**
+  1. FIFO ordering
+  2. close while empty
+  3. close wakes blocked consumer
+  4. many producers (8×200) / many consumers (8) — no lost tasks
+  5. stop_token interrupts blocking pop (no items delivered)
+  6. stop_token still drains remaining items
+  7. bounded queue backpressure (capacity-2 blocks third push until pop)
+  8. spurious-wakeup robustness stress (4×500 items, 4 consumers)
+  9. empty queue `try_pop` returns `nullopt`
+- **Validation:**
+  - Release build: `ninja -C engine/build` → ✅
+  - `./engine/build/evo_ready_queue_test` → ✅ "all ready-queue tests passed"
+  - ASan+UBSan debug build: `ctest --test-dir engine/build-asan` → ✅ 5/5 pass, no errors
+- **Key decisions:**
+  - Used `condition_variable_any` (not `condition_variable`) because `std::stop_callback`
+    requires a `BasicLockable` but `condition_variable` only works with `unique_lock<mutex>`;
+    `_any` is forward-compatible with future lock types.
+  - Default-constructed `std::stop_token` (used by `pop()` overload without arg) is valid
+    — `stop_callback` simply doesn't register since `stop_possible() == false`. No throw.
+- **Concurrency correctness:** no data races — all state access is under `mu_`. ASan
+  thread sanitizer not enabled in this build, but mutex discipline is straightforward.
+- **Phase-1 regression:** none — no TS code touched.
+- **Human action:** none.
+- **COMMIT:** `78f8fc6` — `phase2(m08): implement blocking ready queue`
