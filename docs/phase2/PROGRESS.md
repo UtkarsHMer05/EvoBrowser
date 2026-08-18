@@ -6,7 +6,8 @@ Commit subjects follow `phase2(mNN): <description>`.
 | Milestone | Title | Status | Commit |
 | :--- | :--- | :--- | :--- |
 | M01 | Reconcile the real Phase-1 source and archive | ✅ DONE | `39fa8e1` |
-| M02 | Certify and freeze the Phase-1 behavioral baseline | ✅ DONE | *(recorded below)* |
+| M02 | Certify and freeze the Phase-1 behavioral baseline | ✅ DONE | `0ef8ea8` |
+| M03 | Phase-2 architecture, invariants, and progress scaffold | ✅ DONE | *(recorded below)* |
 
 ---
 
@@ -47,5 +48,35 @@ Commit subjects follow `phase2(mNN): <description>`.
   changed; no test weakened.
 - **Branch:** `phase2` created from the certified baseline after all gates went
   green; this commit lands on `phase2`.
+- **Human action:** none.
+- **COMMIT:** `0ef8ea8` — `phase2(m02): certify immutable phase1 baseline`
+
+---
+
+## M03 — Create the Phase-2 architecture, invariants, and progress scaffold
+
+- **BASE_SHA:** `0ef8ea8`
+- **What changed (docs only, no production behavior change):**
+  - `docs/phase2/ARCHITECTURE.md` — dual-engine strategy (legacy Trigger.dev
+    stays default; Evo engine opt-in via fail-closed feature flag), component
+    responsibilities (Next.js control plane, C++ orchestrator, Redis Streams,
+    Postgres/Drizzle, TS workers reusing existing executors), browser session
+    affinity rules (capacity-1 resource per affinity key; same-session browser
+    nodes never parallelize; lost-browser rule on worker death), target state
+    machines (run / node / attempt), dependency + fan-in invariants, clock
+    discipline, and explicit non-goals.
+  - `docs/phase2/FAILURE_MODEL.md` — transport/process/execution assumptions
+    (duplicates, silent worker death, lost ACKs, transient Redis/Postgres
+    errors, scheduler restart), at-least-once baseline with logical-commit
+    idempotency, side-effect ambiguity windows per node type, cancellation
+    races completion rule, slow≠dead rule, browser failure rules, chaos test
+    surface, and explicit non-claims.
+  - `docs/phase2/BENCHMARK_METHODOLOGY.md` — binding no-fabrication rules,
+    metric definitions (makespan, latencies, throughput, speedup, parallel
+    efficiency, recovery, cancellation, duplicate suppression, fairness,
+    memory, CPU), workload-class separation, raw-sample artifact format, and
+    the publication gate.
+  - `docs/phase2/PROGRESS.md` — this scaffold (already created in M01).
+- **Phase-1 regression:** N/A (docs-only change; no app code touched).
 - **Human action:** none.
 - **COMMIT:** *(phase2 branch, recorded in git log)*
