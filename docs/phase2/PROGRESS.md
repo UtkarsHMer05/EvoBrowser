@@ -5,7 +5,8 @@ Commit subjects follow `phase2(mNN): <description>`.
 
 | Milestone | Title | Status | Commit |
 | :--- | :--- | :--- | :--- |
-| M01 | Reconcile the real Phase-1 source and archive | ✅ DONE | *(recorded below)* |
+| M01 | Reconcile the real Phase-1 source and archive | ✅ DONE | `39fa8e1` |
+| M02 | Certify and freeze the Phase-1 behavioral baseline | ✅ DONE | *(recorded below)* |
 
 ---
 
@@ -28,3 +29,23 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Tests:** none run (no code changed; baseline certification is M02).
 - **Human action:** none required now. Docker Desktop (or equivalent) will be
   required at Milestone 18 for isolated local PostgreSQL.
+- **COMMIT:** `39fa8e1` — `phase2(m01): record verified phase1 source`
+
+---
+
+## M02 — Certify and freeze the Phase-1 behavioral baseline
+
+- **BASE_SHA:** `39fa8e1`
+- **Gates measured at the certified SHA:**
+  - `npm test` → ✅ 28/28 (convert-plan 7/7, integration 10/10, lifecycle 11/11)
+  - `npm run typecheck` → ✅ exit 0
+  - `npm run lint` → ✅ exit 0
+  - `npm run build` → ✅ production build succeeded, all 15 routes compiled
+- **What changed:** created `docs/phase2/PHASE1_BASELINE.md` freezing the 12
+  protected behaviors, the measured gate results, the current sequential
+  execution model, and the manually-only-covered behaviors. No production code
+  changed; no test weakened.
+- **Branch:** `phase2` created from the certified baseline after all gates went
+  green; this commit lands on `phase2`.
+- **Human action:** none.
+- **COMMIT:** *(phase2 branch, recorded in git log)*
