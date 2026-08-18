@@ -14,6 +14,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M07 | Implement scheduler state machines and dependency counters | ✅ DONE | `0c23c78` |
 | M08 | Implement a thread-safe blocking ready queue | ✅ DONE | `78f8fc6` |
 | M09 | Implement the bounded std::jthread worker pool | ✅ DONE | `00a3533` |
+| M10 | Build the local concurrent dependency-aware DAG scheduler | ✅ DONE | `4eb2f1f` |
 
 ---
 
@@ -330,3 +331,85 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Phase-1 regression:** none — no TS code touched.
 - **Human action:** none.
 - **COMMIT:** `00a3533` — `phase2(m09): implement bounded jthread worker pool`
+
+---
+
+## M10 — Build the local concurrent dependency-aware DAG scheduler
+
+- **BASE_SHA:** `00a3533`
+- **What changed:**
+  - `engine/core/include/evo/concurrent_scheduler.hpp` — `ConcurrentScheduler`
+    class owning a `ThreadPool`, a `ReadyQueue`, and a thread-safe
+    `SchedulerState`. `ConcurrentConfig` (num_workers, ready_queue_capacity).
+    `ConcurrentNodeRun` (adds `ready_at` steady_clock timestamp to the sequential
+    `NodeRun` fields) and `ConcurrentRunLog` (sorted by logical completion
+    `sequence`). `run()` returns the complete run log; `cancel()` is a
+    cooperative stop hook (reserved for M11).
+  - `engine/core/src/concurrent_scheduler.cpp` — the dispatcher loop. `run()`
+    calls `state_.start_run()`, pushes initially-ready roots into the
+    `ReadyQueue`, then loops: wait on a `std::condition_variable_any`
+    (`dispatch_cv_`) until the queue is non-empty OR no tasks are in flight OR
+    cancellation is requested; pop all available ready nodes and submit each to
+    the `ThreadPool` (marking READY→DISPATCHED under the state lock, recording
+    the steady_clock `ready_at`). Worker tasks execute the registered `TaskFn`,
+    record `started_at`/`finished_at`, append a `ConcurrentNodeRun` to the
+    log under `log_mu_`, then call `on_node_complete` which drives
+    `state_.complete_node` (unlocking successors idempotently, propagating
+    failure cancellation) and notifies the dispatcher. Termination fires when
+    `in_flight_ == 0 && ready_queue_.size() == 0`.
+  - `engine/core/include/evo/state_machine.hpp` +
+    `engine/core/src/state_machine.cpp` — **pre-edited thread-safety pass for
+    M10**: every public method now takes the internal `mu_` (value-returning
+    accessors return copies/snapshots), enabling the concurrent scheduler to
+    drive the same transitions from multiple pool threads. Added
+    `finalize_run()` (derives RUNNING→SUCCEEDED/FAILED/CANCELED from node
+    outcomes) used at the end of `run()`.
+  - `engine/tests/concurrent_scheduler_test.cpp` — 7 suites:
+    1. linear chain equivalence (order + all succeed)
+    2. diamond equivalence + concurrency overlap (independent left/right
+       overlap, join waits for both) + dependency invariant
+    3. wide 1→8→1 fan-out overlap (peak concurrency ≥ 4 with 8 workers)
+    4. seeded random DAG equivalence vs sequential reference (same node count,
+       all-ok, succeeded-set, and per-node outputs) across 5 seeds
+    5. stress: dependency invariant (`u.finished ≤ v.started` for every edge)
+       across 20 random DAGs
+    6. no logical node executes twice (exec-count == 1 each)
+    7. failure propagation: a deliberately fails → b and c never succeed
+       (canceled by upstream failure)
+  - `engine/CMakeLists.txt` — registered `concurrent_scheduler.cpp` in
+    `evo_scheduler_core` and added the `evo_concurrent_scheduler_test` CTest
+    target.
+- **Key decisions:**
+  - **Dispatcher architecture (no busy-spin, no deadlock):** the main `run()`
+    thread owns dispatching and blocks on `dispatch_cv_` (not on a raw
+    `ready_queue_.pop()`), so the run terminates cleanly when the last worker
+    finishes — the queue alone cannot signal "nothing left to do". Workers
+    increment `in_flight_` on submit and decrement+notify on completion.
+  - **Dependency correctness under concurrency** is provided by the already-
+    tested `SchedulerState` (M07) idempotent dependency counters; the
+    concurrent scheduler only adds the thread pool + dispatch coordination.
+  - **Timestamps** use `std::chrono::steady_clock` throughout (monotonic,
+    matches the sequential scheduler and the benchmark methodology §14).
+  - **Equivalence** is asserted structurally (same succeeded node set + same
+    per-node outputs), not by comparing wall-clock makespan — concurrency is
+    allowed to reorder start times while logical results stay identical.
+- **Concurrency correctness:** all shared state cross-threaded is guarded —
+  `SchedulerState` under `mu_`, dispatcher coordination under `dispatch_mu_` +
+  `dispatch_cv_`, `in_flight_`/`sequence_counter_`/`canceled_` are atomics, the
+  run log is appended under `log_mu_`. ASan+UBSan (Debug) run is clean.
+- **No-go compliance:** sleep-overlap is explicitly NOT claimed as a universal
+  app speedup; equivalence to the sequential reference is the mandatory gate
+  and is enforced by tests 4–5. No perf numbers invented.
+- **Validation:**
+  - `cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release` → ✅
+  - `cmake --build engine/build` → ✅ clean under `-Wall -Wextra -Wpedantic -Werror`
+  - `ctest --test-dir engine/build --output-on-failure` → ✅ 7/7 (toolchain,
+    dag, scheduler, state, ready_queue, thread_pool, concurrent_scheduler)
+  - `./engine/build/evo_concurrent_scheduler_test` → "all concurrent-scheduler tests passed"
+  - ASan+UBSan Debug build: `ctest --test-dir engine/build-asan` → ✅ 7/7 pass, no errors
+  - `npm test` (Phase-1) → ✅ 28/28 (run as evidence; no TS/app code touched)
+- **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched; run
+  for evidence per M10 checklist).
+- **Human action:** none.
+- **COMMIT:** `TBD` — `phase2(m10): implement concurrent dag scheduler`
+- **NEXT:** M11 — cooperative cancellation and graceful shutdown.

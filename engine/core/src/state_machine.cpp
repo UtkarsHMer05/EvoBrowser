@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <mutex>
 
 namespace evo {
 
@@ -38,21 +39,35 @@ SchedulerState::SchedulerState(Dag dag) : dag_(std::move(dag)) {
   }
 }
 
+RunState SchedulerState::run_state() const {
+  std::lock_guard lock(mu_);
+  return run_state_;
+}
+
 NodeState SchedulerState::node_state(const NodeId& id) const {
+  std::lock_guard lock(mu_);
   auto it = node_states_.find(id);
   return it == node_states_.end() ? NodeState::Blocked : it->second;
 }
 
 int SchedulerState::remaining_deps(const NodeId& id) const {
+  std::lock_guard lock(mu_);
   auto it = dep_counts_.find(id);
   return it == dep_counts_.end() ? 0 : it->second;
 }
 
 NodeStatus SchedulerState::status(const NodeId& id) const {
-  return NodeStatus{node_state(id), remaining_deps(id)};
+  std::lock_guard lock(mu_);
+  auto sit = node_states_.find(id);
+  auto dit = dep_counts_.find(id);
+  const NodeState state =
+      sit == node_states_.end() ? NodeState::Blocked : sit->second;
+  const int deps = dit == dep_counts_.end() ? 0 : dit->second;
+  return NodeStatus{state, deps};
 }
 
 std::vector<NodeId> SchedulerState::ready_nodes() const {
+  std::lock_guard lock(mu_);
   std::vector<NodeId> out;
   for (const auto& id : dag_.node_ids()) {
     if (node_states_.at(id) == NodeState::Ready) {
@@ -63,6 +78,7 @@ std::vector<NodeId> SchedulerState::ready_nodes() const {
 }
 
 void SchedulerState::start_run() {
+  std::lock_guard lock(mu_);
   if (run_state_ != RunState::Queued) return;
   run_state_ = RunState::Running;
   for (const auto& id : dag_.node_ids()) {
@@ -73,19 +89,23 @@ void SchedulerState::start_run() {
 }
 
 void SchedulerState::dispatch_node(const NodeId& id) {
+  std::lock_guard lock(mu_);
   auto it = node_states_.find(id);
   if (it == node_states_.end() || it->second != NodeState::Ready) return;
   it->second = NodeState::Dispatched;
 }
 
 void SchedulerState::start_node(const NodeId& id) {
+  std::lock_guard lock(mu_);
   auto it = node_states_.find(id);
   if (it == node_states_.end() || it->second != NodeState::Dispatched) return;
   it->second = NodeState::Running;
 }
 
 std::vector<NodeId> SchedulerState::complete_node(const NodeId& id,
-                                                     const TaskResult& result) {
+                                                  const TaskResult& result) {
+  std::lock_guard lock(mu_);
+
   // Idempotent: a completion for an already-completed node is a no-op.
   if (completed_.contains(id)) return {};
 
@@ -122,7 +142,8 @@ std::vector<NodeId> SchedulerState::complete_node(const NodeId& id,
 }
 
 std::vector<NodeId> SchedulerState::fail_node(const NodeId& id,
-                                                const std::string& error) {
+                                              const std::string& error) {
+  std::lock_guard lock(mu_);
   auto it = node_states_.find(id);
   if (it == node_states_.end()) return {};
   if (it->second == NodeState::Succeeded || completed_.contains(id)) {
@@ -138,7 +159,8 @@ std::vector<NodeId> SchedulerState::fail_node(const NodeId& id,
 }
 
 void SchedulerState::mark_canceled_transitive(const NodeId& id,
-                                               std::vector<NodeId>& canceled) {
+                                              std::vector<NodeId>& canceled) {
+  // Caller holds mu_.
   for (const auto& succ : dag_.successors(id)) {
     auto sit = node_states_.find(succ);
     if (sit == node_states_.end()) continue;
@@ -158,6 +180,7 @@ void SchedulerState::mark_canceled_transitive(const NodeId& id,
 }
 
 std::vector<NodeId> SchedulerState::cancel_run() {
+  std::lock_guard lock(mu_);
   std::vector<NodeId> canceled;
   for (const auto& [id, state] : node_states_) {
     if (state == NodeState::Succeeded) continue;
@@ -166,10 +189,7 @@ std::vector<NodeId> SchedulerState::cancel_run() {
       continue;
     }
     node_states_[id] = NodeState::Canceled;
-    if (state == NodeState::Blocked || state == NodeState::Ready ||
-        state == NodeState::Dispatched || state == NodeState::Running) {
-      failure_reasons_[id] = "run canceled";
-    }
+    failure_reasons_[id] = "run canceled";
     canceled.push_back(id);
   }
   run_state_ = RunState::Canceled;
@@ -177,12 +197,14 @@ std::vector<NodeId> SchedulerState::cancel_run() {
 }
 
 bool SchedulerState::is_terminal() const {
+  std::lock_guard lock(mu_);
   return run_state_ == RunState::Succeeded ||
          run_state_ == RunState::Failed ||
          run_state_ == RunState::Canceled;
 }
 
 bool SchedulerState::all_nodes_terminal() const {
+  std::lock_guard lock(mu_);
   for (const auto& [_, state] : node_states_) {
     if (state != NodeState::Succeeded && state != NodeState::Failed &&
         state != NodeState::DeadLettered && state != NodeState::Canceled) {
@@ -192,10 +214,46 @@ bool SchedulerState::all_nodes_terminal() const {
   return true;
 }
 
-const std::string& SchedulerState::failure_reason(const NodeId& id) const {
-  static const std::string kEmpty;
+std::map<NodeId, TaskResult> SchedulerState::results() const {
+  std::lock_guard lock(mu_);
+  return results_;
+}
+
+std::string SchedulerState::failure_reason(const NodeId& id) const {
+  std::lock_guard lock(mu_);
   auto it = failure_reasons_.find(id);
-  return it == failure_reasons_.end() ? kEmpty : it->second;
+  return it == failure_reasons_.end() ? std::string{} : it->second;
+}
+
+void SchedulerState::finalize_run() {
+  std::lock_guard lock(mu_);
+  if (run_state_ == RunState::Succeeded || run_state_ == RunState::Failed ||
+      run_state_ == RunState::Canceled) {
+    return;  // already terminal
+  }
+  bool any_failed = false;
+  bool any_canceled = false;
+  bool any_nonterminal = false;
+  for (const auto& [_, state] : node_states_) {
+    switch (state) {
+      case NodeState::Failed:
+        any_failed = true;
+        break;
+      case NodeState::Canceled:
+        any_canceled = true;
+        break;
+      default:
+        if (state != NodeState::Succeeded) any_nonterminal = true;
+        break;
+    }
+  }
+  if (any_failed) {
+    run_state_ = RunState::Failed;
+  } else if (any_canceled || any_nonterminal) {
+    run_state_ = RunState::Canceled;
+  } else {
+    run_state_ = RunState::Succeeded;
+  }
 }
 
 }  // namespace evo

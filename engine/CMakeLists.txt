@@ -43,6 +43,7 @@ add_library(evo_scheduler_core STATIC
   core/src/state_machine.cpp
   core/src/ready_queue.cpp
   core/src/thread_pool.cpp
+  core/src/concurrent_scheduler.cpp
 )
 target_include_directories(evo_scheduler_core PUBLIC core/include)
 target_compile_features(evo_scheduler_core PUBLIC cxx_std_20)
@@ -106,3 +107,10 @@ target_compile_options(evo_thread_pool_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME thread_pool COMMAND evo_thread_pool_test)
+
+add_executable(evo_concurrent_scheduler_test tests/concurrent_scheduler_test.cpp)
+target_link_libraries(evo_concurrent_scheduler_test PRIVATE evo_scheduler_core)
+target_compile_options(evo_concurrent_scheduler_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME concurrent_scheduler COMMAND evo_concurrent_scheduler_test)
