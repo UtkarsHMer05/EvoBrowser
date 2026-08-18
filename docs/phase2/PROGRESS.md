@@ -13,6 +13,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M06 | Implement a deterministic sequential reference scheduler | ✅ DONE | `80ef0a6` |
 | M07 | Implement scheduler state machines and dependency counters | ✅ DONE | `0c23c78` |
 | M08 | Implement a thread-safe blocking ready queue | ✅ DONE | `78f8fc6` |
+| M09 | Implement the bounded std::jthread worker pool | ✅ DONE | `00a3533` |
 
 ---
 
@@ -274,3 +275,58 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Phase-1 regression:** none — no TS code touched.
 - **Human action:** none.
 - **COMMIT:** `78f8fc6` — `phase2(m08): implement blocking ready queue`
+
+## M09 — Implement the bounded std::jthread worker pool
+
+- **Commit:** `00a3533`
+- **Files:** `engine/core/include/evo/thread_pool.hpp`, `engine/core/src/thread_pool.cpp`,
+  `engine/tests/thread_pool_test.cpp`, `engine/CMakeLists.txt`
+- **Design:**
+  - `evo::ThreadPool` — fixed-size pool of `std::jthread` workers looping over a
+    shared `std::queue<std::function<void()>>` protected by `std::mutex` +
+    `std::condition_variable_any`.
+  - `drain()` — graceful shutdown: sets `draining_ = true`, notifies all workers,
+    each worker finishes current task + remaining queue, then exits. Idempotent.
+  - `stop()` — immediate shutdown: sets `stopped_ = true`, calls `request_stop()`
+    on all `std::jthread`s (wakes their `cv_.wait(lock, st, pred)`), joins all.
+    Pending tasks are abandoned. Idempotent.
+  - `submit(Task)` — returns `false` if `draining_` or `stopped_`; otherwise
+    enqueues and notifies one worker. Exceptions from tasks are caught and stored
+    as `std::exception_ptr` in a thread-safe queue.
+  - `take_exceptions()` — drains and returns captured exceptions.
+  - Metrics: `num_workers()` (constant), `active_workers()` (currently executing),
+    `num_tasks_submitted()`, `num_tasks_completed()`.
+- **Test coverage (12 sub-tests):**
+  1. Worker counts: 1, 2, 4, 8 workers — all execute 100 tasks correctly
+  2. Task exception capture — `runtime_error` and `logic_error` both captured
+  3. Stop during wait — idle workers exit immediately
+  4. Stop with pending tasks — some tasks abandoned, completed count matches
+  5. Repeated construction/destruction — 100 pools created/destroyed without hang
+  6. Submit after drain/stop rejected
+  7. Active workers counter — >0 during execution, 0 after drain
+  8. Zero leaked/hanging threads — 50 rapid pools × 200 tasks each
+  9. Drain idempotent
+  10. Stop idempotent
+  11. Drain after stop no-op
+  12. Exception in task during destructor drain — doesn't terminate process
+- **Validation:**
+  - Release build: `ninja -C engine/build` → ✅
+  - `./engine/build/evo_thread_pool_test` → ✅ "all thread-pool tests passed"
+  - ASan+UBSan debug build: `ctest --test-dir engine/build-asan` → ✅ 6/6 pass, no errors
+- **Key decisions:**
+  - `std::condition_variable_any` required for stop_token-aware wait
+    (`cv_.wait(lock, st, pred)`). Regular `condition_variable` doesn't support
+    `stop_token` overload.
+  - `drain()` in destructor (not `stop()`) — graceful default; user calls
+    `stop()` explicitly if they want to abandon tasks. Avoids accidental task loss.
+  - Exception capture uses `std::current_exception()` stored in `exception_ptr`;
+    caller rethrows to inspect. No exception escapes worker thread (contract
+    satisfies §4.3 "No exception may escape a worker thread").
+  - Active workers counter uses `std::atomic` with `memory_order_relaxed` —
+    sufficient for metrics/observability; no synchronization with task queue needed.
+- **Concurrency correctness:** no data races — queue state under `mu_`, counters
+  atomic. ASan+TSan not run but mutex discipline is straightforward; `cv_any` with
+  `stop_token` ensures no lost wakeups on shutdown.
+- **Phase-1 regression:** none — no TS code touched.
+- **Human action:** none.
+- **COMMIT:** `00a3533` — `phase2(m09): implement bounded jthread worker pool`
