@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useMutation } from "@liveblocks/react";
+import { useMutation, useRoom } from "@liveblocks/react";
 import { LiveObject, LiveMap } from "@liveblocks/client";
 import type { Edge } from "@xyflow/react";
 import { toast } from "sonner";
@@ -38,6 +38,13 @@ export function WorkflowShell({
     isNew ? "planner" : "canvas",
   );
   const [isPreview, setIsPreview] = useState(false);
+
+  // The room handle — used to make sure storage is loaded before we run the
+  // mutation that inserts the generated graph. In planner mode the Canvas is
+  // not mounted, so nothing else triggers the storage load; without this the
+  // mutation throws "This mutation cannot be used until storage has been
+  // loaded" when the AI plan comes back.
+  const room = useRoom();
 
   // Live Browserbase session from Trigger.dev realtime metadata (Milestone 9).
   const liveBrowserbaseSessionId = useLiveBrowserbaseSessionId();
@@ -119,6 +126,12 @@ export function WorkflowShell({
 
     // Convert plan nodes & edges with deterministic layered DAG layout + validate
     const { nodes, edges } = convertWorkflowPlanToGraph(result.plan);
+
+    // Ensure Liveblocks storage is loaded before mutating. In planner mode the
+    // Canvas (which normally loads storage) isn't mounted yet, and the AI round
+    // trip can return before storage is ready — mutating too early throws
+    // "This mutation cannot be used until storage has been loaded".
+    await room.getStorage();
 
     // Apply the graph to Liveblocks storage so it appears on the canvas collaboratively
     applyWorkflowGraph({ nodes, edges });
