@@ -9,7 +9,8 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M02 | Certify and freeze the Phase-1 behavioral baseline | ✅ DONE | `0ef8ea8` |
 | M03 | Phase-2 architecture, invariants, and progress scaffold | ✅ DONE | `a3e3210` |
 | M04 | Bootstrap the reproducible C++20 toolchain | ✅ DONE | `e3da142` |
-| M05 | Implement the canonical C++ DAG model | ✅ DONE | *(recorded below)* |
+| M05 | Implement the canonical C++ DAG model | ✅ DONE | `19722f1` |
+| M06 | Implement a deterministic sequential reference scheduler | ✅ DONE | *(recorded below)* |
 
 ---
 
@@ -134,4 +135,54 @@ Commit subjects follow `phase2(mNN): <description>`.
   - `./engine/build/evo_dag_test` → "all DAG model tests passed"
 - **Phase-1 regression:** `npm test` → ✅ 28/28 (run as extra evidence; no TS/app code was touched, so N/A by policy — included because M05's checklist lists it).
 - **Human action:** none.
-- **COMMIT:** `7293b4c` — `phase2(m05): add canonical c++ dag model`
+- **COMMIT:** `19722f1` — `phase2(m05): add canonical c++ dag model`
+
+---
+
+## M06 — Implement a deterministic sequential reference scheduler
+
+- **BASE_SHA:** `19722f1`
+- **What changed:**
+  - `engine/core/include/evo/scheduler.hpp` — `TaskResult`, `TaskFn`
+    (`std::function<TaskResult(const NodeSpec&)>`), `NodeRun` (per-node
+    `std::chrono::steady_clock` start/end, sequence, result), `RunLog`
+    (ordered run log with `all_ok()` + canonical `to_json_string()`), and a
+    single-threaded `Scheduler` owning an immutable `Dag` + task registry that
+    walks the top order and halts on the first failing node.
+  - `engine/core/src/scheduler.cpp` — `Scheduler::run` dispatch + run-log
+    serialization via `evo::json`.
+  - `engine/core/include/evo/bench.hpp` + `core/src/bench.cpp` — benchmark-only
+    synthetic tasks `sleep_task` (simulated I/O-bound via
+    `std::this_thread::sleep_for`) and `burn_task` (CPU-bound deterministic
+    volatile accumulator loop); a xorshift64* `Rng` (rejection-sampled
+    `next(n)` to avoid modulo bias); and `generate_workload(seed,width,depth)`
+    producing an acyclic, trigger-reachable `Generated{Dag,sleep_ms,burn_iters}`
+    with per-node bench params captured by closure.
+  - `engine/tests/scheduler_test.cpp` — 6 suites: linear ordering, diamond
+    dependency ordering, deterministic rerun (byte-identical log),
+    unregistered-type failure (halts after the failing node), seeded
+    reproducibility (same seed ⇒ identical graph + params; different seed ⇒
+    different), and a wide fan-in/fan-out bench workload completing in topo
+    order.
+  - `engine/CMakeLists.txt` — added `scheduler.cpp`/`bench.cpp` to
+    `evo_scheduler_core` and the `evo_scheduler_test` CTest target.
+- **Key decisions:**
+  - `TaskFn` captures per-node bench params in its closure, so the canonical
+    DAG model (M05) is NOT retconned to carry params — the graph shape stays
+    stable.
+  - Synthetic types are `bench:sleep`/`bench:burn` living **only** in this
+    engine harness; never added to the TypeScript node registry (preserves
+    M05's "Do not expose synthetic task types to the product planner/node
+    registry").
+  - Timing in tests is labeled `diag(...)` and explicitly NOT a performance
+    claim; M15 owns evidence-grade benchmarks.
+- **Thread-safety / clock:** single-threaded here; no thread boundaries crossed.
+  Durations use `std::chrono::steady_clock` (monotonic).
+- **Validation:**
+  - `cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release` → ✅
+  - `cmake --build engine/build` → ✅ clean under `-Wall -Wextra -Wpedantic -Werror`
+  - `ctest --test-dir engine/build --output-on-failure` → ✅ 3/3 (toolchain, dag, scheduler)
+  - `./engine/build/evo_scheduler_test` → "all scheduler tests passed"
+- **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched — N/A by policy; run for evidence).
+- **Human action:** none.
+- **COMMIT:** *(phase2 branch, recorded below after commit)*
