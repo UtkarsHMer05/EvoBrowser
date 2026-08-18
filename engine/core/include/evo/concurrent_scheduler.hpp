@@ -1,7 +1,7 @@
 #pragma once
 
 // Concurrent dependency-aware DAG scheduler (Milestone 10) with cooperative
-// cancellation (Milestone 11).
+// cancellation (Milestone 11) and resource-aware dispatch (Milestone 12).
 //
 // Combines the thread pool (M09), ready queue (M08), and thread-safe state
 // machine (M07) into a scheduler that executes independent branches in parallel
@@ -15,6 +15,11 @@
 // registered via the ConcurrentTaskFn overload) and return cooperatively.
 // Pending/blocked nodes are marked CANCELED by the state machine. Cancellation
 // request and run-terminal timestamps are recorded for latency metrics.
+//
+// Resource gating (M12): dispatch is additionally gated on resource capacity
+// independent of dependency readiness. The default ExecutionPolicy serializes
+// all browser-class nodes in a run on one capacity-1 browser-affinity resource
+// so they never run concurrently against the same browser session.
 
 #include <atomic>
 #include <chrono>
@@ -30,6 +35,7 @@
 #include <vector>
 
 #include "evo/dag.hpp"
+#include "evo/execution_policy.hpp"
 #include "evo/ready_queue.hpp"
 #include "evo/scheduler.hpp"
 #include "evo/state_machine.hpp"
@@ -83,6 +89,10 @@ struct ConcurrentConfig {
 
   // Maximum number of ready nodes to keep in the dispatch queue (0 = unbounded).
   std::size_t ready_queue_capacity = 0;
+
+  // Run identifier used to derive the default browser-affinity key (M12). All
+  // browser-class nodes in one run serialize on that capacity-1 resource.
+  std::string run_id = "default-run";
 };
 
 class ConcurrentScheduler {
@@ -125,6 +135,11 @@ class ConcurrentScheduler {
   const Dag& dag() const { return state_.dag(); }
   std::size_t num_workers() const { return pool_.num_workers(); }
 
+  // Mutable access to the execution policy for setup before run() (e.g. tests
+  // set per-node affinity overrides). Do not mutate during run().
+  ExecutionPolicy& policy() { return policy_; }
+  const ExecutionPolicy& policy() const { return policy_; }
+
   // True once cancel() has been invoked (run is committed to termination).
   bool is_canceled() const { return canceled_.load(std::memory_order_relaxed); }
 
@@ -140,14 +155,20 @@ class ConcurrentScheduler {
  private:
   void init();
   void dispatch_ready_nodes_locked();
+  // Re-attempt resource-blocked nodes once a capacity slot frees (M12).
+  void drain_resource_blocked();
   void worker_task(const NodeId& id,
                    std::chrono::steady_clock::time_point ready_at);
   void on_node_complete(const NodeId& id, const TaskResult& result);
   void finalize_and_collect();
 
+  // Resolve the resource policy for a node (see ExecutionPolicy).
+  ResourcePolicy policy_for_node(const NodeId& id) const;
+
   Dag dag_;
   std::map<std::string, ConcurrentTaskFn> tasks_;
   ConcurrentConfig config_;
+  ExecutionPolicy policy_;
 
   SchedulerState state_;
   ThreadPool pool_;
@@ -159,6 +180,10 @@ class ConcurrentScheduler {
   std::mutex dispatch_mu_;
   std::condition_variable_any dispatch_cv_;
   std::atomic<std::size_t> in_flight_{0};
+
+  // Resource accounting (M12), guarded by dispatch_mu_.
+  std::map<std::string, int> resource_usage_;  // affinity_key -> in-use count
+  std::vector<NodeId> resource_blocked_;        // ready but waiting for capacity
 
   std::mutex log_mu_;
   std::vector<ConcurrentNodeRun> log_;

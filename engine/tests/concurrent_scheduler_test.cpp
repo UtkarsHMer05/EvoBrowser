@@ -101,7 +101,7 @@ void test_linear_equiv() {
 void test_diamond_equiv() {
   std::cout << "concurrent diamond equivalent to sequential\n";
   auto dag = evo::Dag::build(
-      {trigger("start"), action("left"), action("right"), action("join")},
+      {trigger("start"), action("left", "bench:sleep"), action("right", "bench:sleep"), action("join")},
       {edge("start", "left"), edge("start", "right"),
        edge("left", "join"), edge("right", "join")});
   check(dag.ok(), "dag builds");
@@ -110,7 +110,7 @@ void test_diamond_equiv() {
   // Count concurrent overlaps on the independent branches left/right.
   std::atomic<int> concurrent_peak{0};
   std::atomic<int> active{0};
-  tasks["act"] = [&](const evo::NodeSpec& spec) -> evo::TaskResult {
+  tasks["bench:sleep"] = [&](const evo::NodeSpec& spec) -> evo::TaskResult {
     int now = active.fetch_add(1) + 1;
     concurrent_peak.store(std::max(concurrent_peak.load(), now));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -139,11 +139,11 @@ void test_diamond_equiv() {
 
 void test_wide_fan_overlap() {
   std::cout << "wide fan-out concurrency overlap\n";
-  std::vector<evo::NodeSpec> nodes{trigger("start"), action("sink")};
+  std::vector<evo::NodeSpec> nodes{trigger("start"), action("sink", "bench:sleep")};
   std::vector<evo::Edge> edges;
   for (int i = 0; i < 8; ++i) {
     std::string id = "w" + std::to_string(i);
-    nodes.push_back(action(id));
+    nodes.push_back(action(id, "bench:sleep"));
     edges.push_back(edge("start", id));
     edges.push_back(edge(id, "sink"));
   }
@@ -154,7 +154,7 @@ void test_wide_fan_overlap() {
   std::atomic<int> active{0};
   std::map<std::string, evo::TaskFn> tasks;
   tasks["start"] = noop_tasks()["start"];
-  tasks["act"] = [&](const evo::NodeSpec&) -> evo::TaskResult {
+  tasks["bench:sleep"] = [&](const evo::NodeSpec&) -> evo::TaskResult {
     int now = active.fetch_add(1) + 1;
     concurrent_peak.store(std::max(concurrent_peak.load(), now));
     std::this_thread::sleep_for(std::chrono::milliseconds(15));
@@ -294,7 +294,7 @@ void test_failure_propagation() {
 
   std::map<std::string, evo::TaskFn> tasks;
   tasks["start"] = noop_tasks()["start"];
-  tasks["act"] = [&](const evo::NodeSpec& spec) -> evo::TaskResult {
+  tasks["bench:sleep"] = [&](const evo::NodeSpec& spec) -> evo::TaskResult {
     if (spec.id.value == "a") {
       return evo::TaskResult{false, "a failed deliberately"};
     }
@@ -352,11 +352,11 @@ void test_cancel_during_many_ready() {
   // start -> 8 independent w-nodes -> sink. Cancel early. The 8 w-tasks are
   // dispatched and abort cooperatively; the sink (dependent on all 8) never
   // becomes ready and therefore never runs.
-  std::vector<evo::NodeSpec> nodes{trigger("start"), action("sink")};
+  std::vector<evo::NodeSpec> nodes{trigger("start"), action("sink", "bench:sleep")};
   std::vector<evo::Edge> edges;
   for (int i = 0; i < 8; ++i) {
     std::string id = "w" + std::to_string(i);
-    nodes.push_back(action(id));
+    nodes.push_back(action(id, "bench:sleep"));
     edges.push_back(edge("start", id));
     edges.push_back(edge(id, "sink"));
   }

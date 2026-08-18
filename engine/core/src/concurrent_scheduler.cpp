@@ -40,6 +40,7 @@ ConcurrentScheduler::ConcurrentScheduler(Dag dag,
                                          ConcurrentConfig config)
     : dag_(std::move(dag)),
       config_(config),
+      policy_(config_.run_id),
       state_(dag_),
       pool_(config_.num_workers > 0 ? config_.num_workers : 1),
       ready_queue_(config_.ready_queue_capacity) {
@@ -57,6 +58,7 @@ ConcurrentScheduler::ConcurrentScheduler(
     : dag_(std::move(dag)),
       tasks_(std::move(tasks)),
       config_(config),
+      policy_(config_.run_id),
       state_(dag_),
       pool_(config_.num_workers > 0 ? config_.num_workers : 1),
       ready_queue_(config_.ready_queue_capacity) {
@@ -66,6 +68,14 @@ ConcurrentScheduler::ConcurrentScheduler(
 void ConcurrentScheduler::init() {
   cancel_requested_at_ = std::chrono::steady_clock::time_point{};
   run_terminal_at_ = std::chrono::steady_clock::time_point{};
+}
+
+ResourcePolicy ConcurrentScheduler::policy_for_node(const NodeId& id) const {
+  const NodeSpec* spec = dag_.node(id);
+  if (!spec) {
+    return ResourcePolicy{};  // Internal / unbounded fallback
+  }
+  return policy_.policy_for(*spec);
 }
 
 ConcurrentScheduler::~ConcurrentScheduler() {
@@ -130,20 +140,32 @@ ConcurrentRunLog ConcurrentScheduler::run() {
       break;
     }
 
+    // Retry resource-blocked nodes first; their resource may now be free.
+    drain_resource_blocked();
+
     std::optional<NodeId> id_opt;
     while ((id_opt = ready_queue_.try_pop())) {
       const NodeId id = *id_opt;
-      state_.dispatch_node(id);
-      if (state_.node_state(id) != NodeState::Dispatched) {
+      if (state_.node_state(id) != NodeState::Ready) {
         continue;
       }
-      const auto ready_at = std::chrono::steady_clock::now();
+      // Resource gate (M12): acquire capacity before dispatching.
+      ResourcePolicy rp = policy_for_node(id);
+      int& used = resource_usage_[rp.affinity_key];
+      if (used >= rp.capacity) {
+        // No capacity: defer (node stays READY; retried when a slot frees).
+        resource_blocked_.push_back(id);
+        continue;
+      }
+      used++;
+      state_.dispatch_node(id);
       in_flight_.fetch_add(1, std::memory_order_relaxed);
+      const auto ready_at = std::chrono::steady_clock::now();
       pool_.submit([this, id, ready_at]() { worker_task(id, ready_at); });
     }
 
     if (in_flight_.load(std::memory_order_relaxed) == 0 &&
-        ready_queue_.size() == 0) {
+        ready_queue_.size() == 0 && resource_blocked_.empty()) {
       break;
     }
   }
@@ -164,6 +186,24 @@ void ConcurrentScheduler::dispatch_ready_nodes_locked() {
   for (const auto& id : ready) {
     if (!ready_queue_.push(id)) {
       break;
+    }
+  }
+}
+
+void ConcurrentScheduler::drain_resource_blocked() {
+  for (auto it = resource_blocked_.begin(); it != resource_blocked_.end();) {
+    ResourcePolicy rp = policy_for_node(*it);
+    int& used = resource_usage_[rp.affinity_key];
+    if (used < rp.capacity) {
+      used++;
+      state_.dispatch_node(*it);
+      in_flight_.fetch_add(1, std::memory_order_relaxed);
+      const auto ready_at = std::chrono::steady_clock::now();
+      NodeId id = *it;
+      pool_.submit([this, id, ready_at]() { worker_task(id, ready_at); });
+      it = resource_blocked_.erase(it);
+    } else {
+      ++it;
     }
   }
 }
@@ -207,6 +247,18 @@ void ConcurrentScheduler::worker_task(const NodeId& id,
 }
 
 void ConcurrentScheduler::on_node_complete(const NodeId& id, const TaskResult& result) {
+  // Release the resource this node held (M12).
+  ResourcePolicy rp = policy_for_node(id);
+  {
+    std::lock_guard lock(dispatch_mu_);
+    auto it = resource_usage_.find(rp.affinity_key);
+    if (it != resource_usage_.end() && it->second > 0) {
+      it->second--;
+    }
+    // Re-attempt deferred nodes now that a resource slot freed.
+    drain_resource_blocked();
+  }
+
   // If cancellation is in progress, do not unlock successors — pending/blocked
   // nodes are already CANCELED by cancel_run().
   if (!canceled_.load(std::memory_order_relaxed)) {
