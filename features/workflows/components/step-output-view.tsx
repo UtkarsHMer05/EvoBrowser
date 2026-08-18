@@ -112,8 +112,97 @@ function ActOutput({ output }: { output: unknown }) {
   );
 }
 
+// Keys that usually carry the "headline" of an extracted item, in priority
+// order — the first one present becomes the item's main line.
+const PRIMARY_KEYS = [
+  "title",
+  "name",
+  "headline",
+  "subject",
+  "text",
+  "description",
+  "content",
+  "summary",
+  "label",
+  "question",
+  "answer",
+  "value",
+  "url",
+  "link",
+  "email",
+  "price",
+];
+
+function toDisplayString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+function pickPrimary(
+  item: Record<string, unknown>,
+): { key: string; value: string } | undefined {
+  for (const key of PRIMARY_KEYS) {
+    const value = item[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return { key, value };
+    }
+  }
+  // No well-known headline key — fall back to the first non-empty string.
+  for (const [key, value] of Object.entries(item)) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return { key, value };
+    }
+  }
+  return undefined;
+}
+
+// One extracted item as a readable row: a headline line, then the remaining
+// fields as muted "key: value" segments — instead of a raw JSON object.
+function ExtractedItem({ item }: { item: unknown }) {
+  if (!isRecord(item)) {
+    return <p className="break-words text-xs">{toDisplayString(item)}</p>;
+  }
+
+  const primary = pickPrimary(item);
+  const rest = Object.entries(item).filter(
+    ([key, value]) =>
+      value !== undefined &&
+      value !== null &&
+      value !== "" &&
+      (!primary || key !== primary.key),
+  );
+
+  return (
+    <div>
+      {primary && (
+        <p className="text-xs font-medium leading-relaxed">{primary.value}</p>
+      )}
+      {rest.length > 0 && (
+        <p className="mt-0.5 break-words text-[11px] leading-relaxed text-muted-foreground">
+          {rest
+            .map(([key, value]) => `${key}: ${toDisplayString(value)}`)
+            .join("  ·  ")}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ExtractOutput({ output }: { output: unknown }) {
-  const extraction = isRecord(output) ? output.extraction : undefined;
+  let extraction = isRecord(output) ? output.extraction : undefined;
+
+  // Unwrap single-array wrappers like { posts: [...] } so the list itself is
+  // what gets rendered.
+  if (isRecord(extraction)) {
+    const entries = Object.entries(extraction);
+    if (entries.length === 1 && Array.isArray(entries[0][1])) {
+      extraction = entries[0][1];
+    }
+  }
+
   return (
     <div className="space-y-2.5">
       <Field label="Extracted data">
@@ -121,36 +210,26 @@ function ExtractOutput({ output }: { output: unknown }) {
           <p className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-muted/30 p-2.5 text-xs leading-relaxed">
             {extraction}
           </p>
-        ) : extraction !== undefined ? (
-          // Structured extractions (arrays/objects) get a readable list or a
-          // pretty-printed block rather than a single-line JSON blob.
-          <div className="max-h-72 space-y-1.5 overflow-y-auto">
-            {Array.isArray(extraction) ? (
-              extraction.map((item, i) => (
+        ) : Array.isArray(extraction) ? (
+          extraction.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Nothing was extracted.</p>
+          ) : (
+            <div className="max-h-72 space-y-1.5 overflow-y-auto">
+              {extraction.map((item, i) => (
                 <div
                   key={i}
-                  className="rounded-md border border-border/60 bg-muted/30 p-2 text-xs"
+                  className="rounded-md border border-border/60 bg-muted/30 p-2"
                 >
-                  {isRecord(item)
-                    ? Object.entries(item).map(([k, v]) => (
-                        <div key={k} className="flex gap-2 py-0.5">
-                          <span className="shrink-0 font-medium text-muted-foreground">
-                            {k}:
-                          </span>
-                          <span className="break-words">
-                            {typeof v === "string" ? v : JSON.stringify(v)}
-                          </span>
-                        </div>
-                      ))
-                    : String(item)}
+                  <ExtractedItem item={item} />
                 </div>
-              ))
-            ) : (
-              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-muted/30 p-2.5 font-mono text-[11px]">
-                {JSON.stringify(extraction, null, 2)}
-              </pre>
-            )}
-          </div>
+              ))}
+            </div>
+          )
+        ) : extraction !== undefined ? (
+          // Anything else that's structured gets a pretty-printed block.
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-muted/30 p-2.5 font-mono text-[11px]">
+            {JSON.stringify(extraction, null, 2)}
+          </pre>
         ) : (
           <p className="text-xs text-muted-foreground">Nothing was extracted.</p>
         )}
