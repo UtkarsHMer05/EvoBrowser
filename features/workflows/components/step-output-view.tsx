@@ -141,6 +141,24 @@ function toDisplayString(value: unknown): string {
   return JSON.stringify(value);
 }
 
+// Stagehand's default extract returns the model's answer as a *string*, which
+// is often a JSON array/object. Try to parse it so we can render it readably
+// instead of dumping the raw text. Returns undefined when it isn't JSON.
+function parseMaybeJson(text: string): unknown {
+  const trimmed = text.trim();
+  if (
+    !(trimmed.startsWith("[") && trimmed.endsWith("]")) &&
+    !(trimmed.startsWith("{") && trimmed.endsWith("}"))
+  ) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+}
+
 function pickPrimary(
   item: Record<string, unknown>,
 ): { key: string; value: string } | undefined {
@@ -193,6 +211,16 @@ function ExtractedItem({ item }: { item: unknown }) {
 
 function ExtractOutput({ output }: { output: unknown }) {
   let extraction = isRecord(output) ? output.extraction : undefined;
+
+  // Stagehand's default extract returns the model's answer as a string, which
+  // is often a JSON array/object. Parse it so it renders readably instead of
+  // as a raw JSON blob.
+  if (typeof extraction === "string") {
+    const parsed = parseMaybeJson(extraction);
+    if (parsed !== undefined) {
+      extraction = parsed;
+    }
+  }
 
   // Unwrap single-array wrappers like { posts: [...] } so the list itself is
   // what gets rendered.

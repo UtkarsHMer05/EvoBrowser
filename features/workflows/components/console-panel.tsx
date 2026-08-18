@@ -14,10 +14,7 @@ import {
   type ConsoleSelection,
 } from "@/features/workflows/components/logs-panel";
 import { RunResultsDialog } from "@/features/workflows/components/run-results-dialog";
-import {
-  useConsoleRuns,
-  useLatestRunSteps,
-} from "@/features/workflows/components/workflow-runs-provider";
+import { useConsoleRuns } from "@/features/workflows/components/workflow-runs-provider";
 
 // True when two selections point at the same thing — same kind, same run, and
 // for a step the same node. Clicking the active selection again clears it.
@@ -47,19 +44,39 @@ export function ConsolePanel({ workflowId }: { workflowId: string }) {
   const latestRun = runs[0]; // useConsoleRuns sorts newest first
   const resultsRun = runs.find((r) => r.id === resultsRunId);
 
-  // Surface the results popup + completion summary the moment the latest run
-  // flips from live to finished. A ref tracks the previous live state so a page
-  // load that starts with an already-finished run doesn't force either open.
-  const { isLive } = useLatestRunSteps();
-  const wasLiveRef = useRef(false);
+  // Surface the results popup + completion summary only once the latest run
+  // reaches a TERMINAL status (completed/failed/canceled). Two guards:
+  //  - A run that was already terminal when we first saw it (page load with
+  //    history) never auto-opens — only runs we watched progress do.
+  //  - Non-terminal states like retrying or waiting-for-deploy don't count as
+  //    finished, so the popup can't open mid-run.
+  // Each run only ever auto-opens the popup once.
+  const runTrackingRef = useRef<{
+    runId: string | null;
+    terminalOnFirstSight: boolean;
+    notifiedRunId: string | null;
+  }>({ runId: null, terminalOnFirstSight: false, notifiedRunId: null });
 
   useEffect(() => {
-    if (wasLiveRef.current && !isLive && latestRun) {
+    const tracking = runTrackingRef.current;
+    if (!latestRun) return;
+
+    if (tracking.runId !== latestRun.id) {
+      // First time seeing this run — remember whether it arrived already done.
+      tracking.runId = latestRun.id;
+      tracking.terminalOnFirstSight = latestRun.isTerminal;
+    }
+
+    if (
+      !tracking.terminalOnFirstSight &&
+      latestRun.isTerminal &&
+      tracking.notifiedRunId !== latestRun.id
+    ) {
+      tracking.notifiedRunId = latestRun.id;
       setSelected({ kind: "summary", runId: latestRun.id });
       setResultsRunId(latestRun.id);
     }
-    wasLiveRef.current = isLive;
-  }, [isLive, latestRun]);
+  }, [latestRun]);
 
   const toggle = (selection: ConsoleSelection) => {
     setSelected((prev) =>

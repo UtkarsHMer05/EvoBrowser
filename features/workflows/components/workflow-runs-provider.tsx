@@ -69,6 +69,14 @@ function isRunLive(run: WorkflowRun): boolean {
   return run.status === "QUEUED" || run.status === "EXECUTING";
 }
 
+// Terminal statuses — the run will produce no more steps. Anything else is
+// still in flight (queued, executing, retrying, waiting to resume, …).
+const TERMINAL_STATUSES = new Set(["COMPLETED", "FAILED", "CANCELED"]);
+
+function isRunTerminal(run: WorkflowRun): boolean {
+  return TERMINAL_STATUSES.has(run.status);
+}
+
 // The steps of a run, wherever they live. Prefer the run's final output steps
 // (guaranteed once it succeeds) and fall back to the live metadata steps the
 // task publishes while it runs — a failed or in-flight run only has the latter.
@@ -149,6 +157,9 @@ export interface ConsoleRun {
   status: WorkflowRun["status"];
   createdAt: Date;
   isLive: boolean;
+  // True once the run has reached a terminal status (completed/failed/canceled)
+  // and will produce no more steps.
+  isTerminal: boolean;
   steps: RunStep[];
   // The Browserbase session id to replay, present only once the run has finished.
   browserbaseSessionId?: string;
@@ -196,6 +207,7 @@ export function useConsoleRuns(): ConsoleRun[] {
             status: run.status,
             createdAt: run.createdAt,
             isLive: isRunLive(run),
+            isTerminal: isRunTerminal(run),
             steps,
             browserbaseSessionId: sessionIdForRun(run),
             liveBrowserbaseSessionId: liveSessionIdForRun(run),

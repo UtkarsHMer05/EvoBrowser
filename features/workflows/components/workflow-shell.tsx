@@ -54,6 +54,11 @@ export function WorkflowShell({
   // Show the live browser panel side-by-side with the canvas while a run is in flight.
   const showLiveBrowser = isRunLive;
 
+  // The "AI Workflow Preview — click Run" banner is only relevant before the
+  // first run. Once a run is live, hide it so the canvas reflects the live
+  // execution instead of a stale preview prompt.
+  const showPreview = isPreview && !isRunLive;
+
   // Mutation to replace the Liveblocks room's flow storage with the generated graph.
   // This automatically synchronizes to all connected clients and React Flow.
   const applyWorkflowGraph = useMutation(
@@ -173,7 +178,7 @@ export function WorkflowShell({
               <ResizablePanelGroup orientation="horizontal">
                 <ResizablePanel minSize="20rem">
                   <Canvas
-                    isPreview={isPreview}
+                    isPreview={showPreview}
                     onDismissPreview={() => setIsPreview(false)}
                   />
                 </ResizablePanel>
@@ -188,7 +193,7 @@ export function WorkflowShell({
               </ResizablePanelGroup>
             ) : (
               <Canvas
-                isPreview={isPreview}
+                isPreview={showPreview}
                 onDismissPreview={() => setIsPreview(false)}
               />
             )}
@@ -201,7 +206,10 @@ export function WorkflowShell({
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize="16rem" minSize="14rem" maxSize="36rem">
-        <RightSidebar workflowId={workflowId} />
+        <RightSidebar
+          workflowId={workflowId}
+          onRunStart={() => setIsPreview(false)}
+        />
       </ResizablePanel>
     </ResizablePanelGroup>
   );

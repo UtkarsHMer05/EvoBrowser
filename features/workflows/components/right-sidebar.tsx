@@ -362,7 +362,13 @@ function ActionsMenu({ workflowId }: { workflowId: string }) {
 // Toggles between running the current workflow and stopping the run in flight.
 // While a run is live it becomes a Stop button that cancels that run; otherwise
 // it validates the graph and kicks off a new run.
-function RunButton({ workflowId }: { workflowId: string }) {
+function RunButton({
+  workflowId,
+  onRunStart,
+}: {
+  workflowId: string;
+  onRunStart?: () => void;
+}) {
   const { getNodes, getEdges } = useReactFlow<StepNodeType>();
   const [isPending, startTransition] = useTransition();
   // The run in flight, if any. At most one is live at a time, so its presence
@@ -407,6 +413,9 @@ function RunButton({ workflowId }: { workflowId: string }) {
         startTransition(async () => {
           try {
             await runWorkflowAction({ id: workflowId, graph });
+            // The run was accepted — tell the shell to drop the preview banner
+            // immediately, without waiting for the realtime run to appear.
+            onRunStart?.();
           } catch (error) {
             const message =
               error instanceof Error ? error.message : "Couldn't start the run.";
@@ -425,7 +434,13 @@ function RunButton({ workflowId }: { workflowId: string }) {
 // The sidebar itself — header on top, then the Toolbar / Editor tabs.
 // ---------------------------------------------------------------------------
 
-export function RightSidebar({ workflowId }: { workflowId: string }) {
+export function RightSidebar({
+  workflowId,
+  onRunStart,
+}: {
+  workflowId: string;
+  onRunStart?: () => void;
+}) {
   const [tab, setTab] = useState("toolbar");
 
   // TODO: read the currently selected node from React Flow.
@@ -450,7 +465,7 @@ export function RightSidebar({ workflowId }: { workflowId: string }) {
       <Tabs value={tab} onValueChange={setTab} className="size-full gap-0">
         <div className="flex items-center justify-between border-b border-border p-2">
           <ActionsMenu workflowId={workflowId} />
-          <RunButton workflowId={workflowId} />
+          <RunButton workflowId={workflowId} onRunStart={onRunStart} />
         </div>
         <TabsList className="m-2 w-fit bg-background">
           <TabsTrigger
