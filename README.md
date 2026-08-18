@@ -3,7 +3,7 @@
 # 🌐 Evo Builder (EvoBrowser Engine)
 ### AI-Planned, Real-Time Collaborative Visual Browser Automation
 
-**Describe a goal in plain language, get an editable workflow, run it in a managed cloud browser, watch it live, and replay every run.**
+**Describe a goal in plain language, get an editable workflow, run it in a managed cloud browser, watch the AI act live, and get readable results with a replay of every run.**
 
 [![Next.js](https://img.shields.io/badge/Next.js-16.2.6-black?style=flat-square&logo=next.js)](https://nextjs.org/)
 [![React](https://img.shields.io/badge/React-19.2.4-blue?style=flat-square&logo=react)](https://react.dev/)
@@ -50,9 +50,9 @@ The core loop:
 3. You **review and edit** the generated workflow on the collaborative canvas.
 4. You **explicitly press Run** — nothing executes automatically.
 5. The workflow runs as a **durable Trigger.dev task**, driving a real Browserbase cloud browser.
-6. You **watch the live browser** beside the canvas while node statuses stream in.
+6. You **watch the live browser** beside the canvas — with **on-page highlights showing exactly what the AI is acting on, observing, and extracting** — and browser steps hold until your live view is actually connected.
 7. You can **Stop** at any time; the browser session is always cleaned up.
-8. When the run finishes you get a **measured completion summary** and a **video replay**.
+8. When the run finishes you get a **readable results popup** — what was extracted, a **final screenshot** of the page, the final URL, and measured timing — plus a **video replay**.
 9. The workflow stays an **ordinary editable graph** — edit it and run it again, with a fresh session each time.
 
 **Evo Builder is built on:**
@@ -76,9 +76,12 @@ Prompt
   → AI plan (server-validated, registry-derived)
   → editable workflow preview (on the collaborative canvas)
   → explicit Run (user presses the Run button)
-  → live browser (Browserbase live view beside the canvas)
+  → live browser (Browserbase live view beside the canvas,
+     with on-page highlights of what the AI touches;
+     browser steps wait for the live view to connect)
   → Stop (optional; always cleans up the session)
-  → results / replay (measured summary + HLS recording)
+  → results (readable popup: extractions, final screenshot,
+     final URL, timing) + HLS video replay
   → edit (the graph stays ordinary and editable)
   → rerun (fresh run identity + fresh browser session)
 ```
@@ -90,6 +93,8 @@ Prompt
 - **Stop** cancels only the live run and never touches a completed one.
 - Node status paint always reflects the **newest/live run** — no stale "running" state after a run ends.
 - The planner never leaves a **stale loading state**, never **duplicates generation**, and nothing **executes automatically**.
+- **Automation never races the view**: when a run contains browser steps, the engine holds them until the Live Browser panel reports connected (up to a bounded timeout), so you never miss the action. Runs without browser steps and runs nobody is watching skip the gate.
+- The results popup opens **only when a run reaches a terminal state** — never on the Run click itself — and the "AI Workflow Preview" banner clears the moment a run starts.
 
 ---
 
@@ -145,9 +150,35 @@ Prompt
       <ul>
         <li>Watch the real Browserbase session <strong>beside the canvas</strong> while a run is in flight.</li>
         <li>Live session ID is streamed via Trigger.dev realtime metadata the moment the browser opens.</li>
+        <li><strong>Fast connect</strong>: 1s polling with a visible "connecting" timer until the stream is live.</li>
+        <li><strong>Live-view gate</strong>: browser steps hold until the panel reports connected (bounded timeout), so the run never finishes before you can watch it.</li>
         <li>Debug URL is fetched through a <strong>server-side proxy</strong> that verifies org + run ownership.</li>
         <li>View-only during execution to avoid user/agent input conflicts.</li>
         <li>Clear states: waiting → connecting → live → ended/unavailable.</li>
+      </ul>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🎯 Live Action Highlights</h3>
+      <ul>
+        <li>The engine injects a <strong>real DOM overlay into the driven page</strong>, so highlights appear inside the live video stream itself.</li>
+        <li><strong>Act</strong>: a blue box around the element the AI acted on.</li>
+        <li><strong>Observe</strong>: amber boxes on every matched candidate.</li>
+        <li><strong>Extract</strong>: an "Extracting data… → Extraction complete" status chip.</li>
+        <li>Navigation and agent steps show contextual chips ("Navigated to host", "Agent working…").</li>
+        <li>Cosmetic-only: highlight failures never break a run.</li>
+      </ul>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>📊 Run Results Popup & Replay</h3>
+      <ul>
+        <li>Full-screen, <strong>readable</strong> summary — no raw JSON: extracted items render as headlines with supporting details.</li>
+        <li><strong>Final screenshot</strong> of the page the run ended on, captured before the session closes and served from the database.</li>
+        <li>Measured run duration, completed/failed node counts, final URL, and per-step outputs.</li>
+        <li>Auto-opens <strong>only when the run reaches a terminal state</strong> (completed / failed / canceled) — never mid-run.</li>
+        <li><strong>Run Again</strong> re-runs the graph as it exists on the canvas now; <strong>Watch Replay</strong> jumps to the HLS recording.</li>
+        <li>Server-proxied HLS video replay, gated to the Pro plan.</li>
       </ul>
     </td>
     <td width="50%" valign="top">
@@ -162,13 +193,12 @@ Prompt
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <h3>📊 Completion Dashboard & Replay</h3>
+      <h3>🛡️ Resilience & Reliability</h3>
       <ul>
-        <li>Measured run duration, completed/failed node counts, and final browser URL.</li>
-        <li>Per-step outputs, timing, and error messages.</li>
-        <li>Auto-opens the summary when a run finishes; dismissible back to the logs.</li>
-        <li><strong>Run Again</strong> re-runs the graph as it exists on the canvas now.</li>
-        <li>Server-proxied HLS video replay, gated to the Pro plan.</li>
+        <li><strong>Auth hardening</strong>: server auth reads retry once on transient session misses (short-lived dev tokens, slow compiles) instead of failing the request.</li>
+        <li><strong>AI gateway retries</strong>: planner provider calls retry up to 3× with backoff on 408/429/5xx gateway errors; 401s fail fast.</li>
+        <li><strong>Liveblocks storage gating</strong>: generated graphs are applied only after room storage has loaded — no "mutation before storage loaded" errors.</li>
+        <li>Live-view connection state and run screenshot artifacts are persisted in Postgres, surviving page reloads.</li>
       </ul>
     </td>
     <td width="50%" valign="top">
@@ -253,9 +283,11 @@ flowchart TD
 
     subgraph Server ["Next.js App Server (Server Actions & Routes)"]
         PlanAction["planWorkflowAction"]
-        PlannerService["Planner Service (server-only)"]
+        PlannerService["Planner Service (server-only, retries)"]
         RunAction["runWorkflowAction / cancelWorkflowRunAction"]
         LiveProxy["GET /api/live-view/[sessionId]"]
+        ConnectedRoute["POST /api/live-view/[sessionId]/connected"]
+        ScreenshotRoute["GET /api/runs/[runId]/screenshot"]
         ReplayProxy["GET /api/replays/[sessionId]"]
         DB[(Neon Serverless Postgres)]
         Drizzle["Drizzle ORM"]
@@ -265,6 +297,8 @@ flowchart TD
         Worker["runWorkflowTask"]
         TopoSort["Topological Sort"]
         InterpolateEngine["Interpolation Engine"]
+        LiveGate["Live-View Gate (wait for viewer)"]
+        Highlight["DOM Highlight Overlay (page.evaluate)"]
     end
 
     subgraph BrowserCloud ["Cloud Browser & AI Infrastructure"]
@@ -289,29 +323,38 @@ flowchart TD
 
     Worker --> TopoSort --> InterpolateEngine
     Worker -->|Open Session| BB
+    Worker --> LiveGate
+    LiveGate -->|Poll connected flag| DB
     Worker -->|Execute Actions| SH
     SH -->|Model Calls| LLM
     SH -->|Browser Actions| BB
+    SH -->|Inject Overlay| Highlight
+    Highlight -->|Visible in stream| BB
     Worker -->|Send Emails| ResendAPI
+    Worker -->|Final screenshot artifact| DB
     Worker -.->|Stream Realtime Metadata| Console
     Worker -.->|Live Session ID| LiveView
 
     LiveView -->|Debug URL| LiveProxy
     LiveProxy -->|sessions.debug| BB
+    LiveView -->|iframe loaded| ConnectedRoute
+    ConnectedRoute -->|mark connected| DB
     VideoPlayer -->|HLS Playlist| ReplayProxy
     ReplayProxy -->|Replay Manifest| BB
+    Console -->|Final screenshot| ScreenshotRoute
+    ScreenshotRoute --> DB
 ```
 
 ### Execution Lifecycle Breakdown
-1. **Plan (optional)**: A new workflow can start from a natural-language goal. The server-only planner derives a catalog from the live registry, calls the provider, and returns a schema-validated plan.
-2. **Preview & Edit**: The plan is converted to canvas nodes with a deterministic layered layout and applied through the same Liveblocks mutation manual edits use — it becomes ordinary collaborative state.
+1. **Plan (optional)**: A new workflow can start from a natural-language goal. The server-only planner derives a catalog from the live registry, calls the provider (with retries for transient gateway errors), and returns a schema-validated plan. The plan is applied only after Liveblocks room storage has loaded.
+2. **Preview & Edit**: The plan is converted to canvas nodes with a deterministic layered layout and applied through the same Liveblocks mutation manual edits use — it becomes ordinary collaborative state. A preview banner marks it until the first Run.
 3. **Pre-Flight Validation**: Clicking **Run** validates the graph client- and server-side (`validateGraph`): exactly one Start, connected nodes, no cycles.
 4. **Graph Persistence**: The validated snapshot is stored in Neon Postgres via Drizzle.
 5. **Trigger.dev Scheduling**: The server action triggers `runWorkflowTask`, tagged `workflow:<id>`.
 6. **Topological Sort**: The worker sorts connected nodes into a deterministic order.
-7. **Unified Browser Session**: One Browserbase session is lazily opened on the first browser node and reused by the rest of the run; its ID is streamed to the frontend immediately.
-8. **Step Execution & Live Metadata**: Each node publishes `pending → running → done/failed` with timing and output; the canvas and console render these live, and the live view shows the browser.
-9. **Completion & Replay**: On finish, the run returns its steps, session ID, final URL, and duration. The console shows the summary; the replay proxy serves the HLS recording.
+7. **Unified Browser Session + Live-View Gate**: If the run contains browser steps, one Browserbase session is opened eagerly and its ID is streamed to the frontend immediately. The worker then **holds execution until the Live Browser panel reports connected** (1s polling, 60s bounded timeout) — so the automation never races the view. Runs without browser steps skip the gate.
+8. **Step Execution, Highlights & Live Metadata**: Each node publishes `pending → running → done/failed` with timing and output; the canvas and console render these live. Act/Observe/Extract/Open URL/Agent steps inject a real DOM overlay into the driven page (blue act boxes, amber observe matches, status chips) that is visible inside the live video stream.
+9. **Completion, Screenshot & Replay**: Before the session closes, the worker captures a **final screenshot** of the active page and stores it as a run artifact. The run returns its steps, session ID, final URL, and duration. The console auto-opens the readable results popup only once the run reaches a terminal state; the replay proxy serves the HLS recording.
 
 ---
 
@@ -327,9 +370,11 @@ flowchart TD
 │   │   └── page.tsx                    # Workflows dashboard index
 │   ├── api/
 │   │   ├── live-view/[sessionId]/      # Server proxy for Browserbase live debug view (org+run authorized)
+│   │   │   └── connected/              # POST: marks the live view as connected (live-view gate signal)
 │   │   ├── liveblocks/auth/            # Liveblocks token minting & org-scoped auth
 │   │   ├── liveblocks/users/           # Liveblocks user resolution
-│   │   └── replays/[sessionId]/        # Server proxy for Browserbase HLS replays (Pro-gated)
+│   │   ├── replays/[sessionId]/        # Server proxy for Browserbase HLS replays (Pro-gated)
+│   │   └── runs/[runId]/screenshot/    # Serves the run's final screenshot artifact (org-authorized)
 │   ├── globals.css
 │   └── layout.tsx                      # Root layout with theme & auth providers
 │
@@ -344,8 +389,10 @@ flowchart TD
 │   │   ├── step-node.tsx               # Custom step node with live run status
 │   │   ├── right-sidebar.tsx           # Toolbar (palette) + Inspector (editor) + Run/Stop
 │   │   ├── planner-start.tsx           # AI planner "What do you want to automate?" screen
-│   │   ├── live-browser.tsx            # Browserbase live view panel beside the canvas
-│   │   ├── console-panel.tsx           # Bottom run console + auto-open completion summary
+│   │   ├── live-browser.tsx            # Browserbase live view panel beside the canvas (fast connect + gate signal)
+│   │   ├── console-panel.tsx           # Bottom run console + terminal-state results popup trigger
+│   │   ├── run-results-dialog.tsx      # Readable full-screen run results: extractions, screenshot, replay
+│   │   ├── step-output-view.tsx        # Human-readable per-node output renderer (no raw JSON)
 │   │   ├── logs-panel.tsx              # Run history, step list, replay triggers
 │   │   ├── inspector-panel.tsx         # Step output / replay / completion dashboard
 │   │   ├── session-replay.tsx          # HLS.js video playback
@@ -359,10 +406,11 @@ flowchart TD
 │   ├── lib/
 │   │   ├── planner-types.ts            # Zod WorkflowPlan schema & planner I/O types
 │   │   ├── planner-catalog.ts          # Derives the planner catalog from the node registry
-│   │   ├── planner-service.ts          # Server-only AI planner call + validation
+│   │   ├── planner-service.ts          # Server-only AI planner call + validation + gateway retries
 │   │   ├── convert-plan.ts             # Plan → canvas nodes/edges with layered layout
 │   │   ├── interpolate.ts              # {{ nodeId.path }} substitution engine
 │   │   ├── validate-graph.ts           # Cycle detection & structural validation
+│   │   ├── highlight-element.ts        # DOM overlay injected into the driven page for live-view highlights
 │   │   ├── generate-slug.ts            # Workflow name generator
 │   │   ├── convert-plan.test.ts        # Conversion & editability tests
 │   │   ├── integration.test.ts         # Execution pipeline regression tests
@@ -377,7 +425,8 @@ flowchart TD
 │   └── data.ts                         # Drizzle database queries for workflows
 │
 ├── lib/
-│   ├── db/                             # Neon client + Drizzle schema
+│   ├── db/                             # Neon client + Drizzle schema (incl. live-view connections & run artifacts)
+│   ├── auth.ts                         # Clerk auth helpers with transient-miss retry + org resolution
 │   ├── browserbase.ts                  # Server-side Browserbase SDK client
 │   ├── liveblocks.ts                   # Server-side Liveblocks client
 │   ├── resend.ts                       # Resend API client
@@ -475,7 +524,7 @@ npm test
 | :--- | :--- | :--- |
 | Conversion & editability | `features/workflows/lib/convert-plan.test.ts` | Plan→graph conversion, deterministic layout, manual edits on generated graphs, interpolation, invalid-plan rejection, pre-flight validation |
 | Execution regression | `features/workflows/lib/integration.test.ts` | Topological execution, interpolation end-to-end, post-generation edits, invalid graphs, Stop/cancel cleanup, completion metrics, post-run editability |
-| Lifecycle regression | `features/workflows/lib/lifecycle.test.ts` | The full Milestone-15 loop: manual + AI-generated + edited workflows, Run #1 → Run #2 with fresh sessions, stopped/failed runs, non-browser runs, session hygiene, Liveblocks editing, replay selection, no auto-execution |
+| Lifecycle regression | `features/workflows/lib/lifecycle.test.ts` | The full Phase-1 loop across 11 scenarios: manual + AI-generated + edited workflows, Run #1 → Run #2 with fresh sessions, stopped/failed runs, non-browser runs, session hygiene, Liveblocks editing, replay selection, no auto-execution, and the **live-view gate** (watched runs wait for the view; unwatched runs time out and proceed; non-browser runs skip it; every browser run captures a final screenshot artifact) |
 
 Plus the standard checks:
 
@@ -492,6 +541,8 @@ npm run build       # production build
 ### 🔒 Security Model
 - **Secret isolation**: Browserbase, Resend, Trigger, Liveblocks, and planner keys stay on the server/worker. Client bundles never receive secrets.
 - **Live view proxy**: `/api/live-view/[sessionId]` requires a `runId`, retrieves the run, and verifies the run's org matches the caller, the workflow still exists in that org, and the session ID matches what that run published — so one org can never view another's live session.
+- **Live-view connected signal**: the POST endpoint that marks the view as connected performs the same auth + org + run-ownership checks before writing anything.
+- **Screenshot artifacts**: `/api/runs/[runId]/screenshot` verifies the caller owns the run's org before serving the stored image.
 - **Replay proxy**: `/api/replays/[sessionId]` validates the Clerk session and enforces the Pro plan server-side.
 - **Multi-tenant rooms**: Liveblocks tokens are minted per user and scoped to the caller's Clerk organization.
 - **Planner**: the provider call happens only in a server action; only the validated plan reaches the client.
