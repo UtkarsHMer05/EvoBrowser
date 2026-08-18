@@ -39,39 +39,77 @@ ConcurrentScheduler::ConcurrentScheduler(Dag dag,
                                          std::map<std::string, TaskFn> tasks,
                                          ConcurrentConfig config)
     : dag_(std::move(dag)),
+      config_(config),
+      state_(dag_),
+      pool_(config_.num_workers > 0 ? config_.num_workers : 1),
+      ready_queue_(config_.ready_queue_capacity) {
+  // Adapt plain TaskFn into stop_token-aware tasks that ignore the token.
+  for (auto& [type, fn] : tasks) {
+    tasks_[type] = [fn = std::move(fn)](const NodeSpec& spec,
+                                        std::stop_token) { return fn(spec); };
+  }
+  init();
+}
+
+ConcurrentScheduler::ConcurrentScheduler(
+    Dag dag, std::map<std::string, ConcurrentTaskFn> tasks,
+    ConcurrentConfig config)
+    : dag_(std::move(dag)),
       tasks_(std::move(tasks)),
       config_(config),
       state_(dag_),
       pool_(config_.num_workers > 0 ? config_.num_workers : 1),
-      ready_queue_(config_.ready_queue_capacity) {}
+      ready_queue_(config_.ready_queue_capacity) {
+  init();
+}
+
+void ConcurrentScheduler::init() {
+  cancel_requested_at_ = std::chrono::steady_clock::time_point{};
+  run_terminal_at_ = std::chrono::steady_clock::time_point{};
+}
 
 ConcurrentScheduler::~ConcurrentScheduler() {
   pool_.drain();
 }
 
 void ConcurrentScheduler::cancel() {
-  canceled_.store(true, std::memory_order_relaxed);
+  bool expected = false;
+  if (!canceled_.compare_exchange_strong(expected, true,
+                                         std::memory_order_relaxed)) {
+    return;  // already canceled
+  }
+  cancel_requested_at_ = std::chrono::steady_clock::now();
+
+  // Commit the run to a terminal CANCELED state: non-terminal nodes become
+  // CANCELED in the state machine (covers pending/blocked nodes).
   state_.cancel_run();
-  ready_queue_.close();
-  pool_.stop();
-  // Wake the dispatcher loop if it is waiting.
+
+  // Signal in-flight tasks to abort cooperatively.
+  stop_source_.request_stop();
+
+  // Wake the dispatcher loop if it is waiting on the condition variable.
   dispatch_cv_.notify_all();
 }
 
 void ConcurrentScheduler::wait() {
-  // Synchronous in M10; run() blocks until done.
+  // Synchronous in M10/M11; run() blocks until done.
 }
 
 ConcurrentRunLog ConcurrentScheduler::run() {
   run_start_time_ = std::chrono::steady_clock::now();
   run_started_.store(true, std::memory_order_relaxed);
 
+  // If cancellation was already requested before run(), start canceled.
+  if (canceled_.load(std::memory_order_relaxed)) {
+    state_.cancel_run();
+    finalize_and_collect();
+    run_terminal_at_ = std::chrono::steady_clock::now();
+    run_finished_.store(true, std::memory_order_relaxed);
+    return ConcurrentRunLog{std::move(log_)};
+  }
+
   state_.start_run();
 
-  // Main dispatch loop: pop ready nodes from the queue (fed by the initial
-  // push below and by completing workers) and submit them to the pool. The
-  // loop terminates when no work is in flight and the queue is empty, or when
-  // cancellation is requested.
   {
     std::lock_guard lock(dispatch_mu_);
     dispatch_ready_nodes_locked();
@@ -87,10 +125,11 @@ ConcurrentRunLog ConcurrentScheduler::run() {
     });
 
     if (canceled_.load(std::memory_order_relaxed)) {
+      // Stop dispatching new work immediately. Allow in-flight tasks to finish
+      // (cooperatively observing the stop_token) during drain below.
       break;
     }
 
-    // Pop and dispatch as many ready nodes as are currently available.
     std::optional<NodeId> id_opt;
     while ((id_opt = ready_queue_.try_pop())) {
       const NodeId id = *id_opt;
@@ -103,17 +142,19 @@ ConcurrentRunLog ConcurrentScheduler::run() {
       pool_.submit([this, id, ready_at]() { worker_task(id, ready_at); });
     }
 
-    // Termination: nothing in flight and nothing left to dispatch.
     if (in_flight_.load(std::memory_order_relaxed) == 0 &&
         ready_queue_.size() == 0) {
       break;
     }
   }
 
-  // Wait for any in-flight tasks (graceful drain).
+  // Drain running tasks. Cooperatively-canceling tasks return promptly after
+  // observing the stop_token; oblivious tasks run to completion. No new tasks
+  // are dispatched because the loop above has exited on cancellation.
   pool_.drain();
-  finalize_and_collect();
 
+  finalize_and_collect();
+  run_terminal_at_ = std::chrono::steady_clock::now();
   run_finished_.store(true, std::memory_order_relaxed);
   return ConcurrentRunLog{std::move(log_)};
 }
@@ -125,11 +166,6 @@ void ConcurrentScheduler::dispatch_ready_nodes_locked() {
       break;
     }
   }
-}
-
-void ConcurrentScheduler::dispatch_ready_nodes() {
-  std::lock_guard lock(dispatch_mu_);
-  dispatch_ready_nodes_locked();
 }
 
 void ConcurrentScheduler::worker_task(const NodeId& id,
@@ -144,7 +180,8 @@ void ConcurrentScheduler::worker_task(const NodeId& id,
   if (spec) {
     auto it = tasks_.find(spec->type);
     if (it != tasks_.end()) {
-      result = it->second(*spec);
+      // Pass the run's stop_token so the task can abort cooperatively.
+      result = it->second(*spec, stop_source_.get_token());
     } else {
       result = TaskResult{false, "unregistered task type: " + spec->type};
     }
@@ -170,20 +207,18 @@ void ConcurrentScheduler::worker_task(const NodeId& id,
 }
 
 void ConcurrentScheduler::on_node_complete(const NodeId& id, const TaskResult& result) {
-  std::vector<NodeId> newly_ready = state_.complete_node(id, result);
-
-  if (canceled_.load(std::memory_order_relaxed)) {
-    return;
-  }
-
-  {
-    std::lock_guard lock(dispatch_mu_);
-    for (const auto& nid : newly_ready) {
-      ready_queue_.push(nid);
+  // If cancellation is in progress, do not unlock successors — pending/blocked
+  // nodes are already CANCELED by cancel_run().
+  if (!canceled_.load(std::memory_order_relaxed)) {
+    std::vector<NodeId> newly_ready = state_.complete_node(id, result);
+    {
+      std::lock_guard lock(dispatch_mu_);
+      for (const auto& nid : newly_ready) {
+        ready_queue_.push(nid);
+      }
     }
   }
-  // Decrement in-flight and wake the dispatcher (it may now be done or have
-  // new work to pull).
+
   in_flight_.fetch_sub(1, std::memory_order_relaxed);
   dispatch_cv_.notify_one();
 }

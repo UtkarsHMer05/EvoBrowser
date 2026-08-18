@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <map>
 
+#include "evo/concurrent_scheduler.hpp"
 #include "evo/scheduler.hpp"
 
 namespace evo::bench {
@@ -24,6 +25,15 @@ TaskFn sleep_task(const std::map<NodeId, int>& ms_per_node);
 // timing depends on CPU, not on wall-clock sleep. Per-node iteration count
 // is captured by closure, keyed on NodeId.
 TaskFn burn_task(const std::map<NodeId, unsigned long long>& iters_per_node);
+
+// Cooperative variants (Milestone 11): the returned ConcurrentTaskFn polls the
+// supplied stop_token and aborts promptly when cancellation is requested, so
+// cancellation tests can verify in-flight tasks do not run to completion.
+ConcurrentTaskFn sleep_task_cooperative(
+    const std::map<NodeId, int>& ms_per_node);
+
+ConcurrentTaskFn burn_task_cooperative(
+    const std::map<NodeId, unsigned long long>& iters_per_node);
 
 // Deterministic PRNG (xorshift64*) seeded for reproducible workloads and
 // benchmark seeds. `next(n)` returns a uniform value in [0, n) with rejection

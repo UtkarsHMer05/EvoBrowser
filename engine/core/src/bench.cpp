@@ -39,6 +39,50 @@ TaskFn burn_task(const std::map<NodeId, unsigned long long>& iters_per_node) {
   };
 }
 
+ConcurrentTaskFn sleep_task_cooperative(
+    const std::map<NodeId, int>& ms_per_node) {
+  return [ms = ms_per_node](const NodeSpec& spec,
+                            std::stop_token st) -> TaskResult {
+    auto it = ms.find(spec.id);
+    const int duration = it == ms.end() ? 0 : it->second;
+    if (duration > 0) {
+      // Sleep in small slices so cancellation is observed promptly.
+      constexpr int kSliceMs = 2;
+      int remaining = duration;
+      while (remaining > 0 && !st.stop_requested()) {
+        const int slice = std::min(remaining, kSliceMs);
+        std::this_thread::sleep_for(std::chrono::milliseconds(slice));
+        remaining -= slice;
+      }
+      if (st.stop_requested()) {
+        return TaskResult{false, "canceled during sleep"};
+      }
+    }
+    return TaskResult{true, "slept " + std::to_string(duration) + "ms"};
+  };
+}
+
+ConcurrentTaskFn burn_task_cooperative(
+    const std::map<NodeId, unsigned long long>& iters_per_node) {
+  return [iters = iters_per_node](const NodeSpec& spec,
+                                  std::stop_token st) -> TaskResult {
+    auto it = iters.find(spec.id);
+    const unsigned long long n = it == iters.end() ? 0 : it->second;
+    volatile unsigned long long acc = 0;
+    // Check the stop token every 256 iterations so a cancel is observed
+    // without running the full CPU loop to completion.
+    constexpr unsigned long long kCheckEvery = 256;
+    for (unsigned long long i = 0; i < n; ++i) {
+      acc += i * kMix;
+      if ((i % kCheckEvery) == 0 && st.stop_requested()) {
+        return TaskResult{false, "canceled during burn"};
+      }
+    }
+    (void)acc;
+    return TaskResult{true, "burned " + std::to_string(n) + " iters"};
+  };
+}
+
 Rng::Rng(std::uint64_t seed) {
   state_ = seed != 0 ? seed : 0x9E3779B97F4A7C15ULL;
   for (int i = 0; i < 20; ++i) next();  // warmup to escape seed bias

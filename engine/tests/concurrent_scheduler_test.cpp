@@ -1,10 +1,12 @@
-// Milestone 10 tests for the concurrent dependency-aware DAG scheduler.
+// Milestone 10/11 tests for the concurrent dependency-aware DAG scheduler.
 // Covers: equivalence with the sequential reference scheduler, concurrency
 // overlap (independent branches overlap while dependencies do not), stress on
-// seeded random DAGs, and dependency-correctness invariants under concurrency.
+// seeded random DAGs, dependency-correctness invariants under concurrency, and
+// (Milestone 11) cooperative cancellation and graceful shutdown.
 
 #include <algorithm>
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <map>
 #include <set>
@@ -318,6 +320,187 @@ void test_failure_propagation() {
 
 }  // namespace
 
+// ===========================================================================
+// Milestone 11 — cooperative cancellation and graceful shutdown
+// ===========================================================================
+
+namespace {
+
+void test_cancel_before_start() {
+  std::cout << "cancel before run() starts\n";
+  auto dag = evo::Dag::build(
+      {trigger("start"), action("a"), action("b")},
+      {edge("start", "a"), edge("a", "b")});
+  check(dag.ok(), "dag builds");
+
+  std::map<std::string, evo::TaskFn> tasks = noop_tasks();
+  evo::ConcurrentScheduler sched(std::move(*dag.dag), std::move(tasks),
+                                 {.num_workers = 4});
+  sched.cancel();  // requested before run()
+
+  auto log = sched.run();
+
+  check(sched.is_canceled(), "scheduler reports canceled");
+  check(log.runs.empty(), "no nodes ran (canceled before start)");
+  check(sched.cancel_requested_at() !=
+            std::chrono::steady_clock::time_point{},
+        "cancel timestamp recorded");
+}
+
+void test_cancel_during_many_ready() {
+  std::cout << "cancel during many ready tasks (clean shutdown)\n";
+  // start -> 8 independent w-nodes -> sink. Cancel early. The 8 w-tasks are
+  // dispatched and abort cooperatively; the sink (dependent on all 8) never
+  // becomes ready and therefore never runs.
+  std::vector<evo::NodeSpec> nodes{trigger("start"), action("sink")};
+  std::vector<evo::Edge> edges;
+  for (int i = 0; i < 8; ++i) {
+    std::string id = "w" + std::to_string(i);
+    nodes.push_back(action(id));
+    edges.push_back(edge("start", id));
+    edges.push_back(edge(id, "sink"));
+  }
+  auto dag = evo::Dag::build(std::move(nodes), std::move(edges));
+  check(dag.ok(), "dag builds");
+
+  std::atomic<int> started{0};
+  std::map<std::string, evo::ConcurrentTaskFn> tasks;
+  tasks["start"] = [](const evo::NodeSpec&, std::stop_token) {
+    return evo::TaskResult{true, "started"};
+  };
+  tasks["act"] = [&](const evo::NodeSpec&, std::stop_token st) -> evo::TaskResult {
+    started.fetch_add(1);
+    // Long cooperative task (500ms) so cancellation interrupts it.
+    int remaining = 500;
+    while (remaining > 0 && !st.stop_requested()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      remaining -= 10;
+    }
+    if (st.stop_requested()) return evo::TaskResult{false, "canceled"};
+    return evo::TaskResult{true, "done"};
+  };
+
+  evo::ConcurrentScheduler sched(std::move(*dag.dag), std::move(tasks),
+                                 {.num_workers = 4});
+
+  // Run in background so we can cancel mid-execution.
+  auto fut = std::async(std::launch::async, [&]() { return sched.run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  sched.cancel();
+  auto log = fut.get();  // must return (no hang) — pool drains cleanly
+
+  check(sched.is_canceled(), "scheduler reports canceled");
+  check(sched.cancel_requested_at() !=
+            std::chrono::steady_clock::time_point{},
+        "cancel timestamp recorded");
+  // The sink depends on all 8 w-nodes succeeding; they are canceled, so the
+  // sink stays blocked and is never dispatched.
+  std::map<std::string, evo::ConcurrentNodeRun> by_id;
+  for (const auto& r : log.runs) by_id[r.id.value] = r;
+  check(by_id.find("sink") == by_id.end(),
+        "sink never ran (blocked on canceled dependencies)");
+}
+
+void test_cancel_during_blocked_deps() {
+  std::cout << "cancel while dependencies are blocked\n";
+  auto dag = evo::Dag::build(
+      {trigger("start"), action("a"), action("b"), action("c")},
+      {edge("start", "a"), edge("a", "b"), edge("b", "c")});
+  check(dag.ok(), "dag builds");
+
+  std::map<std::string, evo::ConcurrentTaskFn> tasks;
+  tasks["start"] = [](const evo::NodeSpec&, std::stop_token) {
+    return evo::TaskResult{true, "started"};
+  };
+  tasks["act"] = [](const evo::NodeSpec& spec, std::stop_token st) -> evo::TaskResult {
+    if (spec.id.value == "a") {
+      // Long cooperative task on the only ready branch.
+      int remaining = 500;
+      while (remaining > 0 && !st.stop_requested()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        remaining -= 10;
+      }
+      if (st.stop_requested()) return evo::TaskResult{false, "a canceled"};
+    }
+    return evo::TaskResult{true, "done"};
+  };
+
+  evo::ConcurrentScheduler sched(std::move(*dag.dag), std::move(tasks),
+                                 {.num_workers = 2});
+  auto fut = std::async(std::launch::async, [&]() { return sched.run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  sched.cancel();
+  auto log = fut.get();
+
+  std::map<std::string, evo::ConcurrentNodeRun> by_id;
+  for (const auto& r : log.runs) by_id[r.id.value] = r;
+
+  // b and c were blocked on a; they must never have run to success.
+  check(by_id.find("b") == by_id.end() || !by_id["b"].result.completed,
+        "b not succeeded (was blocked on canceled a)");
+  check(by_id.find("c") == by_id.end() || !by_id["c"].result.completed,
+        "c not succeeded (was blocked on canceled a)");
+  check(sched.is_canceled(), "scheduler is canceled");
+}
+
+void test_cancel_idempotent() {
+  std::cout << "cancel is idempotent\n";
+  auto dag = evo::Dag::build(
+      {trigger("start"), action("a")},
+      {edge("start", "a")});
+  check(dag.ok(), "dag builds");
+
+  std::map<std::string, evo::TaskFn> tasks = noop_tasks();
+  evo::ConcurrentScheduler sched(std::move(*dag.dag), std::move(tasks),
+                                 {.num_workers = 2});
+  sched.cancel();
+  sched.cancel();  // second call must be a no-op (no crash/double state)
+  auto log = sched.run();
+  check(sched.is_canceled(), "still canceled after repeated cancel");
+  check(log.runs.empty(), "nothing ran");
+}
+
+void test_cooperative_abort_early() {
+  std::cout << "cooperative task aborts before full duration\n";
+  auto dag = evo::Dag::build(
+      {trigger("start"), action("long")},
+      {edge("start", "long")});
+  check(dag.ok(), "dag builds");
+
+  // Use the cooperative bench sleep (500ms) so we can detect early abort.
+  std::map<evo::NodeId, int> ms;
+  ms[evo::NodeId{"long"}] = 500;
+  std::map<std::string, evo::ConcurrentTaskFn> tasks;
+  tasks["start"] = [](const evo::NodeSpec&, std::stop_token) {
+    return evo::TaskResult{true, "started"};
+  };
+  tasks["long"] = evo::bench::sleep_task_cooperative(ms);
+
+  evo::ConcurrentScheduler sched(std::move(*dag.dag), std::move(tasks),
+                                 {.num_workers = 2});
+  auto fut = std::async(std::launch::async, [&]() { return sched.run(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  sched.cancel();
+  auto log = fut.get();
+
+  std::map<std::string, evo::ConcurrentNodeRun> by_id;
+  for (const auto& r : log.runs) by_id[r.id.value] = r;
+  // The long task would take 500ms; cancellation at 50ms should make it abort
+  // well before that. Its recorded duration must be < 500ms.
+  if (auto it = by_id.find("long"); it != by_id.end()) {
+    auto dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      it->second.finished_at - it->second.started_at)
+                      .count();
+    check(dur_ms < 500, "cooperative task aborted early (<500ms), got " +
+                            std::to_string(dur_ms) + "ms");
+    check(!it->second.result.completed, "cooperative task reported canceled");
+  } else {
+    check(false, "long task should appear in log");
+  }
+}
+
+}  // namespace
+
 int main() {
   test_linear_equiv();
   test_diamond_equiv();
@@ -326,6 +509,13 @@ int main() {
   test_stress_random_dags();
   test_no_double_execution();
   test_failure_propagation();
+
+  // Milestone 11 — cancellation
+  test_cancel_before_start();
+  test_cancel_during_many_ready();
+  test_cancel_during_blocked_deps();
+  test_cancel_idempotent();
+  test_cooperative_abort_early();
 
   if (failures != 0) {
     std::cout << failures << " concurrent-scheduler check(s) failed\n";
