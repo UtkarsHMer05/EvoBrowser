@@ -15,6 +15,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M08 | Implement a thread-safe blocking ready queue | ✅ DONE | `78f8fc6` |
 | M09 | Implement the bounded std::jthread worker pool | ✅ DONE | `00a3533` |
 | M10 | Build the local concurrent dependency-aware DAG scheduler | ✅ DONE | `0f40920` |
+| M11 | Add cooperative cancellation and graceful shutdown | ✅ DONE | `477497c` |
 
 ---
 
@@ -413,3 +414,71 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `0f40920` — `phase2(m10): implement concurrent dag scheduler`
 - **NEXT:** M11 — cooperative cancellation and graceful shutdown.
+
+---
+
+## M11 — Add cooperative cancellation and graceful shutdown
+
+- **BASE_SHA:** `0f40920`
+- **What changed:**
+  - `engine/core/include/evo/concurrent_scheduler.hpp` —
+    `ConcurrentTaskFn = std::function<TaskResult(const NodeSpec&, std::stop_token)>`
+    overload for stop-aware tasks. Second `ConcurrentScheduler` constructor
+    accepting `std::map<std::string, ConcurrentTaskFn>`. `cancel()` records
+    `cancel_requested_at_` and `run_terminal_at_` (steady_clock), exposes
+    `is_canceled()` / `cancel_requested_at()` / `run_terminal_at()`. Internal
+    `std::stop_source stop_source_` shared with in-flight tasks.
+  - `engine/core/src/concurrent_scheduler.cpp` — `cancel()` is now idempotent
+    (CAS on `canceled_`) and: (1) commits the run to a terminal CANCELED state
+    via `state_.cancel_run()` (covers pending/blocked nodes); (2) requests stop
+    on `stop_source_` so running tasks observe the token; (3) wakes the
+    dispatcher via `dispatch_cv_.notify_all()`. The dispatcher loop breaks on
+    `canceled_` so no new work is issued. `on_node_complete` skips unlocking
+    successors once canceled. `run()` honors a pre-start cancel (returns an
+    empty canceled log). Workers receive `stop_source_.get_token()`.
+  - `engine/core/include/evo/bench.hpp` +
+    `engine/core/src/bench.cpp` — `sleep_task_cooperative` /
+    `burn_task_cooperative` returning `ConcurrentTaskFn`; they poll the
+    `stop_token` in small slices and abort early when cancellation is requested
+    (so cancellation tests verify in-flight tasks do not run to completion).
+  - `engine/tests/concurrent_scheduler_test.cpp` — 5 new cancellation suites:
+    1. cancel before `run()` — no nodes run, empty log, timestamp recorded
+    2. cancel during many ready tasks — sink (dependent on all canceled
+       branches) never runs; `run()` returns cleanly (no hang)
+    3. cancel during blocked dependencies — downstream blocked nodes never
+       succeed; scheduler reports canceled
+    4. cancel is idempotent — repeated `cancel()` is a safe no-op
+    5. cooperative abort — `sleep_task_cooperative(500ms)` aborts well before
+       500ms and reports canceled
+- **Key decisions:**
+  - **Cooperative, not forced:** `cancel()` does NOT call `pool_.stop()` (which
+    would abandon in-flight tasks). Instead it signals the stop_source and lets
+    `pool_.drain()` wait for running tasks — cooperatively-canceling tasks
+    return promptly, oblivious ones run to completion. No task is left
+    mid-mutation. This matches the master prompt's "document cooperative vs
+    forced cleanup semantics" requirement.
+  - **No dispatch after commit:** the dispatcher loop exits the moment
+    `canceled_` is observed, so no node is *started* after cancellation is
+    committed (downstream blocked nodes are CANCELED by the state machine, never
+    dispatched).
+  - **Backward compat:** the original `TaskFn`-taking constructor is retained;
+    it wraps each task into a token-ignoring `ConcurrentTaskFn`, so M10 callers
+    and tests are unchanged.
+- **Concurrency correctness:** `stop_source_`/`canceled_` provide the
+  cross-thread signal; `dispatch_cv_` + `dispatch_mu_` coordinate the
+  dispatcher; `in_flight_` is atomic. Newly-canceled nodes are not re-dispatched
+  because `on_node_complete` short-circuits successor unlocking when canceled.
+  ASan+UBSan (Debug) run is clean.
+- **No-go compliance:** does not claim "immediate cancellation for arbitrary
+  external calls" — only cooperative tasks abort early; oblivious tasks run to
+  completion. Documented explicitly. No perf numbers invented.
+- **Validation:**
+  - `cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release` → ✅
+  - `cmake --build engine/build` → ✅ clean under `-Wall -Wextra -Wpedantic -Werror`
+  - `ctest --test-dir engine/build --output-on-failure` → ✅ 7/7
+  - `ctest --test-dir engine/build-asan --output-on-failure` → ✅ 7/7 (ASan+UBSan)
+  - All 7 targets pass; Phase-1 npm 28/28 intact (run as evidence)
+- **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched).
+- **Human action:** none.
+- **COMMIT:** `477497c` — `phase2(m11): add scheduler cancellation semantics`
+- **NEXT:** M12 — execution resource classes and browser affinity policy.
