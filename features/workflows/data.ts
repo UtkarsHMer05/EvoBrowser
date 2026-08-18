@@ -1,7 +1,11 @@
 import { and, desc, eq } from "drizzle-orm";
 
 import { getDb } from "@/lib/db";
-import { WorkflowGraph, workflows } from "@/lib/db/schema";
+import {
+  WorkflowGraph,
+  liveViewConnections,
+  workflows,
+} from "@/lib/db/schema";
 import { validateGraph } from "@/features/workflows/lib/validate-graph";
 
 export async function saveWorkflowGraph({
@@ -54,4 +58,30 @@ export async function deleteWorkflow(orgId: string, id: string) {
     .returning();
 
   return workflow;
+}
+
+// --- Live-view connection handshake ---------------------------------------
+// The watching browser writes a row when its Live Browser iframe finishes
+// loading; the run task polls for it so browser steps don't race ahead of the
+// view. Rows are keyed by Browserbase session id and cleaned up after the run.
+
+export async function markLiveViewConnected(sessionId: string, runId?: string) {
+  await getDb()
+    .insert(liveViewConnections)
+    .values({ sessionId, runId })
+    .onConflictDoNothing();
+}
+
+export async function isLiveViewConnected(sessionId: string): Promise<boolean> {
+  const [row] = await getDb()
+    .select()
+    .from(liveViewConnections)
+    .where(eq(liveViewConnections.sessionId, sessionId));
+  return Boolean(row);
+}
+
+export async function clearLiveViewConnection(sessionId: string) {
+  await getDb()
+    .delete(liveViewConnections)
+    .where(eq(liveViewConnections.sessionId, sessionId));
 }

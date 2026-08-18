@@ -7,8 +7,28 @@ import {
   interpolate,
   type NodeOutputs,
 } from "@/features/workflows/lib/interpolate";
-import { getWorkflow } from "@/features/workflows/data";
+import {
+  clearLiveViewConnection,
+  getWorkflow,
+  isLiveViewConnected,
+} from "@/features/workflows/data";
 import type { NodeType } from "@/features/workflows/nodes/node-registry";
+
+// Node types that drive the Browserbase session. When a graph contains any of
+// these, the run opens the session up front and waits for the Live Browser view
+// to connect before executing, so the automation never races ahead of the view.
+const BROWSER_NODE_TYPES = new Set<NodeType>([
+  "open-url",
+  "act",
+  "extract",
+  "observe",
+  "agent",
+]);
+
+// How long to wait for the live view to connect before proceeding anyway. A run
+// nobody is watching (tab closed, headless trigger) must not hang forever.
+const LIVE_VIEW_WAIT_MS = 60_000;
+const LIVE_VIEW_POLL_MS = 1_000;
 
 // One entry per node the run will walk, published to the run's metadata under
 // "steps" so the canvas — and the run console below it — can watch each node
@@ -77,10 +97,12 @@ export const runWorkflowTask = task({
 
     publishSteps();
 
-    // The run owns one Browserbase session, opened lazily on the first browser step
-    // and reused by every later one, so the recording spans the whole flow. The
-    // LLM routes through Browserbase's Model Gateway (BROWSERBASE_API_KEY), so no
-    // separate provider key is needed.
+    // The run owns one Browserbase session, reused by every browser step so
+    // the recording spans the whole flow. For graphs with browser steps it is
+    // opened up front (below) so the live view can connect before any step
+    // runs; otherwise it stays closed. The LLM routes through Browserbase's
+    // Model Gateway (BROWSERBASE_API_KEY), so no separate provider key is
+    // needed.
     let stagehand: Stagehand | undefined;
     // The Browserbase session id, captured the moment the session opens so it can
     // be returned in the run's output — a panel reads it there to fetch the replay
@@ -123,6 +145,46 @@ export const runWorkflowTask = task({
       }
       return stagehand;
     };
+
+    // Hold the run until the watching browser's Live Browser iframe has loaded.
+    // The client writes a row keyed by the session id when the iframe connects;
+    // we poll for it. A timeout ensures an unwatched run never hangs forever.
+    const waitForLiveView = async () => {
+      if (!browserbaseSessionId) return;
+      const deadline = Date.now() + LIVE_VIEW_WAIT_MS;
+      logger.log("Waiting for live view to connect…", {
+        sessionId: browserbaseSessionId,
+        timeoutMs: LIVE_VIEW_WAIT_MS,
+      });
+      while (Date.now() < deadline) {
+        try {
+          if (await isLiveViewConnected(browserbaseSessionId)) {
+            logger.log("Live view connected — starting browser steps");
+            return;
+          }
+        } catch (error) {
+          logger.warn("Error polling live-view connection", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        await new Promise((r) => setTimeout(r, LIVE_VIEW_POLL_MS));
+      }
+      logger.warn("Live view did not connect in time — proceeding anyway", {
+        sessionId: browserbaseSessionId,
+      });
+    };
+
+    // If the graph drives a browser, open the session up front and wait for the
+    // live view before executing any step. This keeps the automation in step
+    // with what the user is watching instead of racing ahead of it. Only
+    // connected nodes count — an orphaned browser node won't execute.
+    const hasBrowserStep = order.some((id) =>
+      BROWSER_NODE_TYPES.has(byId.get(id)!.data.type),
+    );
+    if (hasBrowserStep) {
+      await getStagehand();
+      await waitForLiveView();
+    }
 
     // Each node's result, keyed by its id, so later nodes can pull from it.
     // Because we walk in dependency order, every id a node references is already
@@ -212,6 +274,16 @@ export const runWorkflowTask = task({
     } finally {
       // Ensure the Browserbase session is always closed on success, failure, or cancellation
       await closeStagehand();
+      // Drop the live-view handshake row so it doesn't linger after the run.
+      if (browserbaseSessionId) {
+        try {
+          await clearLiveViewConnection(browserbaseSessionId);
+        } catch (error) {
+          logger.warn("Error clearing live-view connection row", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     }
   },
 });

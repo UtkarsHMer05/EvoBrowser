@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Globe, Loader2, MonitorOff, WifiOff } from "lucide-react";
 import { useLatestRunSteps } from "@/features/workflows/components/workflow-runs-provider";
 
@@ -85,6 +85,20 @@ export function LiveBrowser({ sessionId, runId, isRunLive }: LiveBrowserProps) {
       return null;
     }
   }, []);
+
+  // Tell the run task the live view is up, so it can start its browser steps.
+  // Fires once per session when the iframe document finishes loading.
+  const notifiedRef = useRef<string | null>(null);
+  const handleIframeLoad = useCallback(() => {
+    if (!sessionId || !runId || notifiedRef.current === sessionId) return;
+    notifiedRef.current = sessionId;
+    fetch(
+      `/api/live-view/${sessionId}/connected?runId=${encodeURIComponent(runId)}`,
+      { method: "POST" },
+    ).catch(() => {
+      // The task has a timeout fallback, so a failed signal isn't fatal.
+    });
+  }, [sessionId, runId]);
 
   useEffect(() => {
     // Only try connecting when we have a session and its run, no URL yet, and
@@ -171,6 +185,7 @@ export function LiveBrowser({ sessionId, runId, isRunLive }: LiveBrowserProps) {
           // Pointer events disabled for Phase 1 view-only mode to prevent
           // user input from conflicting with the agent&apos;s actions.
           style={{ pointerEvents: "none" }}
+          onLoad={handleIframeLoad}
         />
       )}
 

@@ -18,3 +18,15 @@ export const workflows = pgTable("workflows", {
 });
 
 export type Workflow = typeof workflows.$inferSelect;
+
+// A handshake between the watching browser and the run task. When the Live
+// Browser iframe finishes loading, the client writes a row keyed by the
+// Browserbase session id; the run task polls for it and holds its first browser
+// step until it appears, so the automation never races ahead of the view.
+export const liveViewConnections = pgTable("live_view_connections", {
+  sessionId: text("session_id").primaryKey(),
+  runId: text("run_id"),
+  connectedAt: timestamp("connected_at").defaultNow().notNull(),
+});
+
+export type LiveViewConnection = typeof liveViewConnections.$inferSelect;

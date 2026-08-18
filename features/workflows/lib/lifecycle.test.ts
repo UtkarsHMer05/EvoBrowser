@@ -38,6 +38,12 @@ interface SimRun {
     browserbaseSessionId?: string;
     durationMs?: number;
     finalUrl?: string;
+    // Outcome of the "wait for the Live Browser view" gate (Milestone 17).
+    liveViewGate?: {
+      waited: boolean;
+      connectedBeforeSteps: boolean;
+      waitTicks: number;
+    };
   };
   // Final output, present only for COMPLETED runs (a thrown or canceled run
   // returns no output — exactly like the real Trigger.dev task).
@@ -103,6 +109,14 @@ function nodePaint(nodeId: string): string {
 interface SimOptions {
   failNodeType?: string; // executor of this node type throws
   cancelAfterSteps?: number; // cancel once this many steps finished
+  // Mirrors the run task's "wait for the Live Browser view before executing"
+  // gate. Defaults to an immediately-connecteding view (the happy path where a
+  // user is watching). Set connects:false to exercise the timeout fallback.
+  liveView?: {
+    connects: boolean;
+    connectAfterTicks?: number;
+    timeoutTicks?: number;
+  };
 }
 
 async function executeWorkflow(graph: Graph, options: SimOptions = {}): Promise<SimRun> {
@@ -151,6 +165,33 @@ async function executeWorkflow(graph: Graph, options: SimOptions = {}): Promise<
   const browserNodes = new Set(["open-url", "act", "extract", "observe", "agent"]);
   const outputs: NodeOutputs = {};
   let finishedSteps = 0;
+
+  // --- Live-view gate (mirrors run-workflow.ts) ----------------------------
+  // If any connected node drives a browser, the task opens the session up
+  // front and holds the first step until the Live Browser view connects (or a
+  // timeout elapses for unwatched runs). Track the outcome so scenarios can
+  // assert the automation never raced ahead of the view.
+  const hasBrowserStep = order.some((id) => browserNodes.has(byId.get(id)!.data.type));
+  let liveViewWaitTicks = 0;
+  let liveViewConnectedBeforeSteps = false;
+  if (hasBrowserStep) {
+    getStagehand(); // eager open so the session id is published before any step
+    const lv = options.liveView ?? { connects: true };
+    const timeoutTicks = lv.timeoutTicks ?? 60;
+    while (liveViewWaitTicks < timeoutTicks) {
+      if (lv.connects && liveViewWaitTicks >= (lv.connectAfterTicks ?? 0)) {
+        liveViewConnectedBeforeSteps = true;
+        break;
+      }
+      liveViewWaitTicks++;
+    }
+    // If the view never connected, the task proceeds after the timeout anyway.
+    run.metadata.liveViewGate = {
+      waited: true,
+      connectedBeforeSteps: liveViewConnectedBeforeSteps,
+      waitTicks: liveViewWaitTicks,
+    };
+  }
 
   try {
     for (let i = 0; i < order.length; i++) {
@@ -534,6 +575,63 @@ async function runLifecycleSuite() {
   console.log("  ✓ Replay always resolves the selected historical run's own recording.");
 
   // -------------------------------------------------------------------------
+  // SCENARIO 11: Live-view gate — browser steps wait for the Live Browser view
+  // -------------------------------------------------------------------------
+  console.log("\nSCENARIO 11: Live-view gate (automation never races the view)...");
+  // A watched run: the view connects after a short delay; the task must hold
+  // its first browser step until then, then proceed.
+  const watchedRun = await executeWorkflow(manualGraph, {
+    liveView: { connects: true, connectAfterTicks: 3 },
+  });
+  assert.equal(watchedRun.status, "COMPLETED");
+  const watchedGate = watchedRun.metadata.liveViewGate;
+  assert.ok(watchedGate?.waited, "Browser run waited for the live view");
+  assert.equal(
+    watchedGate?.connectedBeforeSteps,
+    true,
+    "Live view connected before any browser step ran",
+  );
+  assert.equal(watchedGate?.waitTicks, 3, "Held exactly until the view connected");
+
+  // An unwatched run: the view never connects; the task must NOT hang — it
+  // proceeds after the timeout and still completes.
+  const unwatchedRun = await executeWorkflow(manualGraph, {
+    liveView: { connects: false, timeoutTicks: 5 },
+  });
+  assert.equal(unwatchedRun.status, "COMPLETED", "Unwatched run does not hang");
+  const unwatchedGate = unwatchedRun.metadata.liveViewGate;
+  assert.equal(
+    unwatchedGate?.connectedBeforeSteps,
+    false,
+    "No connection, but the timeout fallback let it proceed",
+  );
+  assert.equal(unwatchedGate?.waitTicks, 5, "Waited the full timeout before proceeding");
+
+  // A non-browser run (email only) must NOT open a session or wait at all.
+  const gateEmailGraph: Graph = {
+    nodes: [
+      { id: "start", type: "step", position: { x: 0, y: 0 }, data: { type: "start", kind: "trigger", title: "Start", values: {} } },
+      { id: "mail_1", type: "step", position: { x: 0, y: 180 }, data: { type: "send-email", kind: "action", title: "Send Email 1", values: { to: "a@b.com", subject: "s", body: "b" } } },
+    ],
+    edges: [{ id: "e1", source: "start", target: "mail_1" }],
+  };
+  const gateEmailRun = await executeWorkflow(gateEmailGraph, {
+    liveView: { connects: false, timeoutTicks: 5 },
+  });
+  assert.equal(gateEmailRun.status, "COMPLETED");
+  assert.equal(
+    gateEmailRun.metadata.liveViewGate,
+    undefined,
+    "Non-browser run skips the live-view gate entirely",
+  );
+  assert.equal(
+    gateEmailRun.metadata.browserbaseSessionId,
+    undefined,
+    "Non-browser run opens no session",
+  );
+  console.log("  ✓ Watched runs wait for the view; unwatched runs time out and proceed; non-browser runs skip the gate.");
+
+  // -------------------------------------------------------------------------
   // FINAL: no automatic execution anywhere in the lifecycle
   // -------------------------------------------------------------------------
   const totalRuns = runs.length;
@@ -543,7 +641,7 @@ async function runLifecycleSuite() {
   assert.equal(guard.generationCalls, 1, "AI generation happened only on explicit request");
 
   console.log("\n======================================================");
-  console.log(`ALL PHASE-1 LIFECYCLE REGRESSION TESTS PASSED! (10/10, ${totalRuns} runs simulated)`);
+  console.log(`ALL PHASE-1 LIFECYCLE REGRESSION TESTS PASSED! (11/11, ${totalRuns} runs simulated)`);
   console.log("======================================================\n");
 }
 
