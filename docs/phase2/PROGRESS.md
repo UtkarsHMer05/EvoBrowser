@@ -11,7 +11,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M04 | Bootstrap the reproducible C++20 toolchain | ✅ DONE | `e3da142` |
 | M05 | Implement the canonical C++ DAG model | ✅ DONE | `19722f1` |
 | M06 | Implement a deterministic sequential reference scheduler | ✅ DONE | `80ef0a6` |
-| M07 | Implement scheduler state machines and dependency counters | ✅ DONE | `80ef0a6` |
+| M07 | Implement scheduler state machines and dependency counters | ✅ DONE | `0c23c78` |
 
 ---
 
@@ -233,4 +233,4 @@ Commit subjects follow `phase2(mNN): <description>`.
   - ASan+UBSan debug build → ✅ 4/4 all pass, no sanitizer errors
 - **Phase-1 regression:** N/A (no TypeScript/app code touched).
 - **Human action:** none.
-- **COMMIT:** — `phase2(m07): add scheduler state machine and dependency counters`
+- **COMMIT:** `0c23c78` — `phase2(m07): add scheduler state machine and dependency counters`
