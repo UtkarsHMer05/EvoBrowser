@@ -10,7 +10,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M03 | Phase-2 architecture, invariants, and progress scaffold | ✅ DONE | `a3e3210` |
 | M04 | Bootstrap the reproducible C++20 toolchain | ✅ DONE | `e3da142` |
 | M05 | Implement the canonical C++ DAG model | ✅ DONE | `19722f1` |
-| M06 | Implement a deterministic sequential reference scheduler | ✅ DONE | *(recorded below)* |
+| M06 | Implement a deterministic sequential reference scheduler | ✅ DONE | `80ef0a6` |
 
 ---
 
@@ -185,4 +185,4 @@ Commit subjects follow `phase2(mNN): <description>`.
   - `./engine/build/evo_scheduler_test` → "all scheduler tests passed"
 - **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched — N/A by policy; run for evidence).
 - **Human action:** none.
-- **COMMIT:** *(phase2 branch, recorded below after commit)*
+  - **COMMIT:** `80ef0a6` — `phase2(m06): add sequential scheduler reference`
