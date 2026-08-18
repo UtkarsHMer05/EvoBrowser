@@ -14,7 +14,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M07 | Implement scheduler state machines and dependency counters | ✅ DONE | `0c23c78` |
 | M08 | Implement a thread-safe blocking ready queue | ✅ DONE | `78f8fc6` |
 | M09 | Implement the bounded std::jthread worker pool | ✅ DONE | `00a3533` |
-| M10 | Build the local concurrent dependency-aware DAG scheduler | ✅ DONE | `4eb2f1f` |
+| M10 | Build the local concurrent dependency-aware DAG scheduler | ✅ DONE | `0f40920` |
 
 ---
 
@@ -411,5 +411,5 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched; run
   for evidence per M10 checklist).
 - **Human action:** none.
-- **COMMIT:** `TBD` — `phase2(m10): implement concurrent dag scheduler`
+- **COMMIT:** `0f40920` — `phase2(m10): implement concurrent dag scheduler`
 - **NEXT:** M11 — cooperative cancellation and graceful shutdown.
