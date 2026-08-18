@@ -11,6 +11,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M04 | Bootstrap the reproducible C++20 toolchain | ✅ DONE | `e3da142` |
 | M05 | Implement the canonical C++ DAG model | ✅ DONE | `19722f1` |
 | M06 | Implement a deterministic sequential reference scheduler | ✅ DONE | `80ef0a6` |
+| M07 | Implement scheduler state machines and dependency counters | ✅ DONE | `80ef0a6` |
 
 ---
 
@@ -186,3 +187,50 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched — N/A by policy; run for evidence).
 - **Human action:** none.
   - **COMMIT:** `80ef0a6` — `phase2(m06): add sequential scheduler reference`
+
+---
+
+## M07 — Implement scheduler state machines and dependency counters
+
+- **BASE_SHA:** `80ef0a6`
+- **What changed:**
+  - `engine/core/include/evo/state_machine.hpp` — run-level state (`RunState`:
+    QUEUED/RUNNING/SUCCEEDED/FAILED/CANCELED), node-level state
+    (`NodeState`: BLOCKED/READY/DISPATCHED/RUNNING/SUCCEEDED/RETRY_WAIT/FAILED/
+    DEAD_LETTERED/CANCELED), `NodeStatus`, and `SchedulerState` class. Implements
+    the ARCHITECTURE.md §6.1–§6.5 state machines: root nodes (0 predecessors)
+    become READY on `start_run`; dependency counters decrement on each
+    predecessor SUCCESS; fan-in nodes become READY only when all predecessors
+    succeed; duplicate completion messages are idempotent via a `completed_` set;
+    failure propagation transitively CANCELs all reachable non-terminal successors.
+  - `engine/core/src/state_machine.cpp` — state transitions, dependency counter
+    management, idempotent completion, transitive failure cancellation, run-level
+    cancel.
+  - `engine/tests/state_test.cpp` — 10 suites: initial state, diamond fan-in
+    dependency, idempotent completion, transitive failure propagation, late-
+    failure does-not-clobber-success, illegal transitions rejected, cancel_run,
+    wide fan-out/fan-in (8→sink), all-succeeded terminal, failure-via-
+    complete_node path.
+  - `engine/CMakeLists.txt` — added `state_machine.cpp` to `evo_scheduler_core`,
+    added `evo_state_test` CTest target.
+- **Key decisions:**
+  - `SchedulerState` owns the immutable `Dag` by value; per-node state/deps are
+    private. Single-threaded in M07; M10 adds synchronization.
+  - Completion idempotency is per-node: once a node is in the `completed_` set,
+    subsequent completion/failure messages are no-ops (preserves the fan-in
+    invariant from §6.5: "completion events are idempotent per (predecessor,
+    successor) pair").
+  - Failure policy: FAILED propagates CANCELED transitively to all reachable
+    non-terminal successors (never silently runs downstream work on a failed
+    dependency).
+- **Concurrency correctness:** single-threaded; no data races by construction.
+  Thread-safe wrapper added in M10.
+- **Validation:**
+  - `cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release` → ✅
+  - `cmake --build engine/build` → ✅ clean under `-Wall -Wextra -Wpedantic -Werror`
+  - `ctest --test-dir engine/build --output-on-failure` → ✅ 4/4 (toolchain, dag, scheduler, state)
+  - `./engine/build/evo_state_test` → "all state-machine tests passed"
+  - ASan+UBSan debug build → ✅ 4/4 all pass, no sanitizer errors
+- **Phase-1 regression:** N/A (no TypeScript/app code touched).
+- **Human action:** none.
+- **COMMIT:** — `phase2(m07): add scheduler state machine and dependency counters`

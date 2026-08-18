@@ -40,6 +40,7 @@ add_library(evo_scheduler_core STATIC
   core/src/dag.cpp
   core/src/scheduler.cpp
   core/src/bench.cpp
+  core/src/state_machine.cpp
 )
 target_include_directories(evo_scheduler_core PUBLIC core/include)
 target_compile_features(evo_scheduler_core PUBLIC cxx_std_20)
@@ -82,3 +83,10 @@ target_compile_options(evo_scheduler_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME scheduler COMMAND evo_scheduler_test)
+
+add_executable(evo_state_test tests/state_test.cpp)
+target_link_libraries(evo_state_test PRIVATE evo_scheduler_core)
+target_compile_options(evo_state_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME state COMMAND evo_state_test)
