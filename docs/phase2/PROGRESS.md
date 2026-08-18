@@ -8,7 +8,8 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M01 | Reconcile the real Phase-1 source and archive | ✅ DONE | `39fa8e1` |
 | M02 | Certify and freeze the Phase-1 behavioral baseline | ✅ DONE | `0ef8ea8` |
 | M03 | Phase-2 architecture, invariants, and progress scaffold | ✅ DONE | `a3e3210` |
-| M04 | Bootstrap the reproducible C++20 toolchain | ✅ DONE | *(recorded below)* |
+| M04 | Bootstrap the reproducible C++20 toolchain | ✅ DONE | `e3da142` |
+| M05 | Implement the canonical C++ DAG model | ✅ DONE | *(recorded below)* |
 
 ---
 
@@ -109,4 +110,28 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Phase-1 regression:** N/A (no TypeScript/app code touched; `.gitignore`
   change is additive ignores only).
 - **Human action:** none.
-- **COMMIT:** *(phase2 branch, recorded in git log)*
+- **COMMIT:** `e3da142` — `phase2(m04): bootstrap c++20 engine toolchain`
+
+---
+
+## M05 — Implement the canonical C++ DAG model
+
+- **BASE_SHA:** `e3da142`
+- **What changed:**
+  - `engine/core/include/evo/json.hpp` + `core/src/json.cpp` — minimal recursive-descent JSON parser/serializer (no external dep) for the canonical DAG shape only (`evo::json::Value`: Null/Bool/Number/String/Array/Object, deterministic object ordering via `std::map`).
+  - `engine/core/include/evo/dag.hpp` — strongly typed `NodeId` (wraps a string), `NodeKind` {Trigger,Action}, `NodeSpec`, `Edge`, `GraphError` with stable codes, immutable `Dag` class exposing node/edge counts, adjacency (sorted for determinism), Kahn topo order with lexicographic tie-break, reachability, and `execution_problems()` (scheduler contract). `BuildResult` holding `errors` + `std::optional<Dag>` is defined *after* `Dag` so the optional's type is complete (this was the compile break from the prior session — a forward declaration alone is insufficient).
+  - `engine/core/src/dag.cpp` — validates duplicate node ids, missing edge endpoints, self-loops, duplicate edges, cycles (Kahn residual), and builds deterministic adjacency/topo order; `to_json/from_json/from_json_string` for canonical round-trips.
+  - `engine/tests/dag_test.cpp` — 13 suites: linear, diamond, wide fan-out/fan-in (1→32→1), disconnected, duplicate id, empty id, missing endpoint, self-loop + duplicate edge, cycle, canonical JSON round-trip, malformed payloads, and the execution-contract checks.
+  - `engine/CMakeLists.txt` — registered `json.cpp`/`dag.cpp` in `evo_scheduler_core` and added the `evo_dag_test` CTest target.
+- **Bug fixed in this session:** `BuildResult` was forward-declared but never defined (build failed because `std::optional<Dag>` needs a complete type); fixed by defining the struct after `class Dag`. Also fixed a test-side string-literal concat (`"w" + ...` → `std::string("w") + ...`).
+- **Phase-1 validateGraph vs engine DAG difference (Milestone 05 item 7):** Phase-1 `features/workflows/lib/validate-graph.ts` checks exactly-one-trigger, ≥1 edge (else "Connect your nodes"), and acyclicity via toposort — and *silently skips edge-less/disconnected nodes at run time* (only connected nodes are walked). The engine DAG is stricter: it also rejects empty ids, duplicate ids, missing edge endpoints, self-loops, duplicate edges, and reports any node not reachable from the single trigger as an `execution_problem` (disconnection is a *structural* build success but an *execution* failure). This preserves Phase-1 behavior (the TS validator is untouched) while giving the Evo engine a deterministic contract to depend on.
+- **Thread-safety:** an immutable built `Dag` is shareable by const reference across threads; all mutation happens in `Dag::build` returning a new instance. Clock discipline: no timestamps emitted here (reserved for M13).
+- **Validation:**
+  - `cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release` → ✅
+  - `cmake --build engine/build` → ✅ clean under `-Wall -Wextra -Wpedantic -Werror`
+  - `ctest --test-dir engine/build --output-on-failure` → ✅ 2/2 (toolchain, dag)
+  - `./engine/build/evo-smoke` → `evo-engine v0.1.0 (Release) commit=e3da142 compiler=clang 21.0.0 cxx=202002 jthread=yes`
+  - `./engine/build/evo_dag_test` → "all DAG model tests passed"
+- **Phase-1 regression:** `npm test` → ✅ 28/28 (run as extra evidence; no TS/app code was touched, so N/A by policy — included because M05's checklist lists it).
+- **Human action:** none.
+- **COMMIT:** `7293b4c` — `phase2(m05): add canonical c++ dag model`

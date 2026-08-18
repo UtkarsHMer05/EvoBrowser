@@ -36,6 +36,8 @@ endif()
 # ---------------------------------------------------------------------------
 add_library(evo_scheduler_core STATIC
   core/src/version.cpp
+  core/src/json.cpp
+  core/src/dag.cpp
 )
 target_include_directories(evo_scheduler_core PUBLIC core/include)
 target_compile_features(evo_scheduler_core PUBLIC cxx_std_20)
@@ -64,3 +66,10 @@ target_compile_options(evo_toolchain_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME toolchain COMMAND evo_toolchain_test)
+
+add_executable(evo_dag_test tests/dag_test.cpp)
+target_link_libraries(evo_dag_test PRIVATE evo_scheduler_core)
+target_compile_options(evo_dag_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME dag COMMAND evo_dag_test)
