@@ -16,6 +16,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M09 | Implement the bounded std::jthread worker pool | ✅ DONE | `00a3533` |
 | M10 | Build the local concurrent dependency-aware DAG scheduler | ✅ DONE | `0f40920` |
 | M11 | Add cooperative cancellation and graceful shutdown | ✅ DONE | `477497c` |
+| M12 | Add execution resource classes and browser affinity policy | ✅ DONE | `cc73f30` |
 
 ---
 
@@ -482,3 +483,64 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `477497c` — `phase2(m11): add scheduler cancellation semantics`
 - **NEXT:** M12 — execution resource classes and browser affinity policy.
+---
+
+## M12 — Add execution resource classes and browser affinity policy
+
+- **BASE_SHA:** `477497c`
+- **What changed:**
+  - `engine/core/include/evo/execution_policy.hpp` +
+    `engine/core/src/execution_policy.cpp` — `ResourceClass` (Internal/Browser/
+    ExternalIo), `ResourcePolicy` (class + affinity_key + capacity), and
+    `ExecutionPolicy` that classifies node types **without changing planner
+    behavior**: `start` → Internal; `open-url`/`act`/`extract`/`observe`/
+    `agent` → Browser keyed by run id (capacity 1); `send-email` → ExternalIo
+    (unbounded); unknown → Internal fallback. Override hooks (`set_node_affinity`,
+    `set_type_affinity`, `set_capacity`) for tests only.
+  - `engine/core/include/evo/concurrent_scheduler.hpp` +
+    `engine/core/src/concurrent_scheduler.cpp` — scheduler owns an
+    `ExecutionPolicy`; dispatch is now gated on resource capacity **independent
+    of dependency readiness**. `resource_usage_` (affinity_key → in-use) and
+    `resource_blocked_` (ready-but-waiting) are guarded by `dispatch_mu_`;
+    `drain_resource_blocked()` re-attempts deferred nodes when a slot frees;
+    `on_node_complete` releases the held resource before unlocking successors.
+    `ConcurrentConfig::run_id` seeds the default browser-affinity key.
+  - `engine/tests/affinity_scheduler_test.cpp` — 5 suites: default policy
+    classification; two ready browser nodes sharing an affinity key never
+    overlap; independent affinity keys overlap when capacity permits; non-browser
+    work overlaps browser waiting; wide fan of browser nodes all serialize.
+  - `engine/tests/concurrent_scheduler_test.cpp` — the M10 overlap suites now use
+    `bench:sleep` (non-browser, parallel) for the independent branches; `act`
+    correctly stays a capacity-1 browser node (so its branches serialize).
+  - `engine/CMakeLists.txt` — added `execution_policy.cpp` to the core lib and the
+    `evo_affinity_scheduler_test` CTest target.
+- **Key decisions:**
+  - **Capacity-1 browser affinity = one session per run.** All Phase-1 browser
+    nodes in one run share `run_id` as the affinity key, so they serialize and
+    stay on one browser session/worker — preserving the Phase-1 one-session
+    invariant. Independent affinity keys (e.g. two runs) parallelize.
+  - **Resource gate is a second gate after dependency readiness.** A node is
+    dispatched only when (a) deps satisfied AND (b) its resource has spare
+    capacity. Deferred nodes are retried, never lost. This matches ARCHITECTURE.md
+    §6.4 ("Resource availability controls dispatch, not dependency correctness").
+  - **M10 overlap semantics preserved, made correct.** With `act` now correctly
+    browser-classified, the overlap tests moved to `bench:sleep` (synthetic,
+    unbounded) — so "independent branches overlap" is asserted on non-browser
+    work, which is exactly where Phase 2 gains concurrency today.
+- **Concurrency correctness:** `resource_usage_`/`resource_blocked_` only mutate
+  under `dispatch_mu_`; `drain_resource_blocked` is called both in the dispatch
+  loop and from `on_node_complete` (worker thread) under the same lock. No
+  double-acquire, no lost wakeup (dispatcher re-checked via `dispatch_cv_`).
+  ASan+UBSan (Debug) run is clean.
+- **No-go compliance:** does not create multiple Browserbase sessions per
+  Phase-1 workflow (capacity-1 enforces single session); does not modify planner
+  output schema; no perf numbers invented.
+- **Validation:**
+  - Release build → ✅ clean under `-Wall -Wextra -Wpedantic -Werror`
+  - `ctest --test-dir engine/build` → ✅ 8/8 (added affinity_scheduler)
+  - `ctest --test-dir engine/build-asan` → ✅ 8/8 (ASan+UBSan)
+  - `npm test` (Phase-1) → ✅ 28/28 (run as evidence; no TS/app code touched)
+- **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched).
+- **Human action:** none.
+- **COMMIT:** `cc73f30` — `phase2(m12): add resource-aware scheduling and browser affinity`
+- **NEXT:** M13 — scheduler clock discipline and run/node timestamp instrumentation.
