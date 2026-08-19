@@ -36,7 +36,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M24 | Reuse existing interpolation and node executors inside distributed workers | ✅ DONE | `e581e67` |
 | M25 | Implement distributed browser session ownership and live-view parity | ✅ DONE | `3828448` |
 | M26 | Persist results and unlock dependencies through the distributed loop | ✅ DONE | `2db7bb9` |
-| M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `<M27_SHA>` |
+| M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `799a4f6` |
 
 ---
 
@@ -1468,5 +1468,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - Evo synthetic submission integration (real gRPC ↔ real C++ server) → ✅
   - Legacy adapter regression → ✅ (exact pre-M27 trigger call shape)
 - **Human action:** none.
-- **COMMIT:** `<M27_SHA>` — `phase2(m27): add dual execution engine abstraction`
+- **COMMIT:** `799a4f6` — `phase2(m27): add dual execution engine abstraction`
 - **NEXT:** M28 — Build engine-neutral Evo run events and realtime frontend transport.
