@@ -35,7 +35,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M23 | Create the TypeScript distributed worker service | ✅ DONE | `dd01b19` |
 | M24 | Reuse existing interpolation and node executors inside distributed workers | ✅ DONE | `e581e67` |
 | M25 | Implement distributed browser session ownership and live-view parity | ✅ DONE | `3828448` |
-| M26 | Persist results and unlock dependencies through the distributed loop | ✅ DONE | `<M26_SHA>` |
+| M26 | Persist results and unlock dependencies through the distributed loop | ✅ DONE | `2db7bb9` |
 
 ---
 
@@ -1380,5 +1380,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - Distributed E2E (real Redis + 2 TS workers + Postgres) → ✅ all audit
     assertions; duplicate storm contained.
 - **Human action:** none.
-- **COMMIT:** `<M26_SHA>` — `phase2(m26): close distributed scheduling result loop`
+- **COMMIT:** `2db7bb9` — `phase2(m26): close distributed scheduling result loop`
 - **NEXT:** M27 — Introduce the Next.js execution-engine abstraction and feature flag.
