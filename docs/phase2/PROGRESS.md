@@ -38,7 +38,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M26 | Persist results and unlock dependencies through the distributed loop | ✅ DONE | `2db7bb9` |
 | M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `799a4f6` |
 | M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `c3723bc` |
-| M29 | Achieve UI parity for Evo runs | ✅ DONE | `<M29_SHA>` |
+| M29 | Achieve UI parity for Evo runs | ✅ DONE | `a24dd9e` |
 
 ---
 
@@ -1657,5 +1657,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   Live E2E with real keys deferred to the final campaign.
 - **Human action:** none (local PG migration only; Neon migration still
   requires explicit approval).
-- **COMMIT:** `<M29_SHA>` — `phase2(m29): reach evo engine ui parity`
+- **COMMIT:** `a24dd9e` — `phase2(m29): reach evo engine ui parity`
 - **NEXT:** M30 — Implement end-to-end cancellation across app, scheduler, queue, worker, and browser.
