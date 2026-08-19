@@ -29,7 +29,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M17 | Implement the C++ scheduler service over gRPC | ✅ DONE | `7cf04f6` |
 | M18 | Create isolated local Redis + PostgreSQL infrastructure | ✅ DONE | `813da0a` |
 | M19 | Add additive Phase-2 Drizzle schema and migrations | ✅ DONE | `f63d9b4` |
-| M20 | Implement immutable workflow versions and optimistic concurrency | ✅ DONE | `<M20_SHA>` |
+| M20 | Implement immutable workflow versions and optimistic concurrency | ✅ DONE | `0ea1c1c` |
 
 ---
 
@@ -978,5 +978,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - `npm run typecheck` → ✅ exit 0
   - `npm run lint` → ✅ exit 0
 - **Human action:** none (local Postgres only).
-- **COMMIT:** `<M20_SHA>` — `phase2(m20): immutable workflow versions + optimistic concurrency`
+- **COMMIT:** `0ea1c1c` — `phase2(m20): immutable workflow versions + optimistic concurrency`
 - **NEXT:** M21 — Implement Redis Streams transport in the C++ scheduler.
