@@ -19,6 +19,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M12 | Add execution resource classes and browser affinity policy | ✅ DONE | `cc73f30` |
 | M13 | Instrument the scheduler core with evidence-grade timestamps and counters | ✅ DONE | `916ffc9` |
 | M14 | Harden C++ correctness with sanitizers and concurrency stress | ✅ DONE | `b361a4e` |
+| M15 | Create the first local benchmark corpus and sequential-vs-concurrent evidence | ✅ DONE | `TBD` |
 
 ---
 
@@ -666,3 +667,59 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `b361a4e` — `phase2(m14): harden concurrent core with sanitizers and stress`
 - **NEXT:** M15 — first local benchmark corpus and sequential-vs-concurrent evidence.
+---
+
+## M15 — Create the first local benchmark corpus and sequential-vs-concurrent evidence
+
+- **BASE_SHA:** `b361a4e`
+- **What changed:**
+  - `engine/app/bench_runner.cpp` (NEW) — benchmark corpus runner. Drives both
+    the sequential reference (`Scheduler`, M06) and the concurrent scheduler
+    (`ConcurrentScheduler`, M10) over identical DAGs and identical synthetic tasks
+    (`bench:sleep` = 3ms per node). Benchmarks 4 workloads (linear, diamond, wide
+    16-leaf, layered 3×6) plus 2 seeded random DAGs
+    (`generate_workload(seed, w, d)`), across worker counts {1,2,4,8}, with 2
+    warmup + 10 measurement trials each. Records machine/compiler/commit
+    metadata and writes raw per-trial CSV + summary (p50/p95/p99, speedup vs the
+    *identical* sequential reference). All timing uses `steady_clock`.
+  - `engine/CMakeLists.txt` — `EVO_BUILD_COMMIT` is now PUBLIC on
+    `evo_scheduler_core` so the bench runner reports the commit; added the
+    `evo-bench` executable target.
+  - `docs/phase2/LOCAL_SCHEDULER_BENCHMARK.md` (NEW) — methodology + measured
+    results table (this is the evidence document for M15).
+  - `engine/bench-results/manifest.csv` (NEW, committed artifact) — raw samples
+    from the measured run (commit `6c24953`, Release, Apple M2 arm64, clang 21).
+- **Key decisions:**
+  - Speedup is normalized to the **sequential reference running the same tasks**
+    (benchmark rule 7), never to wall-clock guesses.
+  - `nw=1` is included as the no-parallelism baseline; its sub-1.0 speedup is
+    reported as concurrency overhead, not hidden.
+  - Slower/saturating cases (`diamond` caps at 1.5×, `random` saturates ~2.4× at
+    `nw=4`) are included and explained (critical-path / leaf-count bounds).
+  - Numbers are reported with full provenance (workload, build mode, hardware,
+    sample count, commit) — they are NOT universal claims.
+- **Measured evidence (summary, median makespan, speedup = seq/conc):**
+  - `linear`: 0.96–0.97× at all worker counts (overhead only; no parallelism)
+  - `diamond`: 1.45–1.47× at nw≥2 (2 independent leaves)
+  - `wide`: 1.94× @2, 3.90× @4, **7.63× @8** (16 independent leaves, saturates cores)
+  - `layered`: 1.98× @2, 3.52× @4, **5.77× @8** (layered parallelism + inter-layer deps)
+  - `random seed=12345`: saturates 2.47× at nw≥4 (limited critical-path parallelism)
+  - `random seed=99999`: saturates 2.42× at nw≥4 (same saturation shape)
+- **Concurrency correctness:** no new mutable state added in M15 (benchmarks read
+  the engine APIs added in M10–M13, which are already TSan-clean). No new data
+  races introduced.
+- **No-go compliance:** Release-only evidence (never Debug); saturation/overhead
+  cases included and explained, not hidden; no fabricated numbers; no perf claims
+  made on synthetic `bench:*` tasks as if they were real browser I/O; no commit of
+  secrets.
+- **Validation:**
+  - Release: `ctest --test-dir engine/build` → ✅ 10/10 (incl. stress)
+  - ASan+UBSan: `ctest --test-dir engine/build-asan` → ✅ 10/10
+  - TSan: `ctest --test-dir engine/build-tsan` → ✅ 10/10 (no new races)
+  - `./engine/build/evo-bench engine/bench-results` → ✅ wrote `manifest.csv`
+    (commit `6c24953` recorded in artifact metadata)
+  - `npm test` (Phase-1) → ✅ 28/28 (no TS/app code touched)
+- **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched).
+- **Human action:** none.
+- **COMMIT:** `TBD` — `phase2(m15): benchmark local concurrent scheduler`
+- **NEXT:** M16 — define shared Protobuf/gRPC execution contract.

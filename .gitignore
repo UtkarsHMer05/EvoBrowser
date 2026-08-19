@@ -13,6 +13,8 @@
 # testing
 /coverage
 /Testing
+/Testing/
+engine/Testing
 
 # next.js
 /.next/

@@ -82,7 +82,7 @@ target_compile_features(evo_scheduler_core PUBLIC cxx_std_20)
 target_compile_options(evo_scheduler_core PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
-target_compile_definitions(evo_scheduler_core PRIVATE
+target_compile_definitions(evo_scheduler_core PUBLIC
   EVO_BUILD_COMMIT="${EVO_BUILD_COMMIT}"
   EVO_BUILD_TYPE="$<CONFIG>"
 )
@@ -92,6 +92,14 @@ target_compile_definitions(evo_scheduler_core PRIVATE
 # ---------------------------------------------------------------------------
 add_executable(evo-smoke app/smoke_main.cpp)
 target_link_libraries(evo-smoke PRIVATE evo_scheduler_core)
+
+# ---------------------------------------------------------------------------
+# evo-bench — local benchmark corpus runner (Milestone 15). Release-only; no
+# -Werror on the bench runner so wall-clock diagnostic code is not treated as
+# failure-prone, but project core stays strict.
+# ---------------------------------------------------------------------------
+add_executable(evo-bench app/bench_runner.cpp)
+target_link_libraries(evo-bench PRIVATE evo_scheduler_core)
 
 # ---------------------------------------------------------------------------
 # Tests (CTest)
