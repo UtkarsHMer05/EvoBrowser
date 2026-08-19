@@ -21,6 +21,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M14 | Harden C++ correctness with sanitizers and concurrency stress | ✅ DONE | `b361a4e` |
 | M15 | Create the first local benchmark corpus and sequential-vs-concurrent evidence | ✅ DONE | `bea4b06` |
 | M16 | Define the shared Protobuf/gRPC execution contract | ✅ DONE | `dbaecf8` |
+| M17 | Implement the C++ scheduler service over gRPC | ⏸ BLOCKED | requires `brew install grpc` |
 
 ---
 
