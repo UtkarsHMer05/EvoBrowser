@@ -37,7 +37,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M25 | Implement distributed browser session ownership and live-view parity | ✅ DONE | `3828448` |
 | M26 | Persist results and unlock dependencies through the distributed loop | ✅ DONE | `2db7bb9` |
 | M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `799a4f6` |
-| M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `<M28_SHA>` |
+| M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `c3723bc` |
 
 ---
 
@@ -1552,5 +1552,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - `npm run build` (production) → ✅ (`/api/runs/[runId]/events` present,
     dynamic)
 - **Human action:** none.
-- **COMMIT:** `<M28_SHA>` — `phase2(m28): add engine-neutral realtime run model`
+- **COMMIT:** `c3723bc` — `phase2(m28): add engine-neutral realtime run model`
 - **NEXT:** M29 — Achieve UI parity for Evo runs.
