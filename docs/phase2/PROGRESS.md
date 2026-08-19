@@ -31,7 +31,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M19 | Add additive Phase-2 Drizzle schema and migrations | ✅ DONE | `f63d9b4` |
 | M20 | Implement immutable workflow versions and optimistic concurrency | ✅ DONE | `0ea1c1c` |
 | M21 | Implement Redis Streams transport in the C++ scheduler | ✅ DONE | `47e565e` |
-| M22 | Finalize task/result envelope semantics and event transport | ✅ DONE | `<M22_SHA>` |
+| M22 | Finalize task/result envelope semantics and event transport | ✅ DONE | `ad88fd0` |
 
 ---
 
@@ -1106,5 +1106,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - `npm run typecheck` → ✅ exit 0; `npm run lint` → ✅ exit 0
   - Release CTest → ✅ 15/15; ASan+UBSan → ✅ 15/15; TSan → ✅ 15/15
 - **Human action:** none.
-- **COMMIT:** `<M22_SHA>` — `phase2(m22): harden distributed task result protocol`
+- **COMMIT:** `ad88fd0` — `phase2(m22): harden distributed task result protocol`
 - **NEXT:** M23 — Build the TypeScript distributed worker service.
