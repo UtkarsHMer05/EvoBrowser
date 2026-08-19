@@ -1,12 +1,11 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
+
 import * as Sentry from "@sentry/nextjs";
 import { auth } from "@clerk/nextjs/server";
-import { runs, tasks } from "@trigger.dev/sdk";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-
-import type { runWorkflowTask } from "@/features/workflows/tasks/run-workflow";
 
 import { getLiveblocksClient } from "@/lib/liveblocks";
 import { resolveActiveOrgId } from "@/lib/auth";
@@ -16,6 +15,14 @@ import {
   saveWorkflowGraph,
 } from "@/features/workflows/data";
 import { createWorkflowVersion } from "@/features/workflows/lib/workflow-versions";
+import {
+  getExecutionEngine,
+  getExecutionEngineAdapter,
+} from "@/features/workflows/lib/execution-engine";
+import {
+  createWorkflowRunRecord,
+  getRunEngine,
+} from "@/features/workflows/lib/run-records";
 import { WorkflowGraph } from "@/lib/db/schema";
 import type {
   PlanWorkflowGoalInput,
@@ -114,6 +121,9 @@ export async function runWorkflowAction({
   // version before any engine executes. Fail-open for the legacy path: the
   // Phase-2 tables may not exist on Neon yet (migrations require explicit
   // human approval), so a snapshot failure must never block a Phase-1 run.
+  // For the Evo engine the snapshot is REQUIRED (it executes the immutable
+  // version), so a snapshot failure aborts an Evo submission.
+  const engine = getExecutionEngine();
   let workflowVersionId: string | undefined;
   try {
     const version = await createWorkflowVersion({
@@ -123,6 +133,19 @@ export async function runWorkflowAction({
     });
     workflowVersionId = version.id;
   } catch (error) {
+    if (engine === "evo") {
+      // Evo runs execute an immutable version snapshot; without one there is
+      // nothing safe to submit. Fail closed.
+      Sentry.logger.error(
+        "Evo run blocked — workflow version snapshot failed",
+        {
+          workflowId: id,
+          orgId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      throw new Error("Could not snapshot the workflow for the Evo engine.");
+    }
     Sentry.logger.warn(
       "Workflow version snapshot skipped (Phase-2 tables unavailable) — legacy run continues",
       {
@@ -133,16 +156,72 @@ export async function runWorkflowAction({
     );
   }
 
-  const handle = await tasks.trigger<typeof runWorkflowTask>(
-    "run-workflow",
-    { workflowId: id, orgId },
-    { tags: [`workflow:${id}`] },
-  );
+  // Phase 2 (M27): route through the engine-neutral adapter. The flag
+  // (EXECUTION_ENGINE) is fail-closed to legacy; auth + plan gating above ran
+  // before either engine was selected.
+  const adapter = getExecutionEngineAdapter(engine);
+
+  if (engine === "evo") {
+    // Evo: create the engine-neutral run row BEFORE submission (M27 step 6),
+    // then submit a client-generated run id to the C++ scheduler.
+    const runId = `evo_${randomUUID()}`;
+    await createWorkflowRunRecord({
+      runId,
+      orgId,
+      workflowId: id,
+      workflowVersionId,
+      engine: "evo",
+    });
+    const handle = await adapter.startRun({
+      orgId,
+      workflowId: id,
+      workflowVersionId,
+      graph,
+      runId,
+    });
+    Sentry.logger.info("Evo workflow run submitted", {
+      workflowId: id,
+      orgId,
+      runId: handle.runId,
+      workflowVersionId,
+      nodeCount: graph.nodes.length,
+      hasAgentNode,
+    });
+    return handle;
+  }
+
+  // Legacy Trigger.dev path (unchanged behavior). The run row is best-effort
+  // (fail-open) so Phase-1 runs never depend on the Phase-2 tables.
+  const handle = await adapter.startRun({
+    orgId,
+    workflowId: id,
+    workflowVersionId,
+    graph,
+  });
+  try {
+    await createWorkflowRunRecord({
+      runId: handle.runId,
+      orgId,
+      workflowId: id,
+      workflowVersionId,
+      engine: "legacy",
+    });
+  } catch (error) {
+    Sentry.logger.warn(
+      "Legacy run record skipped (Phase-2 tables unavailable)",
+      {
+        workflowId: id,
+        orgId,
+        runId: handle.runId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
 
   Sentry.logger.info("Workflow run triggered", {
     workflowId: id,
     orgId,
-    runId: handle.id,
+    runId: handle.runId,
     workflowVersionId,
     nodeCount: graph.nodes.length,
     hasAgentNode,
@@ -160,9 +239,14 @@ export async function cancelWorkflowRunAction(runId: string) {
     runId,
   });
 
-  await runs.cancel(runId);
+  // Phase 2 (M27): route the cancel to the engine that owns the run. Runs
+  // without a workflow_runs row (legacy Trigger.dev runs predating the run
+  // table) resolve to legacy.
+  const engine = (await getRunEngine(runId)) ?? "legacy";
+  const adapter = getExecutionEngineAdapter(engine);
+  await adapter.cancelRun(runId);
 
-  Sentry.logger.info("Workflow run cancelled", { runId, orgId });
+  Sentry.logger.info("Workflow run cancelled", { runId, orgId, engine });
 }
 
 export async function planWorkflowAction({

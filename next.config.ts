@@ -3,6 +3,10 @@ import { withSentryConfig } from "@sentry/nextjs";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  // @grpc/grpc-js uses Node-specific features (dynamic require of subpath
+  // modules) that don't survive Server Components bundling; load it via
+  // native require instead. Server-side only (Evo scheduler client, M27).
+  serverExternalPackages: ["@grpc/grpc-js"],
 };
 
 export default withSentryConfig(nextConfig, {

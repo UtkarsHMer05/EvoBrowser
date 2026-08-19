@@ -36,6 +36,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M24 | Reuse existing interpolation and node executors inside distributed workers | ✅ DONE | `e581e67` |
 | M25 | Implement distributed browser session ownership and live-view parity | ✅ DONE | `3828448` |
 | M26 | Persist results and unlock dependencies through the distributed loop | ✅ DONE | `2db7bb9` |
+| M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `<M27_SHA>` |
 
 ---
 
@@ -1382,3 +1383,90 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `2db7bb9` — `phase2(m26): close distributed scheduling result loop`
 - **NEXT:** M27 — Introduce the Next.js execution-engine abstraction and feature flag.
+
+## M27 — Introduce the Next.js execution-engine abstraction and feature flag
+
+- **BASE_SHA:** `3ef28c6` (phase2 branch, clean tree after M26 docs)
+- **What was inspected:** master prompt M27 spec (steps 1–8, no-go list,
+  validation), `features/workflows/actions.ts` (runWorkflowAction /
+  cancelWorkflowRunAction), `features/workflows/tasks/run-workflow.ts`
+  (runWorkflowTask), `features/workflows/lib/workflow-versions.ts`
+  (createWorkflowVersion + VersioningDb pattern), `features/workflows/lib/
+  validate-graph.ts`, `lib/db/{index,schema}.ts`, `engine/app/grpc_service.cpp`
+  (ControlService SubmitRun/CancelRun/GetRun/Health + synthetic local
+  executor), `engine/proto/evo/execution.proto`, `next.config.ts`, bundled
+  Next.js docs (`serverExternalPackages.md`), `@grpc/grpc-js` 1.14.4 +
+  `@grpc/proto-loader` 0.8.1 (installed, Apache-2.0).
+- **What changed:**
+  - `features/workflows/lib/execution-engine.ts` — NEW engine-neutral
+    interface (M27 step 1): `ExecutionEngineAdapter` (startRun/cancelRun/
+    getRunStatus), `EngineRunHandle`, `StartRunArgs`, `EngineRunStatus`.
+    Server-only feature flag `EXECUTION_ENGINE=legacy|evo` via
+    `getExecutionEngine()` — FAIL-CLOSED: only exact "evo" (trimmed,
+    case-insensitive) selects Evo; unset/empty/typo stays legacy (step 4).
+    Adapter cached per process; test reset helper.
+  - `features/workflows/lib/legacy-engine-adapter.ts` — NEW legacy adapter
+    (M27 step 2): wraps the EXISTING Trigger.dev trigger/cancel calls with
+    identical behavior; run id = Trigger.dev run id so live-view/cancel/
+    replay/results keep working unchanged. Trigger/cancel injectable for the
+    regression test; defaults are the real SDK calls.
+  - `features/workflows/lib/evo-engine-adapter.ts` — NEW Evo adapter (M27
+    step 3): `graphToCanonicalDagJson()` converts the React Flow graph to the
+    canonical DAG JSON the C++ `Dag::from_json` parses (sorted nodes/edges,
+    trigger/action kinds, from/to edges, NO React Flow UI state, no secrets);
+    submits a client-generated engine-neutral run id + dagJson through an
+    injectable `EvoSchedulerClient`; maps the C++ RunStatus enum to the
+    engine-neutral status. Real gRPC client loaded lazily (dynamic import) so
+    the legacy path + unit tests never pull in the gRPC stack.
+  - `features/workflows/lib/evo-scheduler-client.ts` — NEW gRPC client over
+    `@grpc/grpc-js` + `@grpc/proto-loader` loading the shared
+    `engine/proto/evo/execution.proto`; promise wrappers for SubmitRun/
+    CancelRun/GetRun/Health; insecure channel to the loopback scheduler
+    (matches the M17 no unauthenticated-non-local rule).
+  - `features/workflows/lib/run-records.ts` — NEW engine-neutral run records
+    (M27 step 6): `createWorkflowRunRecord()` inserts the workflow_runs row
+    with the `engine` discriminator BEFORE submission (idempotent on runId
+    via PK conflict → read existing); `getRunEngine()` resolves the owning
+    engine for cancel routing (undefined → legacy for pre-table runs).
+  - `features/workflows/actions.ts` — runWorkflowAction now routes through
+    the adapter AFTER Clerk auth + Pro-plan gate (step 5). Evo: snapshot is
+    REQUIRED (fail-closed), run row created before submission, client-
+    generated run id submitted. Legacy: behavior unchanged (fail-open
+    snapshot + best-effort run row). cancelWorkflowRunAction resolves the
+    owning engine via getRunEngine and routes the cancel. Trigger.dev deps
+    and the run task are NOT removed (step 8).
+  - `next.config.ts` — `serverExternalPackages: ["@grpc/grpc-js"]` (Node-
+    specific dynamic require; per bundled Next.js docs).
+  - `features/workflows/lib/execution-engine.test.ts` — 7 tests: flag
+    fail-closed matrix; legacy adapter regression (exact trigger call shape +
+    handle mapping + cancel forwarding); canonical DAG conversion (sorted,
+    kinds, no UI state); Evo adapter submit/cancel/query via fake client;
+    rejection surfacing; RunStatus mapping; run records against local
+    Postgres (discriminator + idempotency + resolver; skips without stack).
+  - `features/workflows/lib/evo-scheduler-client.test.ts` — 7 integration
+    tests driving the REAL gRPC client against the REAL C++ scheduler server
+    binary on a private loopback port: health, synthetic diamond submission,
+    idempotent re-submit, poll to RUN_SUCCEEDED, outcome, cancel RPC, cyclic
+    DAG rejected at the trust boundary. Skips when the server binary is
+    missing.
+  - `package.json` — added `@grpc/grpc-js` + `@grpc/proto-loader`; wired both
+    M27 tests into `npm test`.
+- **Concurrency/distributed correctness:** the flag + adapter cache are
+  process-local and read once; the run row's primary key is the idempotency
+  guard for duplicate submission; the C++ SubmitRun is itself idempotent on
+  run_id. Cancel races completion safely (C++ cancel on a terminal run is a
+  no-op returning ok). The Evo run id is engine-neutral and separate from any
+  provider id; no secrets cross the gRPC boundary (org/version/dag only).
+- **Phase-1 preservation:** legacy is the default and unchanged; planner still
+  never auto-runs; Run remains the only explicit trigger; Clerk + Pro gate run
+  before engine selection; Trigger.dev deps + task retained; no test removed.
+- **Validation:**
+  - `npm test` → ✅ 79/79 across 11 suites (28 Phase-1 + 4 contract + 8 M20 +
+    8 M22 + 5 M23 + 4 M24 + 8 M25 + 7 M27 engine + 7 M27 evo submission)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅
+  - `npm run build` (production) → ✅ (validates gRPC bundling config)
+  - Evo synthetic submission integration (real gRPC ↔ real C++ server) → ✅
+  - Legacy adapter regression → ✅ (exact pre-M27 trigger call shape)
+- **Human action:** none.
+- **COMMIT:** `<M27_SHA>` — `phase2(m27): add dual execution engine abstraction`
+- **NEXT:** M28 — Build engine-neutral Evo run events and realtime frontend transport.
