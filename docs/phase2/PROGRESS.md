@@ -17,7 +17,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M10 | Build the local concurrent dependency-aware DAG scheduler | ✅ DONE | `0f40920` |
 | M11 | Add cooperative cancellation and graceful shutdown | ✅ DONE | `477497c` |
 | M12 | Add execution resource classes and browser affinity policy | ✅ DONE | `cc73f30` |
-| M13 | Instrument the scheduler core with evidence-grade timestamps and counters | ✅ DONE | `73c88dd` |
+| M13 | Instrument the scheduler core with evidence-grade timestamps and counters | ✅ DONE | `916ffc9` |
 
 ---
 
@@ -602,5 +602,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - `./build/evo_metrics_test` → "all metrics tests passed"
 - **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched).
 - **Human action:** none.
-- **COMMIT:** `73c88dd` — `phase2(m13): instrument scheduler metrics`
+- **COMMIT:** `916ffc9` — `phase2(m13): instrument scheduler metrics`
 - **NEXT:** M14 — deterministic test fixtures and property-based equivalence testing.
