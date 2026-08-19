@@ -15,6 +15,7 @@ import {
   deleteWorkflow,
   saveWorkflowGraph,
 } from "@/features/workflows/data";
+import { createWorkflowVersion } from "@/features/workflows/lib/workflow-versions";
 import { WorkflowGraph } from "@/lib/db/schema";
 import type {
   PlanWorkflowGoalInput,
@@ -109,6 +110,29 @@ export async function runWorkflowAction({
     throw error;
   }
 
+  // Phase 2 (M20): snapshot the approved graph into an immutable workflow
+  // version before any engine executes. Fail-open for the legacy path: the
+  // Phase-2 tables may not exist on Neon yet (migrations require explicit
+  // human approval), so a snapshot failure must never block a Phase-1 run.
+  let workflowVersionId: string | undefined;
+  try {
+    const version = await createWorkflowVersion({
+      orgId,
+      workflowId: id,
+      graph,
+    });
+    workflowVersionId = version.id;
+  } catch (error) {
+    Sentry.logger.warn(
+      "Workflow version snapshot skipped (Phase-2 tables unavailable) — legacy run continues",
+      {
+        workflowId: id,
+        orgId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
+
   const handle = await tasks.trigger<typeof runWorkflowTask>(
     "run-workflow",
     { workflowId: id, orgId },
@@ -119,6 +143,7 @@ export async function runWorkflowAction({
     workflowId: id,
     orgId,
     runId: handle.id,
+    workflowVersionId,
     nodeCount: graph.nodes.length,
     hasAgentNode,
   });

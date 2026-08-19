@@ -172,3 +172,14 @@ prompt against the actual checked-out repository at the recorded SHAs.
 | 19.4 | Committed `0000_phase1_baseline.sql` even though Phase-1 was push-only. | Migration history must be honest and replayable from scratch on the local stack. | Fresh local Postgres reproduces the full schema. |
 | 19.5 | Local migrations applied via `scripts/phase2/migrate-local.sh` (psql + `--single-transaction`), not drizzle-kit migrate. | drizzle-kit's migrator uses `@neondatabase/serverless`, which cannot open plain TCP to local Postgres. | Same committed SQL files are the source of truth for both local and (later, human-approved) Neon application. |
 | 19.6 | All Phase-2 timestamps are wall-clock UTC (`now()`); steady_clock stays in-process. | Consistent with M13/M16 clock policy. | Cross-process correlation uses one clock domain. |
+
+## M20 — Immutable workflow versions and optimistic concurrency
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 20.1 | Version snapshot created at run-submission, after the canonical save, fail-open for legacy. | Phase-2 tables may not exist on Neon yet (migration needs human approval); a snapshot failure must never block a Phase-1 run. | Once Neon is migrated, snapshots become durable for every run. |
+| 20.2 | Concurrency guard = unique `(workflow_id, version_number)` + bounded retry, not transactions. | The pooled neon-http driver offers no multi-statement transactions. | Safe under concurrent snapshot creation; verified by the 3-way race test. |
+| 20.3 | Identical graphs dedupe by canonical sha256 hash (nodes/edges sorted). | Rerun-without-edit should reference the same immutable snapshot, not create duplicates. | `graph_hash` is the dedupe key; canonical ordering makes it stable. |
+| 20.4 | Optimistic save rejects `expectedVersion` behind current with a clear conflict error; omitting the token keeps Phase-1 behavior. | Detect stale updates instead of silently overwriting; keep the editor usable with a clear conflict path. | M27 UI can surface the conflict; legacy callers unaffected. |
+| 20.5 | Versioning functions accept an injectable `db` (default `getDb()`). | Integration tests must run against local Postgres via node-postgres, since neon-http cannot open plain TCP. | Added `pg` dependency (also needed by M23+ TS workers). |
+| 20.6 | Version rows are never mutated after creation. | Runs must replay the exact approved graph (M20 no-go). | Re-runs reference old version ids; edits create new versions. |

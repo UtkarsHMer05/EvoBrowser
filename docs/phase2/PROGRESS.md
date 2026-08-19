@@ -29,6 +29,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M17 | Implement the C++ scheduler service over gRPC | ✅ DONE | `7cf04f6` |
 | M18 | Create isolated local Redis + PostgreSQL infrastructure | ✅ DONE | `813da0a` |
 | M19 | Add additive Phase-2 Drizzle schema and migrations | ✅ DONE | `f63d9b4` |
+| M20 | Implement immutable workflow versions and optimistic concurrency | ✅ DONE | `<M20_SHA>` |
 
 ---
 
@@ -920,3 +921,62 @@ Commit subjects follow `phase2(mNN): <description>`.
   approval and is deferred).
 - **COMMIT:** `f63d9b4` — `phase2(m19): add durable phase2 run schema`
 - **NEXT:** M20 — Implement immutable workflow versions and optimistic concurrency.
+
+---
+
+## M20 — Implement immutable workflow versions and optimistic concurrency
+
+- **BASE_SHA:** `2f29b97`
+- **What was inspected:** master prompt M20 spec, `features/workflows/actions.ts`
+  (runWorkflowAction), `features/workflows/data.ts` (saveWorkflowGraph),
+  `features/workflows/tasks/run-workflow.ts` (graph read path),
+  `features/workflows/nodes/node-registry.ts` (StepNodeType), test conventions
+  (tsx + node:assert, no DB in Phase-1 tests), drizzle-orm 0.45.2
+  node-postgres adapter, tsx `@/` alias resolution.
+- **What changed:**
+  - `features/workflows/lib/workflow-versions.ts` — new module:
+    - `canonicalGraphHash()` — deterministic sha256 over nodes (sorted by id)
+      and edges (sorted by source→target).
+    - `createWorkflowVersion()` — creates an immutable snapshot; dedupes
+      identical graphs by hash (rerun-without-edit reuses the version);
+      concurrent writers race on the unique `(workflow_id, version_number)`
+      constraint and retry with a fresh candidate (bounded, 5 attempts).
+    - `getWorkflowVersion()` / `listWorkflowVersions()` — tenant-scoped reads.
+    - `saveWorkflowGraphOptimistic()` — rejects a save whose `expectedVersion`
+      is behind the current version with `WorkflowVersionConflictError`;
+      omitting `expectedVersion` keeps Phase-1 behavior. `saveFn` injectable
+      for tests.
+    - All functions take an optional `db` (defaults to `getDb()`) so
+      integration tests run against local Postgres via node-postgres.
+  - `features/workflows/actions.ts` — `runWorkflowAction` now snapshots the
+    approved graph into an immutable version before triggering the run.
+    FAIL-OPEN for legacy: the Phase-2 tables may not exist on Neon yet
+    (migration requires explicit human approval), so a snapshot failure logs a
+    warning and the Phase-1 run continues unchanged.
+  - `features/workflows/lib/workflow-versions.test.ts` — 8 integration
+    assertions against local Phase-2 Postgres: concurrent creation → distinct
+    monotonic versions; unchanged rerun reuses snapshot; edit creates new
+    snapshot; tenant guard; stale-save conflict; current-version save;
+    legacy no-token path; monotonic max. Skips cleanly (exit 0) when the local
+    stack is down.
+  - `package.json` — added `pg` 8.23.0 (+ `@types/pg`); wired the new test
+    into `npm test`.
+- **Concurrency/distributed correctness:** Postgres owns version state; the
+  unique constraint is the invariant guard (no transactions needed on
+  neon-http). Duplicate delivery of a snapshot request dedupes by graph_hash.
+  Crash between save and snapshot: snapshot is created after the canonical
+  save; a crash in between leaves the canonical graph saved but no version —
+  the next run creates one (no corruption). A late/stale save cannot overwrite
+  a newer version (optimistic check). Liveblocks CRDT editing is untouched
+  (no-go honored).
+- **No-go compliance:** no workflow_version row is ever mutated after
+  creation; Liveblocks behavior unchanged; Phase-1 default behavior unchanged
+  (fail-open hook); no secrets committed.
+- **Validation:**
+  - `npx tsx features/workflows/lib/workflow-versions.test.ts` → ✅ 8/8
+  - `npm test` → ✅ 40/40 (28 Phase-1 + 4 contract + 8 M20 versioning)
+  - `npm run typecheck` → ✅ exit 0
+  - `npm run lint` → ✅ exit 0
+- **Human action:** none (local Postgres only).
+- **COMMIT:** `<M20_SHA>` — `phase2(m20): immutable workflow versions + optimistic concurrency`
+- **NEXT:** M21 — Implement Redis Streams transport in the C++ scheduler.
