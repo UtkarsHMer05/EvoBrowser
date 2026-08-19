@@ -39,6 +39,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `799a4f6` |
 | M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `c3723bc` |
 | M29 | Achieve UI parity for Evo runs | ✅ DONE | `a24dd9e` |
+| M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | 🚧 IN PROGRESS (claimed by session B) | — |
 
 ---
 
