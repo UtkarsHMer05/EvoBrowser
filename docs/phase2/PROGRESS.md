@@ -27,7 +27,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M15 | Create the first local benchmark corpus and sequential-vs-concurrent evidence | ✅ DONE | `bea4b06` |
 | M16 | Define the shared Protobuf/gRPC execution contract | ✅ DONE | `dbaecf8` |
 | M17 | Implement the C++ scheduler service over gRPC | ✅ DONE | `7cf04f6` |
-| M18 | Create isolated local Redis + PostgreSQL infrastructure | ✅ DONE | `<M18_SHA>` |
+| M18 | Create isolated local Redis + PostgreSQL infrastructure | ✅ DONE | `813da0a` |
 
 ---
 
@@ -865,5 +865,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - Phase-1 regression: `npm test` → ✅ 32/32 (28 Phase-1 + 4 contract)
   - Engine: `ctest --test-dir engine/build` → ✅ 12/12 (incl. grpc_integration)
 - **Human action:** Docker Desktop (ARM) installed and running — complete.
-- **COMMIT:** `<M18_SHA>` — `phase2(m18): add isolated redis postgres dev stack`
+- **COMMIT:** `813da0a` — `phase2(m18): add isolated redis postgres dev stack`
 - **NEXT:** M19 — Add additive Phase-2 Drizzle schema and migrations.
