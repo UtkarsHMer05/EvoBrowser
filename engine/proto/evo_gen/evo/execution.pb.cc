@@ -33,6 +33,8 @@ PROTOBUF_CONSTINIT ::google::protobuf::internal::ReflectionData
         {&::_pbi::kDescriptorMethods, &::descriptor_table_evo_2fexecution_2eproto, /* tracker*/ nullptr,},
         // ::evo::execution::v1::ResultEnvelope
         {&::_pbi::kDescriptorMethods, &::descriptor_table_evo_2fexecution_2eproto, /* tracker*/ nullptr,},
+        // ::evo::execution::v1::ControlEnvelope
+        {&::_pbi::kDescriptorMethods, &::descriptor_table_evo_2fexecution_2eproto, /* tracker*/ nullptr,},
         // ::evo::execution::v1::SubmitRunRequest_NodeTaskTypesEntry_DoNotUse
         {&::_pbi::kDescriptorMethods, &::descriptor_table_evo_2fexecution_2eproto, /* tracker*/ nullptr,},
         // ::evo::execution::v1::SubmitRunRequest
@@ -172,7 +174,7 @@ constexpr auto SubmitRunResponse::InternalGenerateClassData_(
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[4],
+      &file_reflection_data[5],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -309,7 +311,7 @@ constexpr auto SubmitRunRequest_NodeTaskTypesEntry_DoNotUse::InternalGenerateCla
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[2],
+      &file_reflection_data[3],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -462,7 +464,7 @@ constexpr auto HealthResponse::InternalGenerateClassData_(
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[11],
+      &file_reflection_data[12],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -586,7 +588,7 @@ constexpr auto HealthRequest::InternalGenerateClassData_(
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[10],
+      &file_reflection_data[11],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -732,7 +734,7 @@ constexpr auto GetRunRequest::InternalGenerateClassData_(
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[7],
+      &file_reflection_data[8],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -880,7 +882,7 @@ constexpr auto CancelRunResponse::InternalGenerateClassData_(
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[6],
+      &file_reflection_data[7],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -1357,7 +1359,7 @@ constexpr auto SubmitRunRequest::InternalGenerateClassData_(
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[3],
+      &file_reflection_data[4],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -1851,7 +1853,7 @@ constexpr auto NodeStatus::InternalGenerateClassData_(
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[8],
+      &file_reflection_data[9],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -1898,6 +1900,182 @@ const ::_pbi::ClassData* NodeStatus_get_class_data() {
   return NodeStatus_globals_.GetClassData();
 #else
   return NodeStatus_class_data_.base();
+#endif  // PROTOBUF_MESSAGE_GLOBALS
+}
+}  // namespace
+#endif  // PROTOBUF_CUSTOM_VTABLE
+class ControlEnvelope::_Internal {
+ public:
+  using HasBits = decltype(::std::declval<ControlEnvelope>()._impl_._has_bits_);
+  static constexpr ::int32_t kHasBitsOffset =
+      8 * PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_._has_bits_);
+};
+
+constexpr ControlEnvelope::ParseTableT_ ControlEnvelope::InternalGenerateParseTable_(const ::_pbi::ClassData* class_data) {
+  return ParseTableT_{
+    {
+      PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_._has_bits_),
+      0, // no _extensions_
+      4, 24,  // max_field_number, fast_idx_mask
+      offsetof(ParseTableT_, field_lookup_table),
+      4294967280,  // skipmap
+      offsetof(ParseTableT_, field_entries),
+      4,  // num_field_entries
+      1,  // num_aux_entries
+      offsetof(ParseTableT_, aux_entries),
+      class_data,
+      nullptr,  // post_loop_handler
+      ::_pbi::TcParser::GenericFallback,  // fallback
+      #ifdef PROTOBUF_PREFETCH_PARSE_TABLE
+      ::_pbi::TcParser::GetTable<::evo::execution::v1::ControlEnvelope>(),  // to_prefetch
+      #endif  // PROTOBUF_PREFETCH_PARSE_TABLE
+    }, {{
+      // .google.protobuf.Timestamp requested_at = 4;
+      {::_pbi::TcParser::FastMtS1,
+       {34, 2, 0,
+        PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.requested_at_)}},
+      // .evo.execution.v1.ControlEnvelope.Kind kind = 1;
+      {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(ControlEnvelope, _impl_.kind_), 3>(),
+       {8, 3, 0,
+        PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.kind_)}},
+      // string run_id = 2;
+      {::_pbi::TcParser::FastUS1,
+       {18, 0, 0,
+        PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.run_id_)}},
+      // string reason = 3;
+      {::_pbi::TcParser::FastUS1,
+       {26, 1, 0,
+        PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.reason_)}},
+    }}, {{
+      65535, 65535
+    }}, {{
+      // .evo.execution.v1.ControlEnvelope.Kind kind = 1;
+      {PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.kind_), _Internal::kHasBitsOffset + 3, 0, (0 | ::_fl::kFcOptional | ::_fl::kOpenEnum)},
+      // string run_id = 2;
+      {PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.run_id_), _Internal::kHasBitsOffset + 0, 0, (0 | ::_fl::kFcOptional | ::_fl::kUtf8String | ::_fl::kRepAString)},
+      // string reason = 3;
+      {PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.reason_), _Internal::kHasBitsOffset + 1, 0, (0 | ::_fl::kFcOptional | ::_fl::kUtf8String | ::_fl::kRepAString)},
+      // .google.protobuf.Timestamp requested_at = 4;
+      {PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.requested_at_), _Internal::kHasBitsOffset + 2, 0, (0 | ::_fl::kFcOptional | ::_fl::kMessage | ::_fl::kTvTable)},
+    }},
+    {{
+        #ifndef PROTOBUF_MESSAGE_GLOBALS
+        {::_pbi::TcParser::GetTable<::google::protobuf::Timestamp>()},
+        #else
+        {::_pbi::FieldAuxMessageGlobals(), &::google::protobuf::Timestamp_globals_},
+        #endif
+    }},
+    {{
+      "\40\0\6\6\0\0\0\0"
+      "evo.execution.v1.ControlEnvelope"
+      "run_id"
+      "reason"
+    }},
+  };
+}
+
+
+inline constexpr ControlEnvelope::Impl_::Impl_(
+    [[maybe_unused]] ::google::protobuf::internal::InternalVisibility visibility,
+    ::_pbi::ConstantInitialized) noexcept
+      : _cached_size_{0},
+        run_id_(
+            &::google::protobuf::internal::fixed_address_empty_string,
+            ::_pbi::ConstantInitialized()),
+        reason_(
+            &::google::protobuf::internal::fixed_address_empty_string,
+            ::_pbi::ConstantInitialized()),
+        requested_at_{nullptr},
+        kind_{static_cast< ::evo::execution::v1::ControlEnvelope_Kind >(0)} {}
+
+template <typename>
+constexpr ControlEnvelope::ControlEnvelope(::_pbi::ConstantInitialized,
+                       const ::_pbi::ClassData* PROTOBUF_NONNULL class_data)
+    : ::google::protobuf::Message(
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+          class_data
+#endif  // PROTOBUF_CUSTOM_VTABLE
+          ),
+      _impl_(internal_visibility(), ::_pbi::ConstantInitialized()) {
+}
+inline void* PROTOBUF_NONNULL ControlEnvelope::PlacementNew_(
+    const void* PROTOBUF_NONNULL, void* PROTOBUF_NONNULL mem,
+    ::google::protobuf::Arena* PROTOBUF_NULLABLE arena) {
+  return ::new (mem) ControlEnvelope(arena);
+}
+constexpr auto ControlEnvelope::InternalNewImpl_() {
+  return ::google::protobuf::internal::MessageCreator::CopyInit(sizeof(ControlEnvelope), alignof(ControlEnvelope));
+}
+constexpr auto ControlEnvelope::InternalGenerateClassData_(
+    const MessageLite& prototype,
+    const ::google::protobuf::internal::TcParseTableBase* tc_table) {
+  return ::google::protobuf::internal::ClassDataFull{
+      ::google::protobuf::internal::ClassData{
+          &prototype,
+#ifndef PROTOBUF_MESSAGE_GLOBALS
+          &_table_.header,
+#else
+          tc_table,
+#endif
+          nullptr,  // IsInitialized
+          &ControlEnvelope::MergeImpl,
+          ::google::protobuf::Message::GetNewImpl<ControlEnvelope>(),
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+          &ControlEnvelope::SharedDtor,
+          ::google::protobuf::Message::GetClearImpl<ControlEnvelope>(), &ControlEnvelope::ByteSizeLong,
+              &ControlEnvelope::_InternalSerialize,
+#endif  // PROTOBUF_CUSTOM_VTABLE
+          PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_._cached_size_),
+          false,
+      },
+#ifdef PROTOBUF_MESSAGE_GLOBALS
+      &file_reflection_data[2],
+#else   // !PROTOBUF_MESSAGE_GLOBALS
+      &::_pbi::kDescriptorMethods,
+      &descriptor_table_evo_2fexecution_2eproto,
+      nullptr,  // tracker
+#endif  // PROTOBUF_MESSAGE_GLOBALS
+  };
+}
+struct ControlEnvelopeGlobalsTypeInternal : ::_pbi::MessageGlobalsBase {
+  constexpr ControlEnvelopeGlobalsTypeInternal()
+      :
+#ifndef PROTOBUF_MESSAGE_GLOBALS
+        _default(::_pbi::ConstantInitialized{},
+                 ControlEnvelope_class_data_.base())
+#else   // !PROTOBUF_MESSAGE_GLOBALS
+        MessageGlobalsBase(ControlEnvelope::InternalGenerateClassData_(
+            _default, &ControlEnvelope_globals_._table.header)),
+        _default(::_pbi::ConstantInitialized{}, GetClassData()),
+        _table(::_pbi::PrivateAccess::GenerateParseTable<ControlEnvelope>(
+            GetClassData()))
+#endif  // PROTOBUF_MESSAGE_GLOBALS
+  {
+  }
+  ~ControlEnvelopeGlobalsTypeInternal() {}
+  union {
+    alignas(::_pbi::kMaxMessageAlignment) ControlEnvelope _default;
+  };
+#ifdef PROTOBUF_MESSAGE_GLOBALS
+  decltype(::_pbi::PrivateAccess::GenerateParseTable<ControlEnvelope>(
+      ::std::declval<const ::_pbi::ClassData*>())) _table;
+#endif
+};
+#ifdef PROTOBUF_MESSAGE_GLOBALS
+static_assert(PROTOBUF_FIELD_OFFSET(ControlEnvelopeGlobalsTypeInternal, _default) ==
+              ::_pbi::MessageGlobalsBase::OffsetToDefault());
+#endif  // PROTOBUF_MESSAGE_GLOBALS
+
+PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT
+    PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 PROTOBUF_MESSAGE_GLOBALS_CONST ControlEnvelopeGlobalsTypeInternal ControlEnvelope_globals_
+        PROTOBUF_MESSAGE_GLOBALS_SECTION(.data.rel.ro);
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+namespace {
+const ::_pbi::ClassData* ControlEnvelope_get_class_data() {
+#ifdef PROTOBUF_MESSAGE_GLOBALS
+  return ControlEnvelope_globals_.GetClassData();
+#else
+  return ControlEnvelope_class_data_.base();
 #endif  // PROTOBUF_MESSAGE_GLOBALS
 }
 }  // namespace
@@ -2030,7 +2208,7 @@ constexpr auto CancelRunRequest::InternalGenerateClassData_(
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[5],
+      &file_reflection_data[6],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -2242,7 +2420,7 @@ constexpr auto GetRunResponse::InternalGenerateClassData_(
           false,
       },
 #ifdef PROTOBUF_MESSAGE_GLOBALS
-      &file_reflection_data[9],
+      &file_reflection_data[10],
 #else   // !PROTOBUF_MESSAGE_GLOBALS
       &::_pbi::kDescriptorMethods,
       &descriptor_table_evo_2fexecution_2eproto,
@@ -2297,7 +2475,7 @@ const ::_pbi::ClassData* GetRunResponse_get_class_data() {
 }  // namespace execution
 }  // namespace evo
 static const ::_pb::EnumDescriptor* PROTOBUF_NONNULL
-    file_level_enum_descriptors_evo_2fexecution_2eproto[6];
+    file_level_enum_descriptors_evo_2fexecution_2eproto[7];
 static constexpr const ::_pb::ServiceDescriptor* PROTOBUF_NONNULL* PROTOBUF_NULLABLE
     file_level_service_descriptors_evo_2fexecution_2eproto = nullptr;
 const ::uint32_t
@@ -2361,6 +2539,17 @@ const ::uint32_t
         12,
         5,
         7,
+        0x081, // bitmap
+        PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ControlEnvelope, _impl_._has_bits_),
+        7, // hasbit index offset
+        PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ControlEnvelope, _impl_.kind_),
+        PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ControlEnvelope, _impl_.run_id_),
+        PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ControlEnvelope, _impl_.reason_),
+        PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ControlEnvelope, _impl_.requested_at_),
+        3,
+        0,
+        1,
+        2,
         0x081, // bitmap
         PROTOBUF_FIELD_OFFSET(::evo::execution::v1::SubmitRunRequest_NodeTaskTypesEntry_DoNotUse, _impl_._has_bits_),
         5, // hasbit index offset
@@ -2471,21 +2660,23 @@ static const ::_pbi::MigrationSchema
     schemas[] ABSL_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
         {0, sizeof(::evo::execution::v1::TaskEnvelope)},
         {27, sizeof(::evo::execution::v1::ResultEnvelope)},
-        {58, sizeof(::evo::execution::v1::SubmitRunRequest_NodeTaskTypesEntry_DoNotUse)},
-        {65, sizeof(::evo::execution::v1::SubmitRunRequest)},
-        {84, sizeof(::evo::execution::v1::SubmitRunResponse)},
-        {93, sizeof(::evo::execution::v1::CancelRunRequest)},
-        {104, sizeof(::evo::execution::v1::CancelRunResponse)},
-        {111, sizeof(::evo::execution::v1::GetRunRequest)},
-        {116, sizeof(::evo::execution::v1::NodeStatus)},
-        {137, sizeof(::evo::execution::v1::GetRunResponse)},
-        {154, sizeof(::evo::execution::v1::HealthRequest)},
-        {155, sizeof(::evo::execution::v1::HealthResponse)},
+        {58, sizeof(::evo::execution::v1::ControlEnvelope)},
+        {69, sizeof(::evo::execution::v1::SubmitRunRequest_NodeTaskTypesEntry_DoNotUse)},
+        {76, sizeof(::evo::execution::v1::SubmitRunRequest)},
+        {95, sizeof(::evo::execution::v1::SubmitRunResponse)},
+        {104, sizeof(::evo::execution::v1::CancelRunRequest)},
+        {115, sizeof(::evo::execution::v1::CancelRunResponse)},
+        {122, sizeof(::evo::execution::v1::GetRunRequest)},
+        {127, sizeof(::evo::execution::v1::NodeStatus)},
+        {148, sizeof(::evo::execution::v1::GetRunResponse)},
+        {165, sizeof(::evo::execution::v1::HealthRequest)},
+        {166, sizeof(::evo::execution::v1::HealthResponse)},
 };
 static const ::_pbi::MessageGlobalsBase* PROTOBUF_NONNULL const
     file_message_globals[] = {
         &::evo::execution::v1::TaskEnvelope_globals_,
         &::evo::execution::v1::ResultEnvelope_globals_,
+        &::evo::execution::v1::ControlEnvelope_globals_,
         &::evo::execution::v1::SubmitRunRequest_NodeTaskTypesEntry_DoNotUse_globals_,
         &::evo::execution::v1::SubmitRunRequest_globals_,
         &::evo::execution::v1::SubmitRunResponse_globals_,
@@ -2522,65 +2713,70 @@ const char descriptor_table_protodef_evo_2fexecution_2eproto[] ABSL_ATTRIBUTE_SE
     ".protobuf.Timestamp\"o\n\nStatusCode\022\026\n\022STA"
     "TUS_UNSPECIFIED\020\000\022\006\n\002OK\020\001\022\017\n\013NODE_FAILED"
     "\020\002\022\014\n\010CANCELED\020\003\022\013\n\007TIMEOUT\020\004\022\025\n\021DEADLIN"
-    "E_EXCEEDED\020\005B\014\n\n_retryable\"\300\002\n\020SubmitRun"
-    "Request\022\016\n\006org_id\030\001 \001(\t\022\033\n\023workflow_vers"
-    "ion_id\030\002 \001(\t\022\016\n\006run_id\030\003 \001(\t\022\020\n\010dag_json"
-    "\030\004 \001(\t\022N\n\017node_task_types\030\005 \003(\01325.evo.ex"
-    "ecution.v1.SubmitRunRequest.NodeTaskType"
-    "sEntry\0220\n\014requested_at\030\006 \001(\0132\032.google.pr"
-    "otobuf.Timestamp\022\020\n\010trace_id\030\007 \001(\t\022\023\n\013wo"
-    "rkflow_id\030\010 \001(\t\0324\n\022NodeTaskTypesEntry\022\013\n"
-    "\003key\030\001 \001(\t\022\r\n\005value\030\002 \001(\t:\0028\001\"F\n\021SubmitR"
-    "unResponse\022\016\n\006run_id\030\001 \001(\t\022\020\n\010accepted\030\002"
-    " \001(\010\022\017\n\007message\030\003 \001(\t\"v\n\020CancelRunReques"
-    "t\022\016\n\006run_id\030\001 \001(\t\022\016\n\006reason\030\002 \001(\t\0220\n\014req"
-    "uested_at\030\003 \001(\0132\032.google.protobuf.Timest"
-    "amp\022\020\n\010trace_id\030\004 \001(\t\"N\n\021CancelRunRespon"
-    "se\022\n\n\002ok\030\001 \001(\010\022-\n\007outcome\030\002 \001(\0162\034.evo.ex"
-    "ecution.v1.RunOutcome\"\037\n\rGetRunRequest\022\016"
-    "\n\006run_id\030\001 \001(\t\"\255\002\n\nNodeStatus\022\017\n\007node_id"
-    "\030\001 \001(\t\022\021\n\tnode_type\030\002 \001(\t\022*\n\005state\030\003 \001(\016"
-    "2\033.evo.execution.v1.NodeState\022\026\n\016attempt"
-    "_number\030\004 \001(\r\0227\n\016resource_class\030\005 \001(\0162\037."
-    "evo.execution.v1.ResourceClass\022.\n\nstarte"
-    "d_at\030\006 \001(\0132\032.google.protobuf.Timestamp\022/"
-    "\n\013finished_at\030\007 \001(\0132\032.google.protobuf.Ti"
-    "mestamp\022\016\n\006output\030\010 \001(\t\022\r\n\005error\030\t \001(\t\"\247"
-    "\002\n\016GetRunResponse\022\016\n\006run_id\030\001 \001(\t\022\033\n\023wor"
-    "kflow_version_id\030\002 \001(\t\022+\n\006status\030\003 \001(\0162\033"
-    ".evo.execution.v1.RunStatus\022-\n\007outcome\030\004"
-    " \001(\0162\034.evo.execution.v1.RunOutcome\022+\n\005no"
-    "des\030\005 \003(\0132\034.evo.execution.v1.NodeStatus\022"
-    ".\n\ncreated_at\030\006 \001(\0132\032.google.protobuf.Ti"
-    "mestamp\022/\n\013finished_at\030\007 \001(\0132\032.google.pr"
-    "otobuf.Timestamp\"\017\n\rHealthRequest\",\n\016Hea"
-    "lthResponse\022\n\n\002ok\030\001 \001(\010\022\016\n\006detail\030\002 \001(\t*"
-    "\205\001\n\nErrorClass\022\033\n\027ERROR_CLASS_UNSPECIFIE"
-    "D\020\000\022\023\n\017ERROR_TRANSIENT\020\001\022\023\n\017ERROR_PERMAN"
-    "ENT\020\002\022\034\n\030ERROR_RESOURCE_EXHAUSTED\020\003\022\022\n\016E"
-    "RROR_CANCELED\020\004*\323\001\n\tNodeState\022\032\n\026NODE_ST"
-    "ATE_UNSPECIFIED\020\000\022\026\n\022NODE_STATE_BLOCKED\020"
-    "\001\022\024\n\020NODE_STATE_READY\020\002\022\026\n\022NODE_STATE_RU"
-    "NNING\020\003\022\030\n\024NODE_STATE_SUCCEEDED\020\004\022\025\n\021NOD"
-    "E_STATE_FAILED\020\007\022\027\n\023NODE_STATE_CANCELED\020"
-    "\010\022\032\n\026NODE_STATE_DEAD_LETTER\020\t*N\n\nRunOutc"
-    "ome\022\027\n\023OUTCOME_UNSPECIFIED\020\000\022\r\n\tSUCCEEDE"
-    "D\020\001\022\n\n\006FAILED\020\002\022\014\n\010CANCELED\020\003*U\n\rResourc"
-    "eClass\022\030\n\024RESOURCE_UNSPECIFIED\020\000\022\014\n\010INTE"
-    "RNAL\020\001\022\013\n\007BROWSER\020\002\022\017\n\013EXTERNAL_IO\020\003*}\n\t"
-    "RunStatus\022\032\n\026RUN_STATUS_UNSPECIFIED\020\000\022\016\n"
-    "\nRUN_QUEUED\020\001\022\017\n\013RUN_RUNNING\020\002\022\021\n\rRUN_SU"
-    "CCEEDED\020\003\022\016\n\nRUN_FAILED\020\004\022\020\n\014RUN_CANCELE"
-    "D\020\0052\326\002\n\016ControlService\022T\n\tSubmitRun\022\".ev"
-    "o.execution.v1.SubmitRunRequest\032#.evo.ex"
-    "ecution.v1.SubmitRunResponse\022T\n\tCancelRu"
-    "n\022\".evo.execution.v1.CancelRunRequest\032#."
-    "evo.execution.v1.CancelRunResponse\022K\n\006Ge"
-    "tRun\022\037.evo.execution.v1.GetRunRequest\032 ."
-    "evo.execution.v1.GetRunResponse\022K\n\006Healt"
-    "h\022\037.evo.execution.v1.HealthRequest\032 .evo"
-    ".execution.v1.HealthResponseB\t\200\001\000\210\001\000\220\001\000b"
-    "\006proto3"
+    "E_EXCEEDED\020\005B\014\n\n_retryable\"\317\001\n\017ControlEn"
+    "velope\0224\n\004kind\030\001 \001(\0162&.evo.execution.v1."
+    "ControlEnvelope.Kind\022\016\n\006run_id\030\002 \001(\t\022\016\n\006"
+    "reason\030\003 \001(\t\0220\n\014requested_at\030\004 \001(\0132\032.goo"
+    "gle.protobuf.Timestamp\"4\n\004Kind\022\034\n\030CONTRO"
+    "L_KIND_UNSPECIFIED\020\000\022\016\n\nCANCEL_RUN\020\001\"\300\002\n"
+    "\020SubmitRunRequest\022\016\n\006org_id\030\001 \001(\t\022\033\n\023wor"
+    "kflow_version_id\030\002 \001(\t\022\016\n\006run_id\030\003 \001(\t\022\020"
+    "\n\010dag_json\030\004 \001(\t\022N\n\017node_task_types\030\005 \003("
+    "\01325.evo.execution.v1.SubmitRunRequest.No"
+    "deTaskTypesEntry\0220\n\014requested_at\030\006 \001(\0132\032"
+    ".google.protobuf.Timestamp\022\020\n\010trace_id\030\007"
+    " \001(\t\022\023\n\013workflow_id\030\010 \001(\t\0324\n\022NodeTaskTyp"
+    "esEntry\022\013\n\003key\030\001 \001(\t\022\r\n\005value\030\002 \001(\t:\0028\001\""
+    "F\n\021SubmitRunResponse\022\016\n\006run_id\030\001 \001(\t\022\020\n\010"
+    "accepted\030\002 \001(\010\022\017\n\007message\030\003 \001(\t\"v\n\020Cance"
+    "lRunRequest\022\016\n\006run_id\030\001 \001(\t\022\016\n\006reason\030\002 "
+    "\001(\t\0220\n\014requested_at\030\003 \001(\0132\032.google.proto"
+    "buf.Timestamp\022\020\n\010trace_id\030\004 \001(\t\"N\n\021Cance"
+    "lRunResponse\022\n\n\002ok\030\001 \001(\010\022-\n\007outcome\030\002 \001("
+    "\0162\034.evo.execution.v1.RunOutcome\"\037\n\rGetRu"
+    "nRequest\022\016\n\006run_id\030\001 \001(\t\"\255\002\n\nNodeStatus\022"
+    "\017\n\007node_id\030\001 \001(\t\022\021\n\tnode_type\030\002 \001(\t\022*\n\005s"
+    "tate\030\003 \001(\0162\033.evo.execution.v1.NodeState\022"
+    "\026\n\016attempt_number\030\004 \001(\r\0227\n\016resource_clas"
+    "s\030\005 \001(\0162\037.evo.execution.v1.ResourceClass"
+    "\022.\n\nstarted_at\030\006 \001(\0132\032.google.protobuf.T"
+    "imestamp\022/\n\013finished_at\030\007 \001(\0132\032.google.p"
+    "rotobuf.Timestamp\022\016\n\006output\030\010 \001(\t\022\r\n\005err"
+    "or\030\t \001(\t\"\247\002\n\016GetRunResponse\022\016\n\006run_id\030\001 "
+    "\001(\t\022\033\n\023workflow_version_id\030\002 \001(\t\022+\n\006stat"
+    "us\030\003 \001(\0162\033.evo.execution.v1.RunStatus\022-\n"
+    "\007outcome\030\004 \001(\0162\034.evo.execution.v1.RunOut"
+    "come\022+\n\005nodes\030\005 \003(\0132\034.evo.execution.v1.N"
+    "odeStatus\022.\n\ncreated_at\030\006 \001(\0132\032.google.p"
+    "rotobuf.Timestamp\022/\n\013finished_at\030\007 \001(\0132\032"
+    ".google.protobuf.Timestamp\"\017\n\rHealthRequ"
+    "est\",\n\016HealthResponse\022\n\n\002ok\030\001 \001(\010\022\016\n\006det"
+    "ail\030\002 \001(\t*\205\001\n\nErrorClass\022\033\n\027ERROR_CLASS_"
+    "UNSPECIFIED\020\000\022\023\n\017ERROR_TRANSIENT\020\001\022\023\n\017ER"
+    "ROR_PERMANENT\020\002\022\034\n\030ERROR_RESOURCE_EXHAUS"
+    "TED\020\003\022\022\n\016ERROR_CANCELED\020\004*\323\001\n\tNodeState\022"
+    "\032\n\026NODE_STATE_UNSPECIFIED\020\000\022\026\n\022NODE_STAT"
+    "E_BLOCKED\020\001\022\024\n\020NODE_STATE_READY\020\002\022\026\n\022NOD"
+    "E_STATE_RUNNING\020\003\022\030\n\024NODE_STATE_SUCCEEDE"
+    "D\020\004\022\025\n\021NODE_STATE_FAILED\020\007\022\027\n\023NODE_STATE"
+    "_CANCELED\020\010\022\032\n\026NODE_STATE_DEAD_LETTER\020\t*"
+    "N\n\nRunOutcome\022\027\n\023OUTCOME_UNSPECIFIED\020\000\022\r"
+    "\n\tSUCCEEDED\020\001\022\n\n\006FAILED\020\002\022\014\n\010CANCELED\020\003*"
+    "U\n\rResourceClass\022\030\n\024RESOURCE_UNSPECIFIED"
+    "\020\000\022\014\n\010INTERNAL\020\001\022\013\n\007BROWSER\020\002\022\017\n\013EXTERNA"
+    "L_IO\020\003*}\n\tRunStatus\022\032\n\026RUN_STATUS_UNSPEC"
+    "IFIED\020\000\022\016\n\nRUN_QUEUED\020\001\022\017\n\013RUN_RUNNING\020\002"
+    "\022\021\n\rRUN_SUCCEEDED\020\003\022\016\n\nRUN_FAILED\020\004\022\020\n\014R"
+    "UN_CANCELED\020\0052\326\002\n\016ControlService\022T\n\tSubm"
+    "itRun\022\".evo.execution.v1.SubmitRunReques"
+    "t\032#.evo.execution.v1.SubmitRunResponse\022T"
+    "\n\tCancelRun\022\".evo.execution.v1.CancelRun"
+    "Request\032#.evo.execution.v1.CancelRunResp"
+    "onse\022K\n\006GetRun\022\037.evo.execution.v1.GetRun"
+    "Request\032 .evo.execution.v1.GetRunRespons"
+    "e\022K\n\006Health\022\037.evo.execution.v1.HealthReq"
+    "uest\032 .evo.execution.v1.HealthResponseB\t"
+    "\200\001\000\210\001\000\220\001\000b\006proto3"
 };
 static const ::_pbi::DescriptorTable* PROTOBUF_NONNULL const
     descriptor_table_evo_2fexecution_2eproto_deps[1] = {
@@ -2590,13 +2786,13 @@ static ::absl::once_flag descriptor_table_evo_2fexecution_2eproto_once;
 PROTOBUF_CONSTINIT const ::_pbi::DescriptorTable descriptor_table_evo_2fexecution_2eproto = {
     false,
     false,
-    3247,
+    3457,
     descriptor_table_protodef_evo_2fexecution_2eproto,
     "evo/execution.proto",
     &descriptor_table_evo_2fexecution_2eproto_once,
     descriptor_table_evo_2fexecution_2eproto_deps,
     1,
-    12,
+    13,
     schemas,
     file_message_globals,
     TableStruct_evo_2fexecution_2eproto::offsets,
@@ -2614,37 +2810,44 @@ ResultEnvelope_StatusCode_descriptor() {
 PROTOBUF_CONSTINIT const uint32_t ResultEnvelope_StatusCode_internal_data_[] = {
     393216u, 0u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
-ErrorClass_descriptor() {
+ControlEnvelope_Kind_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
   return file_level_enum_descriptors_evo_2fexecution_2eproto[1];
+}
+PROTOBUF_CONSTINIT const uint32_t ControlEnvelope_Kind_internal_data_[] = {
+    131072u, 0u, };
+[[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
+ErrorClass_descriptor() {
+  ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
+  return file_level_enum_descriptors_evo_2fexecution_2eproto[2];
 }
 PROTOBUF_CONSTINIT const uint32_t ErrorClass_internal_data_[] = {
     327680u, 0u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
 NodeState_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
-  return file_level_enum_descriptors_evo_2fexecution_2eproto[2];
+  return file_level_enum_descriptors_evo_2fexecution_2eproto[3];
 }
 PROTOBUF_CONSTINIT const uint32_t NodeState_internal_data_[] = {
     327680u, 32u, 28u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
 RunOutcome_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
-  return file_level_enum_descriptors_evo_2fexecution_2eproto[3];
+  return file_level_enum_descriptors_evo_2fexecution_2eproto[4];
 }
 PROTOBUF_CONSTINIT const uint32_t RunOutcome_internal_data_[] = {
     262144u, 0u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
 ResourceClass_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
-  return file_level_enum_descriptors_evo_2fexecution_2eproto[4];
+  return file_level_enum_descriptors_evo_2fexecution_2eproto[5];
 }
 PROTOBUF_CONSTINIT const uint32_t ResourceClass_internal_data_[] = {
     262144u, 0u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
 RunStatus_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
-  return file_level_enum_descriptors_evo_2fexecution_2eproto[5];
+  return file_level_enum_descriptors_evo_2fexecution_2eproto[6];
 }
 PROTOBUF_CONSTINIT const uint32_t RunStatus_internal_data_[] = {
     393216u, 0u, };
@@ -3830,6 +4033,328 @@ void ResultEnvelope::InternalSwap(ResultEnvelope* PROTOBUF_RESTRICT PROTOBUF_NON
 }
 
 ::google::protobuf::Metadata ResultEnvelope::GetMetadata() const {
+  return ::google::protobuf::Message::GetMetadataImpl(GetClassData()->full());
+}
+// ===================================================================
+
+void ControlEnvelope::clear_requested_at() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  if (_impl_.requested_at_ != nullptr) _impl_.requested_at_->Clear();
+  ClearHasBit(_impl_._has_bits_[0], 0x00000004U);
+}
+ControlEnvelope::ControlEnvelope(::google::protobuf::Arena* PROTOBUF_NULLABLE arena)
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+    : ::google::protobuf::Message(arena, ControlEnvelope_get_class_data()) {
+#else   // PROTOBUF_CUSTOM_VTABLE
+    : ::google::protobuf::Message(arena) {
+#endif  // PROTOBUF_CUSTOM_VTABLE
+  SharedCtor(arena);
+  // @@protoc_insertion_point(arena_constructor:evo.execution.v1.ControlEnvelope)
+}
+PROTOBUF_NDEBUG_INLINE ControlEnvelope::Impl_::Impl_(
+    [[maybe_unused]] ::google::protobuf::internal::InternalVisibility visibility,
+    [[maybe_unused]] ::google::protobuf::Arena* PROTOBUF_NULLABLE arena, const Impl_& from,
+    [[maybe_unused]] const ::evo::execution::v1::ControlEnvelope& from_msg)
+      : _has_bits_{from._has_bits_},
+        _cached_size_{0},
+        run_id_(arena, from.run_id_),
+        reason_(arena, from.reason_) {}
+
+ControlEnvelope::ControlEnvelope(
+    ::google::protobuf::Arena* PROTOBUF_NULLABLE arena,
+    const ControlEnvelope& from)
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+    : ::google::protobuf::Message(arena, ControlEnvelope_get_class_data()) {
+
+#else   // PROTOBUF_CUSTOM_VTABLE
+    : ::google::protobuf::Message(arena) {
+#endif  // PROTOBUF_CUSTOM_VTABLE
+  ControlEnvelope* const _this = this;
+  (void)_this;
+  _internal_metadata_.MergeFrom<::google::protobuf::UnknownFieldSet>(
+      from._internal_metadata_);
+  new (&_impl_) Impl_(internal_visibility(), arena, from._impl_, from);
+  ::uint32_t cached_has_bits = _impl_._has_bits_[0];
+  _impl_.requested_at_ = (CheckHasBit(cached_has_bits, 0x00000004U))
+                ? ::google::protobuf::Message::CopyConstruct(arena, *from._impl_.requested_at_)
+                : nullptr;
+  _impl_.kind_ = from._impl_.kind_;
+
+  // @@protoc_insertion_point(copy_constructor:evo.execution.v1.ControlEnvelope)
+}
+PROTOBUF_NDEBUG_INLINE ControlEnvelope::Impl_::Impl_(
+    [[maybe_unused]] ::google::protobuf::internal::InternalVisibility visibility,
+    [[maybe_unused]] ::google::protobuf::Arena* PROTOBUF_NULLABLE arena)
+      : _cached_size_{0},
+        run_id_(arena),
+        reason_(arena) {}
+
+inline void ControlEnvelope::SharedCtor(::_pb::Arena* PROTOBUF_NULLABLE arena) {
+  new (&_impl_) Impl_(internal_visibility(), arena);
+  ::memset(reinterpret_cast<char*>(&_impl_) +
+               offsetof(Impl_, requested_at_),
+           0,
+           offsetof(Impl_, kind_) -
+               offsetof(Impl_, requested_at_) +
+               sizeof(Impl_::kind_));
+}
+ControlEnvelope::~ControlEnvelope() {
+  // @@protoc_insertion_point(destructor:evo.execution.v1.ControlEnvelope)
+  SharedDtor(*this);
+}
+inline void ControlEnvelope::SharedDtor(MessageLite& self) {
+  ControlEnvelope& this_ = static_cast<ControlEnvelope&>(self);
+  if constexpr (::_pbi::DebugHardenCheckHasBitConsistency()) {
+    this_.CheckHasBitConsistency();
+  }
+  this_._internal_metadata_.Delete<::google::protobuf::UnknownFieldSet>();
+  ABSL_DCHECK(this_.GetArena() == nullptr);
+  this_._impl_.run_id_.Destroy();
+  this_._impl_.reason_.Destroy();
+  delete this_._impl_.requested_at_;
+  this_._impl_.~Impl_();
+}
+
+#ifndef PROTOBUF_MESSAGE_GLOBALS
+PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 const
+    ::google::protobuf::internal::ClassDataFull ControlEnvelope_class_data_ =
+        ControlEnvelope::InternalGenerateClassData_(ControlEnvelope_globals_._default);
+
+PROTOBUF_ATTRIBUTE_WEAK const ::google::protobuf::internal::ClassData* PROTOBUF_NONNULL
+ControlEnvelope::GetClassData() const {
+  ::google::protobuf::internal::PrefetchToLocalCache(&ControlEnvelope_class_data_);
+  ::google::protobuf::internal::PrefetchToLocalCache(ControlEnvelope_class_data_.tc_table);
+  return ControlEnvelope_class_data_.base();
+}
+#else
+PROTOBUF_ATTRIBUTE_WEAK const ::google::protobuf::internal::ClassData* PROTOBUF_NONNULL
+ControlEnvelope::GetClassData() const {
+  ::google::protobuf::internal::PrefetchToLocalCache(&ControlEnvelope_globals_);
+  ::google::protobuf::internal::PrefetchToLocalCache(
+      ::google::protobuf::internal::MessageGlobalsBase::ToParseTableBase(&ControlEnvelope_globals_));
+  return ControlEnvelope_globals_.GetClassData();
+}
+#endif  // !PROTOBUF_MESSAGE_GLOBALS
+#ifndef PROTOBUF_MESSAGE_GLOBALS
+PROTOBUF_CONSTINIT
+PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 const ControlEnvelope::ParseTableT_
+    ControlEnvelope::_table_ =
+        ControlEnvelope::InternalGenerateParseTable_(ControlEnvelope_class_data_.base());
+#endif  // !PROTOBUF_MESSAGE_GLOBALS
+PROTOBUF_NOINLINE void ControlEnvelope::Clear() {
+// @@protoc_insertion_point(message_clear_start:evo.execution.v1.ControlEnvelope)
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  ::uint32_t cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void) cached_has_bits;
+
+  cached_has_bits = _impl_._has_bits_[0];
+  if (BatchCheckHasBit(cached_has_bits, 0x00000007U)) {
+    if (CheckHasBit(cached_has_bits, 0x00000001U)) {
+      _impl_.run_id_.ClearNonDefaultToEmpty();
+    }
+    if (CheckHasBit(cached_has_bits, 0x00000002U)) {
+      _impl_.reason_.ClearNonDefaultToEmpty();
+    }
+    if (CheckHasBit(cached_has_bits, 0x00000004U)) {
+      ABSL_DCHECK(_impl_.requested_at_ != nullptr);
+      _impl_.requested_at_->Clear();
+    }
+  }
+  _impl_.kind_ = 0;
+  _impl_._has_bits_.Clear();
+  _internal_metadata_.Clear<::google::protobuf::UnknownFieldSet>();
+}
+
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+::uint8_t* PROTOBUF_NONNULL ControlEnvelope::_InternalSerialize(
+    const ::google::protobuf::MessageLite& base, ::uint8_t* PROTOBUF_NONNULL target,
+    ::google::protobuf::io::EpsCopyOutputStream* PROTOBUF_NONNULL stream) {
+  const ControlEnvelope& this_ = static_cast<const ControlEnvelope&>(base);
+#else   // PROTOBUF_CUSTOM_VTABLE
+::uint8_t* PROTOBUF_NONNULL ControlEnvelope::_InternalSerialize(
+    ::uint8_t* PROTOBUF_NONNULL target,
+    ::google::protobuf::io::EpsCopyOutputStream* PROTOBUF_NONNULL stream) const {
+  const ControlEnvelope& this_ = *this;
+#endif  // PROTOBUF_CUSTOM_VTABLE
+  if constexpr (::_pbi::DebugHardenCheckHasBitConsistency()) {
+    this_.CheckHasBitConsistency();
+  }
+  // @@protoc_insertion_point(serialize_to_array_start:evo.execution.v1.ControlEnvelope)
+  ::uint32_t cached_has_bits = 0;
+  (void)cached_has_bits;
+
+  cached_has_bits = this_._impl_._has_bits_[0];
+  // .evo.execution.v1.ControlEnvelope.Kind kind = 1;
+  if (CheckHasBit(cached_has_bits, 0x00000008U)) {
+    if (this_._internal_kind() != 0) {
+      target = stream->EnsureSpace(target);
+      target = ::_pbi::WireFormatLite::WriteEnumToArray(
+          1, this_._internal_kind(), target);
+    }
+  }
+
+  // string run_id = 2;
+  if (CheckHasBit(cached_has_bits, 0x00000001U)) {
+    if (!this_._internal_run_id().empty()) {
+      const ::std::string& _s = this_._internal_run_id();
+      ::google::protobuf::internal::WireFormatLite::VerifyUtf8String(
+          _s.data(), static_cast<int>(_s.length()), ::google::protobuf::internal::WireFormatLite::SERIALIZE, "evo.execution.v1.ControlEnvelope.run_id");
+      target = stream->WriteStringMaybeAliased(2, _s, target);
+    }
+  }
+
+  // string reason = 3;
+  if (CheckHasBit(cached_has_bits, 0x00000002U)) {
+    if (!this_._internal_reason().empty()) {
+      const ::std::string& _s = this_._internal_reason();
+      ::google::protobuf::internal::WireFormatLite::VerifyUtf8String(
+          _s.data(), static_cast<int>(_s.length()), ::google::protobuf::internal::WireFormatLite::SERIALIZE, "evo.execution.v1.ControlEnvelope.reason");
+      target = stream->WriteStringMaybeAliased(3, _s, target);
+    }
+  }
+
+  // .google.protobuf.Timestamp requested_at = 4;
+  if (CheckHasBit(cached_has_bits, 0x00000004U)) {
+    target = ::google::protobuf::internal::WireFormatLite::InternalWriteMessage(
+        4, *this_._impl_.requested_at_, this_._impl_.requested_at_->GetCachedSize(), target,
+        stream);
+  }
+
+  if (ABSL_PREDICT_FALSE(this_._internal_metadata_.have_unknown_fields())) {
+    target =
+        ::_pbi::WireFormat::InternalSerializeUnknownFieldsToArray(
+            this_._internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance), target, stream);
+  }
+  // @@protoc_insertion_point(serialize_to_array_end:evo.execution.v1.ControlEnvelope)
+  return target;
+}
+
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+::size_t ControlEnvelope::ByteSizeLong(const MessageLite& base) {
+  const ControlEnvelope& this_ = static_cast<const ControlEnvelope&>(base);
+#else   // PROTOBUF_CUSTOM_VTABLE
+::size_t ControlEnvelope::ByteSizeLong() const {
+  const ControlEnvelope& this_ = *this;
+#endif  // PROTOBUF_CUSTOM_VTABLE
+  // @@protoc_insertion_point(message_byte_size_start:evo.execution.v1.ControlEnvelope)
+  ::size_t total_size = 0;
+
+  ::uint32_t cached_has_bits = 0;
+  // Prevent compiler warnings about cached_has_bits being unused
+  (void)cached_has_bits;
+
+  ::_pbi::Prefetch5LinesFrom7Lines(&this_);
+  cached_has_bits = this_._impl_._has_bits_[0];
+  if (BatchCheckHasBit(cached_has_bits, 0x0000000fU)) {
+    // string run_id = 2;
+    if (CheckHasBit(cached_has_bits, 0x00000001U)) {
+      if (!this_._internal_run_id().empty()) {
+        total_size += 1 + ::google::protobuf::internal::WireFormatLite::StringSize(
+                                        this_._internal_run_id());
+      }
+    }
+    // string reason = 3;
+    if (CheckHasBit(cached_has_bits, 0x00000002U)) {
+      if (!this_._internal_reason().empty()) {
+        total_size += 1 + ::google::protobuf::internal::WireFormatLite::StringSize(
+                                        this_._internal_reason());
+      }
+    }
+    // .google.protobuf.Timestamp requested_at = 4;
+    if (CheckHasBit(cached_has_bits, 0x00000004U)) {
+      total_size += 1 +
+                    ::google::protobuf::internal::WireFormatLite::MessageSize(*this_._impl_.requested_at_);
+    }
+    // .evo.execution.v1.ControlEnvelope.Kind kind = 1;
+    if (CheckHasBit(cached_has_bits, 0x00000008U)) {
+      if (this_._internal_kind() != 0) {
+        total_size += 1 +
+                      ::_pbi::WireFormatLite::EnumSize(this_._internal_kind());
+      }
+    }
+  }
+  return this_.MaybeComputeUnknownFieldsSize(total_size,
+                                             &this_._impl_._cached_size_);
+}
+
+void ControlEnvelope::MergeImpl(::google::protobuf::MessageLite& to_msg,
+                      const ::google::protobuf::MessageLite& from_msg) {
+   auto* const _this = static_cast<ControlEnvelope*>(&to_msg);
+  auto& from = static_cast<const ControlEnvelope&>(from_msg);
+  if constexpr (::_pbi::DebugHardenCheckHasBitConsistency()) {
+    from.CheckHasBitConsistency();
+  }
+  ::google::protobuf::Arena* arena = _this->GetArena();
+  // @@protoc_insertion_point(class_specific_merge_from_start:evo.execution.v1.ControlEnvelope)
+  ABSL_DCHECK_NE(&from, _this);
+  ::uint32_t cached_has_bits = 0;
+  (void)cached_has_bits;
+
+  cached_has_bits = from._impl_._has_bits_[0];
+  if (BatchCheckHasBit(cached_has_bits, 0x0000000fU)) {
+    if (CheckHasBit(cached_has_bits, 0x00000001U)) {
+      if (!from._internal_run_id().empty()) {
+        _this->_internal_set_run_id(from._internal_run_id());
+      } else {
+        if (_this->_impl_.run_id_.IsDefault()) {
+          _this->_internal_set_run_id("");
+        }
+      }
+    }
+    if (CheckHasBit(cached_has_bits, 0x00000002U)) {
+      if (!from._internal_reason().empty()) {
+        _this->_internal_set_reason(from._internal_reason());
+      } else {
+        if (_this->_impl_.reason_.IsDefault()) {
+          _this->_internal_set_reason("");
+        }
+      }
+    }
+    if (CheckHasBit(cached_has_bits, 0x00000004U)) {
+      ABSL_DCHECK(from._impl_.requested_at_ != nullptr);
+      if (_this->_impl_.requested_at_ == nullptr) {
+        _this->_impl_.requested_at_ = ::google::protobuf::Message::CopyConstruct(arena, *from._impl_.requested_at_);
+      } else {
+        _this->_impl_.requested_at_->MergeFrom(*from._impl_.requested_at_);
+      }
+    }
+    if (CheckHasBit(cached_has_bits, 0x00000008U)) {
+      if (from._internal_kind() != 0) {
+        _this->_impl_.kind_ = from._impl_.kind_;
+      }
+    }
+  }
+  _this->_impl_._has_bits_[0] |= cached_has_bits;
+  _this->_internal_metadata_.MergeFrom<::google::protobuf::UnknownFieldSet>(
+      from._internal_metadata_);
+}
+
+void ControlEnvelope::CopyFrom(const ControlEnvelope& from) {
+  // @@protoc_insertion_point(class_specific_copy_from_start:evo.execution.v1.ControlEnvelope)
+  if (&from == this) return;
+  Clear();
+  MergeFrom(from);
+}
+
+
+void ControlEnvelope::InternalSwap(ControlEnvelope* PROTOBUF_RESTRICT PROTOBUF_NONNULL other) {
+  using ::std::swap;
+  auto* arena = GetArena();
+  ABSL_DCHECK_EQ(arena, other->GetArena());
+  _internal_metadata_.InternalSwap(&other->_internal_metadata_);
+  swap(_impl_._has_bits_[0], other->_impl_._has_bits_[0]);
+  ::_pbi::ArenaStringPtr::InternalSwap(&_impl_.run_id_, &other->_impl_.run_id_, arena);
+  ::_pbi::ArenaStringPtr::InternalSwap(&_impl_.reason_, &other->_impl_.reason_, arena);
+  ::google::protobuf::internal::memswap<
+      PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.kind_)
+      + sizeof(ControlEnvelope::_impl_.kind_)
+      - PROTOBUF_FIELD_OFFSET(ControlEnvelope, _impl_.requested_at_)>(
+          reinterpret_cast<char*>(&_impl_.requested_at_),
+          reinterpret_cast<char*>(&other->_impl_.requested_at_));
+}
+
+::google::protobuf::Metadata ControlEnvelope::GetMetadata() const {
   return ::google::protobuf::Message::GetMetadataImpl(GetClassData()->full());
 }
 // ===================================================================

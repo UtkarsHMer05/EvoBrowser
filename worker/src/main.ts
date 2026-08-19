@@ -245,6 +245,10 @@ const worker = new Worker({
   workerId,
   executor: compositeExecutor,
   onShutdown: () => browserSessions.closeAll(),
+  // M30: a CANCEL_RUN control message aborts this worker's in-flight attempts
+  // for the run (worker.ts); close the run's browser session promptly here so
+  // Stagehand/Browserbase resources stop as soon as the cancel propagates.
+  onCancelRun: (runId) => browserSessions.closeAllForRun(runId),
 });
 
 let shuttingDown = false;

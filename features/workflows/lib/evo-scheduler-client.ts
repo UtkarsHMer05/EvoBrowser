@@ -141,9 +141,21 @@ export function createGrpcEvoSchedulerClient(addr: string): EvoSchedulerClient {
     },
 
     async cancelRun(args) {
+      const req: Record<string, unknown> = {
+        runId: args.runId,
+        reason: args.reason,
+        traceId: args.traceId,
+      };
+      // M30: wall-clock UTC ms -> google.protobuf.Timestamp {seconds, nanos}.
+      if (args.requestedAtMs !== undefined) {
+        req.requestedAt = {
+          seconds: Math.floor(args.requestedAtMs / 1000),
+          nanos: (args.requestedAtMs % 1000) * 1_000_000,
+        };
+      }
       const resp = await unary<Record<string, unknown>>(
-        (req, cb) => getClient().CancelRun(req, cb),
-        { runId: args.runId, reason: args.reason, traceId: args.traceId },
+        (r, cb) => getClient().CancelRun(r, cb),
+        req,
       );
       return { ok: Boolean(resp.ok) };
     },

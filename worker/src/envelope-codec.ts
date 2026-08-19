@@ -101,6 +101,19 @@ export const ErrorClass = {
   ERROR_CANCELED: 4,
 } as const;
 
+// ControlEnvelope.Kind numeric values (execution.proto, M30).
+export const ControlKind = {
+  CONTROL_KIND_UNSPECIFIED: 0,
+  CANCEL_RUN: 1,
+} as const;
+
+export interface ControlEnvelopeView {
+  kind: number;
+  runId: string;
+  reason: string;
+  requestedAtWallMs?: number;
+}
+
 function wallToTimestamp(ms: number): { seconds: number; nanos: number } {
   const seconds = Math.floor(ms / 1000);
   const nanos = (ms % 1000) * 1_000_000;
@@ -125,6 +138,108 @@ export async function decodeTaskEnvelope(
     spanId: msg.spanId ?? "",
     nodeType: msg.nodeType ?? "",
     nodePayloadJson: msg.nodePayloadJson ?? "",
+  };
+}
+
+/**
+ * Decode a ControlEnvelope (M30). Throws on malformed bytes — the caller
+ * quarantines + acks, same policy as task envelopes.
+ */
+export async function decodeControlEnvelope(
+  bytes: Buffer,
+): Promise<ControlEnvelopeView> {
+  const root = await loadRoot();
+  const ControlEnvelope = root.lookupType(
+    "evo.execution.v1.ControlEnvelope",
+  ) as Type;
+  const msg = ControlEnvelope.decode(bytes) as unknown as {
+    kind?: number;
+    runId?: string;
+    reason?: string;
+    requestedAt?: { seconds?: number; nanos?: number };
+  };
+  const requestedAt = msg.requestedAt;
+  const requestedAtWallMs =
+    requestedAt && (requestedAt.seconds || requestedAt.nanos)
+      ? Number(requestedAt.seconds ?? 0) * 1000 +
+        Math.floor(Number(requestedAt.nanos ?? 0) / 1_000_000)
+      : undefined;
+  return {
+    kind: Number(msg.kind ?? 0),
+    runId: msg.runId ?? "",
+    reason: msg.reason ?? "",
+    requestedAtWallMs,
+  };
+}
+
+export interface ControlEnvelopeInput {
+  kind: number;
+  runId: string;
+  reason?: string;
+  requestedAtWallMs?: number;
+}
+
+/** Encode a ControlEnvelope (used by tests + any scheduler-side publisher). */
+export async function encodeControlEnvelope(
+  input: ControlEnvelopeInput,
+): Promise<Buffer> {
+  const root = await loadRoot();
+  const ControlEnvelope = root.lookupType(
+    "evo.execution.v1.ControlEnvelope",
+  ) as Type;
+  const payload: Record<string, unknown> = {
+    kind: input.kind,
+    runId: input.runId,
+  };
+  if (input.reason) payload.reason = input.reason;
+  if (input.requestedAtWallMs !== undefined) {
+    payload.requestedAt = wallToTimestamp(input.requestedAtWallMs);
+  }
+  const err = ControlEnvelope.verify(payload);
+  if (err) throw new Error(`ControlEnvelope invalid: ${err}`);
+  const msg = ControlEnvelope.create(payload);
+  return Buffer.from(ControlEnvelope.encode(msg).finish());
+}
+
+export interface ResultEnvelopeView {
+  runId: string;
+  nodeId: string;
+  attemptNumber: number;
+  traceId: string;
+  completed: boolean;
+  output: string;
+  error: string;
+  status: number;
+  abandoned: boolean;
+  errorClass: number;
+  retryable?: boolean;
+  workerId: string;
+}
+
+/** Decode a ResultEnvelope (tests + any result-stream consumer). */
+export async function decodeResultEnvelope(
+  bytes: Buffer,
+): Promise<ResultEnvelopeView> {
+  const root = await loadRoot();
+  const ResultEnvelope = root.lookupType(
+    "evo.execution.v1.ResultEnvelope",
+  ) as Type;
+  const msg = ResultEnvelope.decode(bytes) as unknown as Partial<
+    ResultEnvelopeView
+  > & { retryable?: boolean };
+  return {
+    runId: msg.runId ?? "",
+    nodeId: msg.nodeId ?? "",
+    attemptNumber: Number(msg.attemptNumber ?? 0),
+    traceId: msg.traceId ?? "",
+    completed: Boolean(msg.completed),
+    output: msg.output ?? "",
+    error: msg.error ?? "",
+    status: Number(msg.status ?? 0),
+    abandoned: Boolean(msg.abandoned),
+    errorClass: Number(msg.errorClass ?? 0),
+    retryable: msg.retryable,
+    workerId: msg.workerId ?? "",
   };
 }
 

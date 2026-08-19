@@ -73,6 +73,11 @@ struct RunRecord {
   std::string engine = "evo";
   std::string status = run_status::kQueued;
   std::string outcome;  // empty => NULL
+  // Milestone 30: wall-clock UTC ms of the FIRST cancellation request
+  // (0 => none/NULL) and its reason (empty => NULL). Written once,
+  // idempotently, by mark_cancel_requested.
+  std::int64_t cancel_requested_at = 0;
+  std::string cancel_reason;
 };
 
 struct NodeRunRecord {
@@ -145,6 +150,15 @@ class RunStore {
                           const std::string& outcome,
                           std::int64_t finished_wall_ms) = 0;
 
+  // Record the FIRST cancellation request for a run (Milestone 30). Idempotent:
+  // only the first request stamps cancel_requested_at (and cancel_reason); a
+  // repeated request returns true but does not overwrite the original
+  // timestamp. Returns false only when the run row does not exist. The
+  // timestamp is wall-clock UTC milliseconds; 0 => unknown (stored as NULL).
+  virtual bool mark_cancel_requested(const std::string& run_id,
+                                     const std::string& reason,
+                                     std::int64_t requested_wall_ms) = 0;
+
   // --- Audit readers (tests / observability) ---
   virtual std::optional<RunRecord> get_run(const std::string& run_id) = 0;
   virtual std::optional<NodeRunRecord> get_node_run(
@@ -191,6 +205,10 @@ class InMemoryRunStore final : public RunStore {
   bool finish_run(const std::string& run_id, const std::string& status,
                   const std::string& outcome,
                   std::int64_t finished_wall_ms) override;
+
+  bool mark_cancel_requested(const std::string& run_id,
+                             const std::string& reason,
+                             std::int64_t requested_wall_ms) override;
 
   std::optional<RunRecord> get_run(const std::string& run_id) override;
   std::optional<NodeRunRecord> get_node_run(

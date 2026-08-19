@@ -62,8 +62,45 @@ void DistributedRunLoop::stop() {
 }
 
 void DistributedRunLoop::cancel(const std::string& reason) {
+  std::lock_guard lock(cancel_mu_);
+  // Idempotent + terminal no-op (M30 step 8): only the FIRST request before
+  // finalization takes effect. Repeats and Stop-after-terminal do nothing —
+  // the original reason/timestamp/control message are preserved.
+  if (finalized_.load(std::memory_order_relaxed)) return;
+  if (cancel_requested_.load(std::memory_order_relaxed)) return;
+
   cancel_reason_ = reason;
+  cancel_requested_at_ = now_wall_ms();
   cancel_requested_.store(true, std::memory_order_relaxed);
+
+  // Durable first-write-wins stamp (M30 step 1). If the run row does not
+  // exist yet (cancel raced run() startup), run() retries the stamp right
+  // after creating the row.
+  cancel_stamped_ =
+      store_.mark_cancel_requested(config_.run_id, cancel_reason_,
+                                   cancel_requested_at_);
+
+  // Propagate to workers (M30 step 3): best-effort fan-out on the control
+  // stream. The durable store + late-result rule are the backstop for any
+  // worker that misses the message.
+  publish_cancel_control();
+}
+
+void DistributedRunLoop::publish_cancel_control() {
+  // Caller holds cancel_mu_. Publishes exactly once per loop instance.
+  if (cancel_published_) return;
+  cancel_published_ = true;
+
+  execution::v1::ControlEnvelope env;
+  env.set_kind(execution::v1::ControlEnvelope::CANCEL_RUN);
+  env.set_run_id(config_.run_id);
+  env.set_reason(cancel_reason_);
+  *env.mutable_requested_at() =
+      TimeUtil::MillisecondsToTimestamp(cancel_requested_at_);
+  // Non-fatal on transport failure: workers that miss the message are still
+  // bounded by the late-result rule once the run is terminal canceled.
+  transport_.publish(control_stream_key(config_.env_prefix),
+                     env.SerializeAsString());
 }
 
 std::vector<RunEvent> DistributedRunLoop::events() const {
@@ -98,6 +135,12 @@ ResourcePolicy DistributedRunLoop::policy_for_node(const NodeId& id) const {
 }
 
 void DistributedRunLoop::dispatch_ready() {
+  // M30 no-go: no new task dispatches after a cancellation request. The run
+  // loop also checks the flag before calling this, but dispatch can be
+  // reached again within the same iteration after a result applied — the
+  // guard here makes "no dispatch after cancel" unconditional.
+  if (cancel_requested_.load(std::memory_order_relaxed)) return;
+
   for (const auto& id : state_.ready_nodes()) {
     // The ready snapshot can go stale mid-iteration (e.g. a same-loop
     // failure canceled downstream nodes); only Ready nodes are dispatched.
@@ -293,6 +336,16 @@ std::string DistributedRunLoop::run() {
     store_.create_node_run(config_.run_id, id.value, spec ? spec->type : "");
   }
 
+  // If cancel() raced run() startup, the run row did not exist when the
+  // request was stamped; retry the durable stamp now that it does.
+  if (cancel_requested_.load(std::memory_order_relaxed)) {
+    std::lock_guard lock(cancel_mu_);
+    if (!cancel_stamped_) {
+      cancel_stamped_ = store_.mark_cancel_requested(
+          config_.run_id, cancel_reason_, cancel_requested_at_);
+    }
+  }
+
   state_.start_run();
   emit("run_started", nullptr, "");
 
@@ -303,13 +356,16 @@ std::string DistributedRunLoop::run() {
           : std::nullopt;
 
   while (!stop_requested_.load(std::memory_order_relaxed)) {
-    // Cancellation (M26: cancellation races completion): apply once. Pending/
-    // blocked/ready nodes become CANCELED; in-flight results that arrive
-    // later are ignored by the late-result rule (node already terminal).
+    // Cancellation (M30): apply once. Pending/blocked/ready nodes become
+    // CANCELED; in-flight results that arrive later are ignored by the
+    // late-result rule (node already terminal). No dispatch happens after
+    // this point — the check precedes dispatch_ready() and dispatch_ready()
+    // itself re-checks the flag.
     if (cancel_requested_.load(std::memory_order_relaxed)) {
       auto canceled = state_.cancel_run();
       persist_canceled(canceled);
       finalize_run(run_status::kCanceled, "canceled");
+      finalized_.store(true, std::memory_order_relaxed);
       return run_status::kCanceled;
     }
 
@@ -319,6 +375,7 @@ std::string DistributedRunLoop::run() {
     if (state_.all_nodes_terminal()) {
       state_.finalize_run();
       const RunState rs = state_.run_state();
+      finalized_.store(true, std::memory_order_relaxed);
       if (rs == RunState::Succeeded) {
         finalize_run(run_status::kSucceeded, "succeeded");
         return run_status::kSucceeded;
@@ -336,6 +393,7 @@ std::string DistributedRunLoop::run() {
       auto canceled = state_.cancel_run();
       persist_canceled(canceled);
       finalize_run(run_status::kCanceled, "timeout");
+      finalized_.store(true, std::memory_order_relaxed);
       return run_status::kCanceled;
     }
 
@@ -373,6 +431,7 @@ std::string DistributedRunLoop::run() {
   auto canceled = state_.cancel_run();
   persist_canceled(canceled);
   finalize_run(run_status::kCanceled, "stopped");
+  finalized_.store(true, std::memory_order_relaxed);
   return run_status::kCanceled;
 }
 

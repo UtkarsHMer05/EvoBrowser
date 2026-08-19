@@ -112,6 +112,12 @@ export const workflowRuns = pgTable(
     status: text("status").notNull().default("queued"),
     outcome: text("outcome"),
     cancelReason: text("cancel_reason"),
+    // Phase 2 (M30): wall-clock UTC timestamp of the FIRST cancellation request
+    // for this run. Written once (idempotent — the first request wins) when Stop
+    // reaches the engine, before the run is marked terminal. Lets audit/latency
+    // tooling distinguish "cancel requested" from "cancel finalized" and proves
+    // the request was durably recorded even if the process dies mid-cancel.
+    cancelRequestedAt: timestamp("cancel_requested_at"),
     // Phase 2 (M29): the Browserbase session an Evo run drove. The distributed
     // worker stamps it as soon as the session opens, so replay / live-view /
     // screenshot can resolve the session from durable state (the event stream

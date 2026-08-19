@@ -237,11 +237,39 @@ bool PgRunStore::finish_run(const std::string& run_id, const std::string& status
   return r.ok && r.rows_affected == 1;
 }
 
+bool PgRunStore::mark_cancel_requested(const std::string& run_id,
+                                       const std::string& reason,
+                                       std::int64_t requested_wall_ms) {
+  // Milestone 30: stamp the FIRST cancellation request. The WHERE guard makes
+  // repeated requests a no-op (0 rows) that still reports success when the run
+  // exists — first request wins, later ones never overwrite the timestamp.
+  auto r = exec_params(
+      "UPDATE workflow_runs SET cancel_requested_at = "
+      "CASE WHEN $3::bigint = 0 THEN NULL ELSE "
+      "to_timestamp($3::bigint / 1000.0) AT TIME ZONE 'UTC' END, "
+      "cancel_reason = NULLIF($2, '') "
+      "WHERE id = $1 AND cancel_requested_at IS NULL",
+      {run_id, reason, std::to_string(requested_wall_ms)});
+  if (r.res) PQclear(r.res);
+  if (!r.ok) return false;
+  if (r.rows_affected == 1) return true;
+  // 0 rows: either the run does not exist (=> false) or a cancellation was
+  // already recorded (=> true, idempotent).
+  auto exists = exec_params("SELECT 1 FROM workflow_runs WHERE id = $1",
+                            {run_id});
+  const bool found = exists.ok && exists.res && PQntuples(exists.res) == 1;
+  if (exists.res) PQclear(exists.res);
+  return found;
+}
+
 std::optional<RunRecord> PgRunStore::get_run(const std::string& run_id) {
   auto r = exec_params(
       "SELECT id, org_id, workflow_id::text, "
       "COALESCE(workflow_version_id::text, ''), engine, status, "
-      "COALESCE(outcome, '') FROM workflow_runs WHERE id = $1",
+      "COALESCE(outcome, ''), "
+      "COALESCE(cancel_reason, ''), "
+      "COALESCE(extract(epoch FROM cancel_requested_at) * 1000, 0)::bigint "
+      "FROM workflow_runs WHERE id = $1",
       {run_id});
   std::optional<RunRecord> out;
   if (r.ok && r.res && PQntuples(r.res) == 1) {
@@ -253,6 +281,8 @@ std::optional<RunRecord> PgRunStore::get_run(const std::string& run_id) {
     rec.engine = PQgetvalue(r.res, 0, 4);
     rec.status = PQgetvalue(r.res, 0, 5);
     rec.outcome = PQgetvalue(r.res, 0, 6);
+    rec.cancel_reason = PQgetvalue(r.res, 0, 7);
+    rec.cancel_requested_at = std::atoll(PQgetvalue(r.res, 0, 8));
     out = rec;
   }
   if (r.res) PQclear(r.res);

@@ -63,6 +63,8 @@ extern const ::google::protobuf::internal::DescriptorTable descriptor_table_evo_
 namespace evo {
 namespace execution {
 namespace v1 {
+enum ControlEnvelope_Kind : int;
+extern const uint32_t ControlEnvelope_Kind_internal_data_[];
 enum ErrorClass : int;
 extern const uint32_t ErrorClass_internal_data_[];
 enum NodeState : int;
@@ -90,6 +92,14 @@ extern CancelRunResponseGlobalsTypeInternal CancelRunResponse_globals_;
 extern const ::google::protobuf::internal::ClassDataFull CancelRunResponse_class_data_;
 #else
 extern const CancelRunResponseGlobalsTypeInternal CancelRunResponse_globals_;
+#endif  // PROTOBUF_MESSAGE_GLOBALS
+class ControlEnvelope;
+struct ControlEnvelopeGlobalsTypeInternal;
+#ifndef PROTOBUF_MESSAGE_GLOBALS
+extern ControlEnvelopeGlobalsTypeInternal ControlEnvelope_globals_;
+extern const ::google::protobuf::internal::ClassDataFull ControlEnvelope_class_data_;
+#else
+extern const ControlEnvelopeGlobalsTypeInternal ControlEnvelope_globals_;
 #endif  // PROTOBUF_MESSAGE_GLOBALS
 class GetRunRequest;
 struct GetRunRequestGlobalsTypeInternal;
@@ -177,6 +187,9 @@ extern const TaskEnvelopeGlobalsTypeInternal TaskEnvelope_globals_;
 namespace google {
 namespace protobuf {
 template <>
+internal::EnumTraitsT<::evo::execution::v1::ControlEnvelope_Kind_internal_data_>
+    internal::EnumTraitsImpl::value<::evo::execution::v1::ControlEnvelope_Kind>;
+template <>
 internal::EnumTraitsT<::evo::execution::v1::ErrorClass_internal_data_>
     internal::EnumTraitsImpl::value<::evo::execution::v1::ErrorClass>;
 template <>
@@ -242,6 +255,46 @@ template <>
 [[nodiscard]] inline bool ResultEnvelope_StatusCode_Parse(
     ::absl::string_view name, ResultEnvelope_StatusCode* PROTOBUF_NONNULL value) {
   return ::google::protobuf::internal::ParseNamedEnum<ResultEnvelope_StatusCode>(ResultEnvelope_StatusCode_descriptor(), name,
+                                           value);
+}
+enum ControlEnvelope_Kind : int {
+  ControlEnvelope_Kind_CONTROL_KIND_UNSPECIFIED = 0,
+  ControlEnvelope_Kind_CANCEL_RUN = 1,
+  ControlEnvelope_Kind_ControlEnvelope_Kind_INT_MIN_SENTINEL_DO_NOT_USE_ =
+      ::std::numeric_limits<::int32_t>::min(),
+  ControlEnvelope_Kind_ControlEnvelope_Kind_INT_MAX_SENTINEL_DO_NOT_USE_ =
+      ::std::numeric_limits<::int32_t>::max(),
+};
+
+extern const uint32_t ControlEnvelope_Kind_internal_data_[];
+inline constexpr ControlEnvelope_Kind ControlEnvelope_Kind_Kind_MIN =
+    static_cast<ControlEnvelope_Kind>(0);
+inline constexpr ControlEnvelope_Kind ControlEnvelope_Kind_Kind_MAX =
+    static_cast<ControlEnvelope_Kind>(1);
+[[nodiscard]] inline bool ControlEnvelope_Kind_IsValid(int value) {
+  return 0 <= value && value <= 1;
+}
+inline constexpr int ControlEnvelope_Kind_Kind_ARRAYSIZE = 1 + 1;
+[[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
+ControlEnvelope_Kind_descriptor();
+[[nodiscard]] inline auto ProtobufInternalGetEnumDescriptor(ControlEnvelope_Kind) {
+  return ControlEnvelope_Kind_descriptor();
+}
+template <typename T>
+[[nodiscard]] const ::std::string& ControlEnvelope_Kind_Name(T value) {
+  static_assert(::std::is_same<T, ControlEnvelope_Kind>::value ||
+                    ::std::is_integral<T>::value,
+                "Incorrect type passed to Kind_Name().");
+  return ControlEnvelope_Kind_Name(static_cast<ControlEnvelope_Kind>(value));
+}
+template <>
+[[nodiscard]] inline const ::std::string& ControlEnvelope_Kind_Name(ControlEnvelope_Kind value) {
+  return ::google::protobuf::internal::NameOfDenseEnum<ControlEnvelope_Kind_descriptor, 0, 1>(
+      static_cast<int>(value));
+}
+[[nodiscard]] inline bool ControlEnvelope_Kind_Parse(
+    ::absl::string_view name, ControlEnvelope_Kind* PROTOBUF_NONNULL value) {
+  return ::google::protobuf::internal::ParseNamedEnum<ControlEnvelope_Kind>(ControlEnvelope_Kind_descriptor(), name,
                                            value);
 }
 enum ErrorClass : int {
@@ -525,7 +578,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED SubmitRunResponse final : public ::
   [[nodiscard]] static const SubmitRunResponse& default_instance() {
     return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<SubmitRunResponse>(&SubmitRunResponse_globals_);
   }
-  static constexpr int kIndexInFileMessages = 4;
+  static constexpr int kIndexInFileMessages = 5;
   friend void swap(SubmitRunResponse& a, SubmitRunResponse& b) { a.Swap(&b); }
   inline void Swap(SubmitRunResponse* PROTOBUF_NONNULL other) {
     if (other == this) return;
@@ -809,7 +862,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED HealthResponse final : public ::goo
   [[nodiscard]] static const HealthResponse& default_instance() {
     return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<HealthResponse>(&HealthResponse_globals_);
   }
-  static constexpr int kIndexInFileMessages = 11;
+  static constexpr int kIndexInFileMessages = 12;
   friend void swap(HealthResponse& a, HealthResponse& b) { a.Swap(&b); }
   inline void Swap(HealthResponse* PROTOBUF_NONNULL other) {
     if (other == this) return;
@@ -1026,7 +1079,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED HealthRequest final : public ::goog
   [[nodiscard]] static const HealthRequest& default_instance() {
     return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<HealthRequest>(&HealthRequest_globals_);
   }
-  static constexpr int kIndexInFileMessages = 10;
+  static constexpr int kIndexInFileMessages = 11;
   friend void swap(HealthRequest& a, HealthRequest& b) { a.Swap(&b); }
   inline void Swap(HealthRequest* PROTOBUF_NONNULL other) {
     if (other == this) return;
@@ -1165,7 +1218,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED GetRunRequest final : public ::goog
   [[nodiscard]] static const GetRunRequest& default_instance() {
     return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<GetRunRequest>(&GetRunRequest_globals_);
   }
-  static constexpr int kIndexInFileMessages = 7;
+  static constexpr int kIndexInFileMessages = 8;
   friend void swap(GetRunRequest& a, GetRunRequest& b) { a.Swap(&b); }
   inline void Swap(GetRunRequest* PROTOBUF_NONNULL other) {
     if (other == this) return;
@@ -1371,7 +1424,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED CancelRunResponse final : public ::
   [[nodiscard]] static const CancelRunResponse& default_instance() {
     return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<CancelRunResponse>(&CancelRunResponse_globals_);
   }
-  static constexpr int kIndexInFileMessages = 6;
+  static constexpr int kIndexInFileMessages = 7;
   friend void swap(CancelRunResponse& a, CancelRunResponse& b) { a.Swap(&b); }
   inline void Swap(CancelRunResponse* PROTOBUF_NONNULL other) {
     if (other == this) return;
@@ -1968,7 +2021,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED SubmitRunRequest final : public ::g
   [[nodiscard]] static const SubmitRunRequest& default_instance() {
     return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<SubmitRunRequest>(&SubmitRunRequest_globals_);
   }
-  static constexpr int kIndexInFileMessages = 3;
+  static constexpr int kIndexInFileMessages = 4;
   friend void swap(SubmitRunRequest& a, SubmitRunRequest& b) { a.Swap(&b); }
   inline void Swap(SubmitRunRequest* PROTOBUF_NONNULL other) {
     if (other == this) return;
@@ -2720,7 +2773,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED NodeStatus final : public ::google:
   [[nodiscard]] static const NodeStatus& default_instance() {
     return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<NodeStatus>(&NodeStatus_globals_);
   }
-  static constexpr int kIndexInFileMessages = 8;
+  static constexpr int kIndexInFileMessages = 9;
   friend void swap(NodeStatus& a, NodeStatus& b) { a.Swap(&b); }
   inline void Swap(NodeStatus* PROTOBUF_NONNULL other) {
     if (other == this) return;
@@ -2993,6 +3046,279 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED NodeStatus final : public ::google:
 };
 // -------------------------------------------------------------------
 
+class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED ControlEnvelope final : public ::google::protobuf::Message
+/* @@protoc_insertion_point(class_definition:evo.execution.v1.ControlEnvelope) */ {
+ public:
+  inline ControlEnvelope() : ControlEnvelope(nullptr) {}
+  ~ControlEnvelope() PROTOBUF_FINAL;
+
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+  void operator delete(ControlEnvelope* PROTOBUF_NONNULL msg, ::std::destroying_delete_t) {
+    SharedDtor(*msg);
+    ::google::protobuf::internal::SizedDelete(msg, sizeof(ControlEnvelope));
+  }
+#endif
+
+  template <typename = void>
+  explicit constexpr ControlEnvelope(::google::protobuf::internal::ConstantInitialized,
+                           const ::google::protobuf::internal::ClassData* PROTOBUF_NONNULL
+                               class_data);
+
+  inline ControlEnvelope(const ControlEnvelope& from) : ControlEnvelope(nullptr, from) {}
+  inline ControlEnvelope(ControlEnvelope&& from) noexcept : ControlEnvelope(nullptr, ::std::move(from)) {}
+  inline ControlEnvelope& operator=(const ControlEnvelope& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline ControlEnvelope& operator=(ControlEnvelope&& from) noexcept {
+    if (this == &from) return *this;
+    if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  [[nodiscard]] inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const
+      ABSL_ATTRIBUTE_LIFETIME_BOUND {
+    return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance);
+  }
+  [[nodiscard]] inline ::google::protobuf::UnknownFieldSet* PROTOBUF_NONNULL
+  mutable_unknown_fields() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+    return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
+  }
+
+  [[nodiscard]] static const ::google::protobuf::Descriptor* PROTOBUF_NONNULL descriptor() {
+    return GetDescriptor();
+  }
+  [[nodiscard]] static const ::google::protobuf::Descriptor* PROTOBUF_NONNULL
+  GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  [[nodiscard]] static const ::google::protobuf::Reflection* PROTOBUF_NONNULL GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  [[nodiscard]] static const ControlEnvelope& default_instance() {
+    return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<ControlEnvelope>(&ControlEnvelope_globals_);
+  }
+  static constexpr int kIndexInFileMessages = 2;
+  friend void swap(ControlEnvelope& a, ControlEnvelope& b) { a.Swap(&b); }
+  inline void Swap(ControlEnvelope* PROTOBUF_NONNULL other) {
+    if (other == this) return;
+    if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
+      InternalSwap(other);
+    } else {
+      ::google::protobuf::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(ControlEnvelope* PROTOBUF_NONNULL other) {
+    if (other == this) return;
+    ABSL_DCHECK(GetArena() == other->GetArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  [[nodiscard]] ControlEnvelope* PROTOBUF_NONNULL
+  New(::google::protobuf::Arena* PROTOBUF_NULLABLE arena = nullptr) const {
+    return ::google::protobuf::Message::DefaultConstruct<ControlEnvelope>(arena);
+  }
+  using ::google::protobuf::Message::CopyFrom;
+  void CopyFrom(const ControlEnvelope& from);
+  using ::google::protobuf::Message::MergeFrom;
+  void MergeFrom(const ControlEnvelope& from) { ControlEnvelope::MergeImpl(*this, from); }
+
+  private:
+  static void MergeImpl(::google::protobuf::MessageLite& to_msg,
+                        const ::google::protobuf::MessageLite& from_msg);
+
+  public:
+  [[nodiscard]] bool IsInitialized() const {
+    return true;
+  }
+  ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
+  #if defined(PROTOBUF_CUSTOM_VTABLE)
+  private:
+  [[nodiscard]] static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite& msg);
+  [[nodiscard]] static ::uint8_t* PROTOBUF_NONNULL _InternalSerialize(
+      const ::google::protobuf::MessageLite& msg, ::uint8_t* PROTOBUF_NONNULL target,
+      ::google::protobuf::io::EpsCopyOutputStream* PROTOBUF_NONNULL stream);
+
+  public:
+  [[nodiscard]] ::size_t ByteSizeLong() const { return ByteSizeLong(*this); }
+  [[nodiscard]] ::uint8_t* PROTOBUF_NONNULL _InternalSerialize(
+      ::uint8_t* PROTOBUF_NONNULL target,
+      ::google::protobuf::io::EpsCopyOutputStream* PROTOBUF_NONNULL stream) const {
+    return _InternalSerialize(*this, target, stream);
+  }
+  #else   // PROTOBUF_CUSTOM_VTABLE
+  [[nodiscard]] ::size_t ByteSizeLong() const final;
+  [[nodiscard]] ::uint8_t* PROTOBUF_NONNULL _InternalSerialize(
+      ::uint8_t* PROTOBUF_NONNULL target,
+      ::google::protobuf::io::EpsCopyOutputStream* PROTOBUF_NONNULL stream) const final;
+  #endif  // PROTOBUF_CUSTOM_VTABLE
+  [[nodiscard]] int GetCachedSize() const {
+    return _impl_._cached_size_.Get();
+  }
+
+  private:
+  void SharedCtor(::google::protobuf::Arena* PROTOBUF_NULLABLE arena);
+  static void SharedDtor(MessageLite& self);
+  void InternalSwap(ControlEnvelope* PROTOBUF_NONNULL other);
+ private:
+  template <typename T>
+  friend ::absl::string_view(::google::protobuf::internal::GetAnyMessageName)();
+  static ::absl::string_view FullMessageName() { return "evo.execution.v1.ControlEnvelope"; }
+
+  explicit ControlEnvelope(::google::protobuf::Arena* PROTOBUF_NULLABLE arena);
+  ControlEnvelope(::google::protobuf::Arena* PROTOBUF_NULLABLE arena, const ControlEnvelope& from);
+  ControlEnvelope(
+      ::google::protobuf::Arena* PROTOBUF_NULLABLE arena, ControlEnvelope&& from) noexcept
+      : ControlEnvelope(arena) {
+    *this = ::std::move(from);
+  }
+  const ::google::protobuf::internal::ClassData* PROTOBUF_NONNULL GetClassData() const PROTOBUF_FINAL;
+  static void* PROTOBUF_NONNULL PlacementNew_(
+      const void* PROTOBUF_NONNULL, void* PROTOBUF_NONNULL mem,
+      ::google::protobuf::Arena* PROTOBUF_NULLABLE arena);
+  static constexpr auto InternalNewImpl_();
+
+ public:
+  static constexpr auto InternalGenerateClassData_(
+      const MessageLite& prototype,
+      const ::google::protobuf::internal::TcParseTableBase* PROTOBUF_NULLABLE tc_table = nullptr);
+
+  [[nodiscard]] ::google::protobuf::Metadata GetMetadata() const;
+  // nested types ----------------------------------------------------
+  using Kind = ControlEnvelope_Kind;
+  static constexpr Kind CONTROL_KIND_UNSPECIFIED = ControlEnvelope_Kind_CONTROL_KIND_UNSPECIFIED;
+  static constexpr Kind CANCEL_RUN = ControlEnvelope_Kind_CANCEL_RUN;
+  [[nodiscard]] static inline bool Kind_IsValid(int value) {
+    return ControlEnvelope_Kind_IsValid(value);
+  }
+  static constexpr Kind Kind_MIN = ControlEnvelope_Kind_Kind_MIN;
+  static constexpr Kind Kind_MAX = ControlEnvelope_Kind_Kind_MAX;
+  static constexpr int Kind_ARRAYSIZE = ControlEnvelope_Kind_Kind_ARRAYSIZE;
+  static inline const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL Kind_descriptor() {
+    return ControlEnvelope_Kind_descriptor();
+  }
+  template <typename T>
+  [[nodiscard]] static inline const ::std::string& Kind_Name(T value) {
+    return ControlEnvelope_Kind_Name(value);
+  }
+  [[nodiscard]] static inline bool Kind_Parse(
+      ::absl::string_view name, Kind* PROTOBUF_NONNULL value) {
+    return ControlEnvelope_Kind_Parse(name, value);
+  }
+
+  // accessors -------------------------------------------------------
+  enum : int {
+    kRunIdFieldNumber = 2,
+    kReasonFieldNumber = 3,
+    kRequestedAtFieldNumber = 4,
+    kKindFieldNumber = 1,
+  };
+  // string run_id = 2;
+  void clear_run_id() ;
+  [[nodiscard]] const ::std::string& run_id() const;
+  template <typename Arg_ = const ::std::string&, typename... Args_>
+  void set_run_id(Arg_&& arg, Args_... args);
+  ::std::string* PROTOBUF_NONNULL mutable_run_id();
+  [[nodiscard]] ::std::string* PROTOBUF_NULLABLE release_run_id();
+  void set_allocated_run_id(::std::string* PROTOBUF_NULLABLE value);
+
+  private:
+  const ::std::string& _internal_run_id() const;
+  PROTOBUF_ALWAYS_INLINE void _internal_set_run_id(const ::std::string& value);
+  ::std::string* PROTOBUF_NONNULL _internal_mutable_run_id();
+
+  public:
+  // string reason = 3;
+  void clear_reason() ;
+  [[nodiscard]] const ::std::string& reason() const;
+  template <typename Arg_ = const ::std::string&, typename... Args_>
+  void set_reason(Arg_&& arg, Args_... args);
+  ::std::string* PROTOBUF_NONNULL mutable_reason();
+  [[nodiscard]] ::std::string* PROTOBUF_NULLABLE release_reason();
+  void set_allocated_reason(::std::string* PROTOBUF_NULLABLE value);
+
+  private:
+  const ::std::string& _internal_reason() const;
+  PROTOBUF_ALWAYS_INLINE void _internal_set_reason(const ::std::string& value);
+  ::std::string* PROTOBUF_NONNULL _internal_mutable_reason();
+
+  public:
+  // .google.protobuf.Timestamp requested_at = 4;
+  [[nodiscard]] bool has_requested_at()
+      const;
+  void clear_requested_at() ;
+  [[nodiscard]] const ::google::protobuf::Timestamp& requested_at() const;
+  [[nodiscard]] ::google::protobuf::Timestamp* PROTOBUF_NULLABLE release_requested_at();
+  ::google::protobuf::Timestamp* PROTOBUF_NONNULL mutable_requested_at();
+  void set_allocated_requested_at(::google::protobuf::Timestamp* PROTOBUF_NULLABLE value);
+  void unsafe_arena_set_allocated_requested_at(::google::protobuf::Timestamp* PROTOBUF_NULLABLE value);
+  ::google::protobuf::Timestamp* PROTOBUF_NULLABLE unsafe_arena_release_requested_at();
+
+  private:
+  const ::google::protobuf::Timestamp& _internal_requested_at() const;
+  ::google::protobuf::Timestamp* PROTOBUF_NONNULL _internal_mutable_requested_at();
+
+  public:
+  // .evo.execution.v1.ControlEnvelope.Kind kind = 1;
+  void clear_kind() ;
+  [[nodiscard]] ::evo::execution::v1::ControlEnvelope_Kind kind() const;
+  void set_kind(::evo::execution::v1::ControlEnvelope_Kind value);
+
+  private:
+  ::evo::execution::v1::ControlEnvelope_Kind _internal_kind() const;
+  void _internal_set_kind(::evo::execution::v1::ControlEnvelope_Kind value);
+
+  public:
+  // @@protoc_insertion_point(class_scope:evo.execution.v1.ControlEnvelope)
+ private:
+  class _Internal;
+  using ParseTableT_ =
+      ::google::protobuf::internal::TcParseTable<2, 4,
+                          1, 53,
+                          2>;
+  static constexpr ParseTableT_ InternalGenerateParseTable_(
+      const ::google::protobuf::internal::ClassData* PROTOBUF_NONNULL class_data);
+  friend class ::google::protobuf::internal::TcParser;
+  #ifndef PROTOBUF_MESSAGE_GLOBALS
+  static const ParseTableT_ _table_;
+  #endif
+
+  friend class ::google::protobuf::MessageLite;
+  friend class ::google::protobuf::Arena;
+  friend ::google::protobuf::internal::PrivateAccess;
+  template <typename T>
+  friend class ::google::protobuf::Arena::InternalHelper;
+  using InternalArenaConstructable_ = void;
+  using DestructorSkippable_ = void;
+  struct Impl_ {
+    inline explicit constexpr Impl_(::google::protobuf::internal::InternalVisibility visibility,
+                                    ::google::protobuf::internal::ConstantInitialized) noexcept;
+    inline explicit Impl_(
+        ::google::protobuf::internal::InternalVisibility visibility,
+        ::google::protobuf::Arena* PROTOBUF_NULLABLE arena);
+    inline explicit Impl_(
+        ::google::protobuf::internal::InternalVisibility visibility,
+        ::google::protobuf::Arena* PROTOBUF_NULLABLE arena, const Impl_& from,
+        const ControlEnvelope& from_msg);
+    ::google::protobuf::internal::HasBits<1> _has_bits_;
+    ::google::protobuf::internal::CachedSize _cached_size_;
+    ::google::protobuf::internal::ArenaStringPtr run_id_;
+    ::google::protobuf::internal::ArenaStringPtr reason_;
+    ::google::protobuf::Timestamp* PROTOBUF_NULLABLE requested_at_;
+    int kind_;
+    PROTOBUF_TSAN_DECLARE_MEMBER
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_evo_2fexecution_2eproto;
+};
+// -------------------------------------------------------------------
+
 class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED CancelRunRequest final : public ::google::protobuf::Message
 /* @@protoc_insertion_point(class_definition:evo.execution.v1.CancelRunRequest) */ {
  public:
@@ -3049,7 +3375,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED CancelRunRequest final : public ::g
   [[nodiscard]] static const CancelRunRequest& default_instance() {
     return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<CancelRunRequest>(&CancelRunRequest_globals_);
   }
-  static constexpr int kIndexInFileMessages = 5;
+  static constexpr int kIndexInFileMessages = 6;
   friend void swap(CancelRunRequest& a, CancelRunRequest& b) { a.Swap(&b); }
   inline void Swap(CancelRunRequest* PROTOBUF_NONNULL other) {
     if (other == this) return;
@@ -3307,7 +3633,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED GetRunResponse final : public ::goo
   [[nodiscard]] static const GetRunResponse& default_instance() {
     return *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<GetRunResponse>(&GetRunResponse_globals_);
   }
-  static constexpr int kIndexInFileMessages = 9;
+  static constexpr int kIndexInFileMessages = 10;
   friend void swap(GetRunResponse& a, GetRunResponse& b) { a.Swap(&b); }
   inline void Swap(GetRunResponse* PROTOBUF_NONNULL other) {
     if (other == this) return;
@@ -5009,6 +5335,255 @@ inline void ResultEnvelope::set_allocated_started_at(::google::protobuf::Timesta
 
   _impl_.started_at_ = reinterpret_cast<::google::protobuf::Timestamp*>(value);
   // @@protoc_insertion_point(field_set_allocated:evo.execution.v1.ResultEnvelope.started_at)
+}
+
+// -------------------------------------------------------------------
+
+// ControlEnvelope
+
+// .evo.execution.v1.ControlEnvelope.Kind kind = 1;
+inline void ControlEnvelope::clear_kind() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.kind_ = 0;
+  ClearHasBit(_impl_._has_bits_[0], 0x00000008U);
+}
+inline ::evo::execution::v1::ControlEnvelope_Kind ControlEnvelope::kind() const {
+  // @@protoc_insertion_point(field_get:evo.execution.v1.ControlEnvelope.kind)
+  return _internal_kind();
+}
+inline void ControlEnvelope::set_kind(::evo::execution::v1::ControlEnvelope_Kind value) {
+  _internal_set_kind(value);
+  SetHasBit(_impl_._has_bits_[0], 0x00000008U);
+  // @@protoc_insertion_point(field_set:evo.execution.v1.ControlEnvelope.kind)
+}
+inline ::evo::execution::v1::ControlEnvelope_Kind ControlEnvelope::_internal_kind() const {
+  ::google::protobuf::internal::TSanRead(&_impl_);
+  return static_cast<::evo::execution::v1::ControlEnvelope_Kind>(_impl_.kind_);
+}
+inline void ControlEnvelope::_internal_set_kind(::evo::execution::v1::ControlEnvelope_Kind value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.kind_ = value;
+}
+
+// string run_id = 2;
+inline void ControlEnvelope::clear_run_id() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.run_id_.ClearToEmpty();
+  ClearHasBit(_impl_._has_bits_[0], 0x00000001U);
+}
+inline const ::std::string& ControlEnvelope::run_id() const
+    ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  // @@protoc_insertion_point(field_get:evo.execution.v1.ControlEnvelope.run_id)
+  return _internal_run_id();
+}
+template <typename Arg_, typename... Args_>
+PROTOBUF_ALWAYS_INLINE void ControlEnvelope::set_run_id(Arg_&& arg, Args_... args) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  SetHasBit(_impl_._has_bits_[0], 0x00000001U);
+  _impl_.run_id_.Set(static_cast<Arg_&&>(arg), args..., GetArena());
+  // @@protoc_insertion_point(field_set:evo.execution.v1.ControlEnvelope.run_id)
+}
+inline ::std::string* PROTOBUF_NONNULL ControlEnvelope::mutable_run_id()
+    ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  SetHasBit(_impl_._has_bits_[0], 0x00000001U);
+  ::std::string* _s = _internal_mutable_run_id();
+  // @@protoc_insertion_point(field_mutable:evo.execution.v1.ControlEnvelope.run_id)
+  return _s;
+}
+inline const ::std::string& ControlEnvelope::_internal_run_id() const {
+  ::google::protobuf::internal::TSanRead(&_impl_);
+  return _impl_.run_id_.Get();
+}
+inline void ControlEnvelope::_internal_set_run_id(const ::std::string& value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.run_id_.Set(value, GetArena());
+}
+inline ::std::string* PROTOBUF_NONNULL ControlEnvelope::_internal_mutable_run_id() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  return _impl_.run_id_.Mutable( GetArena());
+}
+inline ::std::string* PROTOBUF_NULLABLE ControlEnvelope::release_run_id() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  // @@protoc_insertion_point(field_release:evo.execution.v1.ControlEnvelope.run_id)
+  if (!CheckHasBit(_impl_._has_bits_[0], 0x00000001U)) {
+    return nullptr;
+  }
+  ClearHasBit(_impl_._has_bits_[0], 0x00000001U);
+  auto* released = _impl_.run_id_.Release();
+  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString()) {
+    _impl_.run_id_.Set("", GetArena());
+  }
+  return released;
+}
+inline void ControlEnvelope::set_allocated_run_id(::std::string* PROTOBUF_NULLABLE value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  if (value != nullptr) {
+    SetHasBit(_impl_._has_bits_[0], 0x00000001U);
+  } else {
+    ClearHasBit(_impl_._has_bits_[0], 0x00000001U);
+  }
+  _impl_.run_id_.SetAllocated(value, GetArena());
+  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.run_id_.IsDefault()) {
+    _impl_.run_id_.Set("", GetArena());
+  }
+  // @@protoc_insertion_point(field_set_allocated:evo.execution.v1.ControlEnvelope.run_id)
+}
+
+// string reason = 3;
+inline void ControlEnvelope::clear_reason() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.reason_.ClearToEmpty();
+  ClearHasBit(_impl_._has_bits_[0], 0x00000002U);
+}
+inline const ::std::string& ControlEnvelope::reason() const
+    ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  // @@protoc_insertion_point(field_get:evo.execution.v1.ControlEnvelope.reason)
+  return _internal_reason();
+}
+template <typename Arg_, typename... Args_>
+PROTOBUF_ALWAYS_INLINE void ControlEnvelope::set_reason(Arg_&& arg, Args_... args) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  SetHasBit(_impl_._has_bits_[0], 0x00000002U);
+  _impl_.reason_.Set(static_cast<Arg_&&>(arg), args..., GetArena());
+  // @@protoc_insertion_point(field_set:evo.execution.v1.ControlEnvelope.reason)
+}
+inline ::std::string* PROTOBUF_NONNULL ControlEnvelope::mutable_reason()
+    ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  SetHasBit(_impl_._has_bits_[0], 0x00000002U);
+  ::std::string* _s = _internal_mutable_reason();
+  // @@protoc_insertion_point(field_mutable:evo.execution.v1.ControlEnvelope.reason)
+  return _s;
+}
+inline const ::std::string& ControlEnvelope::_internal_reason() const {
+  ::google::protobuf::internal::TSanRead(&_impl_);
+  return _impl_.reason_.Get();
+}
+inline void ControlEnvelope::_internal_set_reason(const ::std::string& value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.reason_.Set(value, GetArena());
+}
+inline ::std::string* PROTOBUF_NONNULL ControlEnvelope::_internal_mutable_reason() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  return _impl_.reason_.Mutable( GetArena());
+}
+inline ::std::string* PROTOBUF_NULLABLE ControlEnvelope::release_reason() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  // @@protoc_insertion_point(field_release:evo.execution.v1.ControlEnvelope.reason)
+  if (!CheckHasBit(_impl_._has_bits_[0], 0x00000002U)) {
+    return nullptr;
+  }
+  ClearHasBit(_impl_._has_bits_[0], 0x00000002U);
+  auto* released = _impl_.reason_.Release();
+  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString()) {
+    _impl_.reason_.Set("", GetArena());
+  }
+  return released;
+}
+inline void ControlEnvelope::set_allocated_reason(::std::string* PROTOBUF_NULLABLE value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  if (value != nullptr) {
+    SetHasBit(_impl_._has_bits_[0], 0x00000002U);
+  } else {
+    ClearHasBit(_impl_._has_bits_[0], 0x00000002U);
+  }
+  _impl_.reason_.SetAllocated(value, GetArena());
+  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.reason_.IsDefault()) {
+    _impl_.reason_.Set("", GetArena());
+  }
+  // @@protoc_insertion_point(field_set_allocated:evo.execution.v1.ControlEnvelope.reason)
+}
+
+// .google.protobuf.Timestamp requested_at = 4;
+inline bool ControlEnvelope::has_requested_at() const {
+  bool value = CheckHasBit(_impl_._has_bits_[0], 0x00000004U);
+  PROTOBUF_ASSUME(!value || _impl_.requested_at_ != nullptr);
+  return value;
+}
+inline const ::google::protobuf::Timestamp& ControlEnvelope::_internal_requested_at() const {
+  ::google::protobuf::internal::TSanRead(&_impl_);
+  const ::google::protobuf::Timestamp* p = _impl_.requested_at_;
+  return p != nullptr ? *p : *::google::protobuf::internal::MessageGlobalsBase::ToDefaultInstance<::google::protobuf::Timestamp>(&::google::protobuf::Timestamp_globals_);
+}
+inline const ::google::protobuf::Timestamp& ControlEnvelope::requested_at() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  // @@protoc_insertion_point(field_get:evo.execution.v1.ControlEnvelope.requested_at)
+  return _internal_requested_at();
+}
+inline void ControlEnvelope::unsafe_arena_set_allocated_requested_at(
+    ::google::protobuf::Timestamp* PROTOBUF_NULLABLE value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  if (GetArena() == nullptr) {
+    delete reinterpret_cast<::google::protobuf::MessageLite*>(_impl_.requested_at_);
+  }
+  _impl_.requested_at_ = reinterpret_cast<::google::protobuf::Timestamp*>(value);
+  if (value != nullptr) {
+    SetHasBit(_impl_._has_bits_[0], 0x00000004U);
+  } else {
+    ClearHasBit(_impl_._has_bits_[0], 0x00000004U);
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:evo.execution.v1.ControlEnvelope.requested_at)
+}
+inline ::google::protobuf::Timestamp* PROTOBUF_NULLABLE ControlEnvelope::release_requested_at() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+
+  ClearHasBit(_impl_._has_bits_[0], 0x00000004U);
+  ::google::protobuf::Timestamp* released = _impl_.requested_at_;
+  _impl_.requested_at_ = nullptr;
+  if (::google::protobuf::internal::DebugHardenForceCopyInRelease()) {
+    auto* old = reinterpret_cast<::google::protobuf::MessageLite*>(released);
+    released = ::google::protobuf::internal::DuplicateIfNonNull(released);
+    if (GetArena() == nullptr) {
+      delete old;
+    }
+  } else {
+    if (GetArena() != nullptr) {
+      released = ::google::protobuf::internal::DuplicateIfNonNull(released);
+    }
+  }
+  return released;
+}
+inline ::google::protobuf::Timestamp* PROTOBUF_NULLABLE ControlEnvelope::unsafe_arena_release_requested_at() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  // @@protoc_insertion_point(field_release:evo.execution.v1.ControlEnvelope.requested_at)
+
+  ClearHasBit(_impl_._has_bits_[0], 0x00000004U);
+  ::google::protobuf::Timestamp* temp = _impl_.requested_at_;
+  _impl_.requested_at_ = nullptr;
+  return temp;
+}
+inline ::google::protobuf::Timestamp* PROTOBUF_NONNULL ControlEnvelope::_internal_mutable_requested_at() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  if (_impl_.requested_at_ == nullptr) {
+    auto* p = ::google::protobuf::Message::DefaultConstruct<::google::protobuf::Timestamp>(GetArena());
+    _impl_.requested_at_ = reinterpret_cast<::google::protobuf::Timestamp*>(p);
+  }
+  return _impl_.requested_at_;
+}
+inline ::google::protobuf::Timestamp* PROTOBUF_NONNULL ControlEnvelope::mutable_requested_at()
+    ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  SetHasBit(_impl_._has_bits_[0], 0x00000004U);
+  ::google::protobuf::Timestamp* _msg = _internal_mutable_requested_at();
+  // @@protoc_insertion_point(field_mutable:evo.execution.v1.ControlEnvelope.requested_at)
+  return _msg;
+}
+inline void ControlEnvelope::set_allocated_requested_at(::google::protobuf::Timestamp* PROTOBUF_NULLABLE value) {
+  ::google::protobuf::Arena* message_arena = GetArena();
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  if (message_arena == nullptr) {
+    delete reinterpret_cast<::google::protobuf::MessageLite*>(_impl_.requested_at_);
+  }
+
+  if (value != nullptr) {
+    ::google::protobuf::Arena* submessage_arena = reinterpret_cast<::google::protobuf::Message*>(value)->GetArena();
+    if (message_arena != submessage_arena) {
+      value = ::google::protobuf::internal::GetOwnedMessage(message_arena, value, submessage_arena);
+    }
+    SetHasBit(_impl_._has_bits_[0], 0x00000004U);
+  } else {
+    ClearHasBit(_impl_._has_bits_[0], 0x00000004U);
+  }
+
+  _impl_.requested_at_ = reinterpret_cast<::google::protobuf::Timestamp*>(value);
+  // @@protoc_insertion_point(field_set_allocated:evo.execution.v1.ControlEnvelope.requested_at)
 }
 
 // -------------------------------------------------------------------
@@ -7143,6 +7718,12 @@ struct is_proto_enum<::evo::execution::v1::ResultEnvelope_StatusCode> : std::tru
 template <>
 inline const EnumDescriptor* PROTOBUF_NONNULL GetEnumDescriptor<::evo::execution::v1::ResultEnvelope_StatusCode>() {
   return ::evo::execution::v1::ResultEnvelope_StatusCode_descriptor();
+}
+template <>
+struct is_proto_enum<::evo::execution::v1::ControlEnvelope_Kind> : std::true_type {};
+template <>
+inline const EnumDescriptor* PROTOBUF_NONNULL GetEnumDescriptor<::evo::execution::v1::ControlEnvelope_Kind>() {
+  return ::evo::execution::v1::ControlEnvelope_Kind_descriptor();
 }
 template <>
 struct is_proto_enum<::evo::execution::v1::ErrorClass> : std::true_type {};

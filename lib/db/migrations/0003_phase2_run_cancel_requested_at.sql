@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_runs" ADD COLUMN "cancel_requested_at" timestamp;

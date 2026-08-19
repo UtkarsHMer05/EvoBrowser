@@ -171,6 +171,32 @@ message ResultEnvelope {
   google.protobuf.Timestamp started_at = 14;
 }
 
+// ---- Control-plane envelope (scheduler -> workers, Milestone 30) -----------
+
+// Scheduler -> worker control message, streamed on the control stream
+// (`<prefix>:control`). Unlike the task stream (competing consumers), every
+// worker must see every control message, so each worker reads with its OWN
+// consumer group (fan-out). Transport message ids are not identity; the
+// (kind, run_id) pair plus idempotent handlers make duplicate delivery safe.
+//
+// Semantics: a CANCEL_RUN message is a cooperative abort request. Workers
+// abort in-flight attempts for the run at their nearest cooperation point
+// and short-circuit queued tasks for that run. The durable run store + the
+// scheduler's late-result rule remain the authoritative backstop: a worker
+// that misses the message can at worst produce a late result, which is
+// rejected after the run is terminal canceled.
+message ControlEnvelope {
+  enum Kind {
+    CONTROL_KIND_UNSPECIFIED = 0;
+    CANCEL_RUN               = 1; // abort all work for run_id
+  }
+  Kind kind                    = 1;
+  string run_id                = 2;
+  string reason                = 3;
+  // Wall-clock (UTC) when the cancellation was requested.
+  google.protobuf.Timestamp requested_at = 4;
+}
+
 // ---- Control RPCs (service surface) ----------------------------------------
 
 message SubmitRunRequest {

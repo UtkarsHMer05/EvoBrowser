@@ -95,6 +95,10 @@ class PgRunStore final : public RunStore {
                   const std::string& outcome,
                   std::int64_t finished_wall_ms) override;
 
+  bool mark_cancel_requested(const std::string& run_id,
+                             const std::string& reason,
+                             std::int64_t requested_wall_ms) override;
+
   std::optional<RunRecord> get_run(const std::string& run_id) override;
   std::optional<NodeRunRecord> get_node_run(
       const std::string& run_id, const std::string& node_id) override;

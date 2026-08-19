@@ -210,6 +210,31 @@ export class BrowserSessionManager {
     await this.closeKey(key);
   }
 
+  /**
+   * Close EVERY live session belonging to a run, regardless of affinity key
+   * (M30 cancellation path: a run may use a custom affinity key, so match by
+   * the session's runId rather than assuming the default "run:<runId>" key).
+   * Idempotent.
+   */
+  async closeAllForRun(runId: string): Promise<void> {
+    const keys = [...this.sessions.entries()]
+      .filter(([, s]) => s.runId === runId && !s.closed)
+      .map(([key]) => key);
+    for (const key of keys) {
+      // Cancellation closes promptly: skip the final-screenshot capture (the
+      // per-task screenshot already persisted the last page state, M29).
+      await this.closeKey(key, /*skipScreenshot=*/true);
+    }
+    // A cancel racing an in-flight open must not leak the session: wait for
+    // pending opens and close any that belong to this run.
+    for (const openPromise of [...this.opening.values()]) {
+      const session = await openPromise.catch(() => undefined);
+      if (session && session.runId === runId && !session.closed) {
+        await this.closeKey(session.affinityKey, /*skipScreenshot=*/true);
+      }
+    }
+  }
+
   /** Close every live session (worker graceful shutdown). */
   async closeAll(): Promise<void> {
     const keys = [...this.sessions.keys()];
@@ -218,23 +243,28 @@ export class BrowserSessionManager {
     }
   }
 
-  private async closeKey(key: string): Promise<void> {
+  private async closeKey(
+    key: string,
+    skipScreenshot = false,
+  ): Promise<void> {
     const session = this.sessions.get(key);
     if (!session || session.closed) return;
     session.closed = true;
 
-    const capture = this.opts.captureScreenshot ?? captureFinalScreenshot;
-    const screenshot = await capture(session.handle.stagehand).catch(
-      () => undefined,
-    );
-    if (screenshot && this.opts.onFinalScreenshot) {
-      await Promise.resolve(
-        this.opts.onFinalScreenshot({
-          affinityKey: key,
-          runId: session.runId,
-          screenshotBase64: screenshot,
-        }),
-      ).catch(() => undefined);
+    if (!skipScreenshot) {
+      const capture = this.opts.captureScreenshot ?? captureFinalScreenshot;
+      const screenshot = await capture(session.handle.stagehand).catch(
+        () => undefined,
+      );
+      if (screenshot && this.opts.onFinalScreenshot) {
+        await Promise.resolve(
+          this.opts.onFinalScreenshot({
+            affinityKey: key,
+            runId: session.runId,
+            screenshotBase64: screenshot,
+          }),
+        ).catch(() => undefined);
+      }
     }
 
     try {

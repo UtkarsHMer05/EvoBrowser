@@ -145,6 +145,21 @@ bool InMemoryRunStore::finish_run(const std::string& run_id,
   return true;
 }
 
+bool InMemoryRunStore::mark_cancel_requested(const std::string& run_id,
+                                             const std::string& reason,
+                                             std::int64_t requested_wall_ms) {
+  std::lock_guard lock(mu_);
+  auto it = runs_.find(run_id);
+  if (it == runs_.end()) return false;
+  // First request wins (mirrors PgRunStore's WHERE cancel_requested_at IS
+  // NULL): a repeated request is a no-op that still reports success.
+  if (it->second.cancel_requested_at == 0) {
+    it->second.cancel_requested_at = requested_wall_ms;
+    it->second.cancel_reason = reason;
+  }
+  return true;
+}
+
 std::optional<RunRecord> InMemoryRunStore::get_run(
     const std::string& run_id) {
   std::lock_guard lock(mu_);

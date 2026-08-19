@@ -27,6 +27,8 @@ import { randomBytes } from "node:crypto";
 import os from "node:os";
 
 import {
+  ControlKind,
+  decodeControlEnvelope,
   decodeTaskEnvelope,
   encodeResultEnvelope,
   ErrorClass,
@@ -34,6 +36,7 @@ import {
   type TaskEnvelopeView,
 } from "./envelope-codec";
 import {
+  controlStreamKey,
   RedisStreamsClient,
   resultStreamKey,
   taskStreamKey,
@@ -75,6 +78,13 @@ export interface WorkerConfig {
    * logged, never fatal — shutdown must complete.
    */
   onShutdown?: () => Promise<void>;
+  /**
+   * Called when a CANCEL_RUN control message arrives for a run (Milestone 30),
+   * after this worker has aborted its in-flight attempts for that run. The
+   * BrowserSessionManager closes the run's browser session here so Stagehand
+   * resources stop promptly. Errors are logged, never fatal.
+   */
+  onCancelRun?: (runId: string, reason: string) => Promise<void> | void;
   /** Optional logger; defaults to console. */
   log?: (msg: string) => void;
 }
@@ -92,16 +102,31 @@ interface ResolvedWorkerConfig {
   drainTimeoutMs: number;
   executor: TaskExecutor;
   onShutdown?: () => Promise<void>;
+  onCancelRun?: (runId: string, reason: string) => Promise<void> | void;
   log: (msg: string) => void;
 }
 
 export class Worker {
   private cfg: ResolvedWorkerConfig;
   private client: RedisStreamsClient;
+  // M30: the control loop gets its OWN connection. Redis processes commands
+  // sequentially per connection, so sharing the task-loop connection would
+  // let one blocking XREADGROUP delay the other by a full read slice.
+  private controlClient: RedisStreamsClient;
   private stopping = false;
   private inFlight = new Set<Promise<void>>();
   private abortController = new AbortController();
   private loopPromise: Promise<void> | null = null;
+  private controlLoopPromise: Promise<void> | null = null;
+
+  // Milestone 30 — per-run cancellation. Each canceled run gets its own
+  // AbortController; in-flight tasks for that run receive a signal that
+  // combines the worker-wide shutdown signal with the run's cancel signal
+  // (AbortSignal.any). Queued tasks for a canceled run are short-circuited
+  // at claim time. Duplicate CANCEL_RUN deliveries are no-ops (the set is
+  // the dedupe key).
+  private canceledRuns = new Set<string>();
+  private runAbortControllers = new Map<string, AbortController>();
 
   constructor(config: WorkerConfig) {
     this.cfg = {
@@ -113,9 +138,11 @@ export class Worker {
       drainTimeoutMs: config.drainTimeoutMs ?? 10_000,
       executor: config.executor,
       onShutdown: config.onShutdown,
+      onCancelRun: config.onCancelRun,
       log: config.log ?? ((m: string) => console.log(m)),
     };
     this.client = new RedisStreamsClient(config.redis);
+    this.controlClient = new RedisStreamsClient(config.redis);
   }
 
   get workerId(): string {
@@ -130,13 +157,54 @@ export class Worker {
     return resultStreamKey(this.cfg.envPrefix);
   }
 
+  get controlStream(): string {
+    return controlStreamKey(this.cfg.envPrefix);
+  }
+
+  /** True when a CANCEL_RUN control message has been seen for this run. */
+  isRunCanceled(runId: string): boolean {
+    return this.canceledRuns.has(runId);
+  }
+
   async start(): Promise<void> {
     await this.client.connect();
+    await this.controlClient.connect();
     await this.client.ensureGroup(this.taskStream, this.cfg.group);
     // Note: the worker PUBLISHES to the result stream; the scheduler (M26)
     // owns the result-stream consumer group, so we do not create one here.
+    //
+    // M30: control-stream fan-out. Every worker must see every control
+    // message, so each worker reads with its OWN consumer group (a shared
+    // group would deliver each message to only one worker). The group is
+    // created with start id "0" so a worker that (re)joins mid-run still
+    // receives cancellations published before it subscribed.
+    await this.controlClient.ensureGroup(
+      this.controlStream,
+      this.controlGroup(),
+      "0",
+    );
     this.cfg.log(`[${this.workerId}] started; tasks=${this.taskStream} group=${this.cfg.group}`);
     this.loopPromise = this.readLoop();
+    this.controlLoopPromise = this.controlLoop();
+  }
+
+  /** Per-worker control consumer group (fan-out; see start()). */
+  private controlGroup(): string {
+    return `control-${this.cfg.workerId}`;
+  }
+
+  /**
+   * Get-or-create the AbortController for a run. Created lazily at task start
+   * so an in-flight task holds a signal that a later CANCEL_RUN can abort;
+   * the same instance is aborted by applyControlMessage.
+   */
+  private runAbortControllerFor(runId: string): AbortController {
+    let controller = this.runAbortControllers.get(runId);
+    if (!controller) {
+      controller = new AbortController();
+      this.runAbortControllers.set(runId, controller);
+    }
+    return controller;
   }
 
   private async readLoop(): Promise<void> {
@@ -165,6 +233,76 @@ export class Worker {
     }
   }
 
+  // M30: control-stream fan-out loop. Reads CANCEL_RUN messages from this
+  // worker's own consumer group and applies them: abort in-flight attempts
+  // for the run, short-circuit future queued tasks, and close the run's
+  // browser session via onCancelRun. Duplicate deliveries are no-ops.
+  private async controlLoop(): Promise<void> {
+    while (!this.stopping) {
+      let msg;
+      try {
+        msg = await this.controlClient.readGroup(
+          this.controlStream,
+          this.controlGroup(),
+          this.workerId,
+          this.cfg.readBlockMs,
+        );
+      } catch (err) {
+        this.cfg.log(`[${this.workerId}] control read error: ${String(err)}`);
+        await sleep(this.cfg.readBlockMs);
+        continue;
+      }
+      if (!msg) continue;
+      try {
+        await this.applyControlMessage(msg.payload);
+      } catch (err) {
+        this.cfg.log(
+          `[${this.workerId}] control message handling error: ${String(err)}`,
+        );
+      }
+      // Ack applied AND ignored/malformed control messages alike: they are
+      // consumed, never reprocessed (handlers are idempotent anyway).
+      await this.controlClient
+        .ack(this.controlStream, this.controlGroup(), msg.id)
+        .catch(() => undefined);
+    }
+  }
+
+  private async applyControlMessage(payload: Buffer): Promise<void> {
+    let control;
+    try {
+      control = await decodeControlEnvelope(payload);
+    } catch (err) {
+      this.cfg.log(
+        `[${this.workerId}] QUARANTINE malformed control envelope: ${String(err)}`,
+      );
+      return;
+    }
+    if (control.kind !== ControlKind.CANCEL_RUN || !control.runId) return;
+    if (this.canceledRuns.has(control.runId)) return; // duplicate delivery
+
+    this.canceledRuns.add(control.runId);
+    // Abort the SAME controller the in-flight task(s) hold a signal to.
+    const controller = this.runAbortControllerFor(control.runId);
+    controller.abort();
+    this.cfg.log(
+      `[${this.workerId}] CANCEL_RUN run=${control.runId} reason=${control.reason || "-"}; aborting in-flight attempts`,
+    );
+
+    // Close the run's browser session promptly (M30 step 4). Best-effort:
+    // a close failure never blocks cancellation — Browserbase's idle
+    // timeout is the backstop.
+    if (this.cfg.onCancelRun) {
+      try {
+        await this.cfg.onCancelRun(control.runId, control.reason);
+      } catch (err) {
+        this.cfg.log(
+          `[${this.workerId}] onCancelRun error run=${control.runId}: ${String(err)}`,
+        );
+      }
+    }
+  }
+
   private async process(messageId: string, payload: Buffer): Promise<void> {
     const startedAt = Date.now();
     let task: TaskEnvelopeView;
@@ -180,16 +318,52 @@ export class Worker {
       return;
     }
 
+    // M30: short-circuit queued tasks for a canceled run. The run is already
+    // terminal canceled in the durable store; executing the task would only
+    // produce a late result the scheduler rejects. Publish a CANCELED result
+    // (durable handoff, same as any other outcome) and ack.
+    if (this.canceledRuns.has(task.runId)) {
+      this.cfg.log(
+        `[${this.workerId}] short-circuit queued task run=${task.runId} node=${task.nodeId} (run canceled)`,
+      );
+      await this.publishCanceledResult(task, startedAt);
+      await this.client.ack(this.taskStream, this.cfg.group, messageId);
+      return;
+    }
+
+    // Per-run signal: worker-wide shutdown OR this run's cancellation. The
+    // run controller is created lazily HERE (not only on cancel) so a task
+    // that started before its cancel arrived still holds a signal that the
+    // later CANCEL_RUN can abort.
+    const runController = this.runAbortControllerFor(task.runId);
+    const signal = AbortSignal.any([
+      this.abortController.signal,
+      runController.signal,
+    ]);
+
     let result: ExecutorResult;
     try {
-      result = await this.cfg.executor(task, this.abortController.signal);
+      result = await this.cfg.executor(task, signal);
     } catch (err) {
-      result = {
-        completed: false,
-        error: err instanceof Error ? err.message : String(err),
-        errorClass: ErrorClass.ERROR_TRANSIENT,
-        retryable: true,
-      };
+      // An abort from a CANCEL_RUN message is a cancellation, not a failure:
+      // report it as such so the durable attempt row + scheduler see the
+      // right semantics (ERROR_CANCELED, not retryable). A worker-shutdown
+      // abort keeps the legacy transient-failure classification.
+      if (this.canceledRuns.has(task.runId)) {
+        result = {
+          completed: false,
+          error: "canceled",
+          errorClass: ErrorClass.ERROR_CANCELED,
+          retryable: false,
+        };
+      } else {
+        result = {
+          completed: false,
+          error: err instanceof Error ? err.message : String(err),
+          errorClass: ErrorClass.ERROR_TRANSIENT,
+          retryable: true,
+        };
+      }
     }
 
     // Durable handoff rule (M23 step 7): publish the result FIRST; ack the
@@ -206,7 +380,9 @@ export class Worker {
       error: result.error,
       status: result.completed
         ? ResultStatus.OK
-        : ResultStatus.NODE_FAILED,
+        : this.canceledRuns.has(task.runId)
+          ? ResultStatus.CANCELED
+          : ResultStatus.NODE_FAILED,
       errorClass: result.errorClass,
       retryable: result.retryable,
       workerId: this.workerId,
@@ -237,6 +413,42 @@ export class Worker {
     await this.client.ack(this.taskStream, this.cfg.group, messageId);
   }
 
+  // M30: durable handoff for a short-circuited queued task of a canceled run.
+  // Publishes a CANCELED result (never executed) and returns; the caller acks.
+  private async publishCanceledResult(
+    task: TaskEnvelopeView,
+    startedAt: number,
+  ): Promise<void> {
+    const resultBytes = await encodeResultEnvelope({
+      runId: task.runId,
+      nodeId: task.nodeId,
+      attemptNumber: task.attemptNumber,
+      traceId: task.traceId,
+      completed: false,
+      error: "canceled",
+      status: ResultStatus.CANCELED,
+      errorClass: ErrorClass.ERROR_CANCELED,
+      retryable: false,
+      workerId: this.workerId,
+      startedAtWallMs: startedAt,
+      finishedAtWallMs: Date.now(),
+    });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.client.publish(this.resultStream, resultBytes);
+        return;
+      } catch (err) {
+        this.cfg.log(
+          `[${this.workerId}] canceled-result publish failed (attempt ${attempt + 1}): ${String(err)}`,
+        );
+        await sleep(50 * (attempt + 1));
+      }
+    }
+    this.cfg.log(
+      `[${this.workerId}] canceled-result NOT published for run=${task.runId} node=${task.nodeId}`,
+    );
+  }
+
   /**
    * Graceful shutdown: stop claiming, drain in-flight work up to
    * drainTimeoutMs, then disconnect. Unfinished tasks remain pending
@@ -246,6 +458,7 @@ export class Worker {
     this.stopping = true;
     this.abortController.abort();
     if (this.loopPromise) await this.loopPromise;
+    if (this.controlLoopPromise) await this.controlLoopPromise;
 
     const deadline = Date.now() + this.cfg.drainTimeoutMs;
     while (this.inFlight.size > 0 && Date.now() < deadline) {
@@ -270,6 +483,7 @@ export class Worker {
       }
     }
     await this.client.disconnect();
+    await this.controlClient.disconnect();
     this.cfg.log(`[${this.workerId}] stopped`);
   }
 

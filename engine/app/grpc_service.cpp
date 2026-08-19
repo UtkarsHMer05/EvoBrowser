@@ -216,6 +216,19 @@ class ControlServiceImpl final
       return grpc::Status(grpc::NOT_FOUND, "run not found");
     }
     ActiveRun& e = *it->second;
+
+    // M30 idempotency: Stop-after-terminal is a no-op that reports the run's
+    // ACTUAL terminal outcome (never re-cancels, never overwrites). Repeated
+    // Stop on a still-running run is also a no-op after the first request —
+    // the loop's cancel() itself is first-request-wins.
+    if (e.done) {
+      resp->set_ok(true);
+      resp->set_outcome(e.outcome);
+      log_line("cancel_after_terminal_noop", req->run_id(), e.org_id,
+               req->reason());
+      return grpc::Status::OK;
+    }
+
 #ifdef EVO_HAVE_DISTRIBUTED
     if (e.distributed && e.loop) {
       e.loop->cancel(req->reason());

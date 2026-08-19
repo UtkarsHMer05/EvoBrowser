@@ -121,8 +121,18 @@ class DistributedRunLoop {
   // loop instance). Idempotent; safe from any thread.
   void stop();
 
-  // Request run cancellation: pending/blocked nodes become CANCELED once
-  // their in-flight siblings settle. Idempotent; safe from any thread.
+  // Request run cancellation (Milestone 30 end-to-end cancel):
+  //   - idempotent: only the FIRST request takes effect (reason + timestamp
+  //     are preserved; repeats are no-ops),
+  //   - durable: stamps cancel_requested_at on the run row via the store
+  //     (first-write-wins; if the row does not exist yet, run() stamps it
+  //     right after creating it),
+  //   - propagated: publishes a CANCEL_RUN ControlEnvelope on the control
+  //     stream so workers abort in-flight attempts and short-circuit queued
+  //     tasks for this run (best-effort fan-out; the durable store + the
+  //     late-result rule are the backstop for workers that miss it),
+  //   - terminal no-op: once the run has finalized, cancel() does nothing.
+  // Safe from any thread.
   void cancel(const std::string& reason);
 
   const SchedulerState& state() const { return state_; }
@@ -143,6 +153,9 @@ class DistributedRunLoop {
   bool apply_result(const execution::v1::ResultEnvelope& result);
 
   void persist_canceled(const std::vector<NodeId>& canceled);
+  // Publish the CANCEL_RUN control message exactly once (M30). Best-effort:
+  // a transport failure is logged via events but never blocks cancellation.
+  void publish_cancel_control();
   void emit(const std::string& kind, const NodeId* node,
             const std::string& detail);
   void finalize_run(const std::string& status, const std::string& outcome);
@@ -159,8 +172,18 @@ class DistributedRunLoop {
 
   std::stop_source stop_source_;
   std::atomic<bool> stop_requested_{false};
+
+  // Cancellation state (M30). cancel() may be called from any thread; the
+  // mutex guards the first-request-wins bookkeeping (reason + timestamp +
+  // durable stamp + control publish, each exactly once). cancel_requested_ is
+  // the hot flag the run loop polls.
+  mutable std::mutex cancel_mu_;
   std::atomic<bool> cancel_requested_{false};
   std::string cancel_reason_;
+  std::int64_t cancel_requested_at_ = 0;  // wall-clock UTC ms of first request
+  bool cancel_published_ = false;         // control message published once
+  bool cancel_stamped_ = false;           // durable timestamp stamped once
+  std::atomic<bool> finalized_{false};    // run reached a terminal state
 
   // Resource accounting (M12 semantics in distributed mode), loop-thread only.
   std::map<std::string, int> resource_usage_;

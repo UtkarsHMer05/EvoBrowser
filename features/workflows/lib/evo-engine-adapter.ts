@@ -93,6 +93,8 @@ export interface EvoSchedulerClient {
     runId: string;
     reason: string;
     traceId: string;
+    /** Wall-clock UTC ms when the user requested the stop (M30). */
+    requestedAtMs?: number;
   }): Promise<{ ok: boolean }>;
   getRun(runId: string): Promise<{
     runId: string;
@@ -179,6 +181,10 @@ export function createEvoEngineAdapter(
         runId,
         reason: "user requested stop",
         traceId: runId,
+        // M30: the wall-clock UTC moment the user requested the stop. The
+        // scheduler records its own authoritative stamp when it applies the
+        // request; this field is for correlation/observability.
+        requestedAtMs: Date.now(),
       });
     },
 

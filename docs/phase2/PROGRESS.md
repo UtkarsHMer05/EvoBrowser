@@ -39,7 +39,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `799a4f6` |
 | M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `c3723bc` |
 | M29 | Achieve UI parity for Evo runs | ✅ DONE | `a24dd9e` |
-| M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | 🚧 IN PROGRESS (claimed by session B) | — |
+| M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `<M30_SHA>` |
 
 ---
 
@@ -1660,3 +1660,109 @@ Commit subjects follow `phase2(mNN): <description>`.
   requires explicit approval).
 - **COMMIT:** `a24dd9e` — `phase2(m29): reach evo engine ui parity`
 - **NEXT:** M30 — Implement end-to-end cancellation across app, scheduler, queue, worker, and browser.
+
+---
+
+## M30 — Implement end-to-end cancellation across app, scheduler, queue, worker, and browser
+
+**Status:** ✅ DONE — Stop is now meaningful end-to-end (app → gRPC → scheduler → control stream → worker → browser), not just a UI flag.
+
+- **Durable cancellation-request timestamp (M30a):** new additive column
+  `workflow_runs.cancel_requested_at` (migration
+  `0003_phase2_run_cancel_requested_at`, applied to local PG only). Written
+  once, idempotently, by `RunStore::mark_cancel_requested` (first request
+  wins; `WHERE cancel_requested_at IS NULL`). Implemented in both
+  `InMemoryRunStore` and `PgRunStore`; `get_run` round-trips the timestamp +
+  reason. This proves the request was durably recorded even if a process dies
+  mid-cancel, and lets tooling distinguish "cancel requested" from "cancel
+  finalized".
+- **Scheduler-side cancel (M30b):** `DistributedRunLoop::cancel()` is now
+  idempotent + terminal-no-op + durable + propagated. The FIRST request wins
+  (reason + wall-clock timestamp preserved); it stamps the run row via the
+  store, publishes exactly one `CANCEL_RUN` `ControlEnvelope` on the control
+  stream, and sets the cancel flag. `dispatch_ready()` re-checks the flag so
+  NO task dispatches after a cancel. If cancel races `run()` startup (run row
+  not yet created), `run()` retries the durable stamp right after creating the
+  row. `finalized_` is set at every terminal exit so Stop-after-terminal is a
+  no-op.
+- **New proto message (additive):** `ControlEnvelope { kind, run_id, reason,
+  requested_at }` with `Kind.CANCEL_RUN`. Field numbers never reused; the
+  control stream (`<prefix>:control`) already existed in both C++/TS key
+  helpers but was unused — now it carries scheduler→worker cancellation.
+- **Worker-side cancel (M30c):** the TS `Worker` now runs a dedicated
+  control-stream fan-out loop on its OWN Redis connection (a shared connection
+  would let one blocking XREADGROUP delay the other). Each worker reads with
+  its OWN consumer group (`control-<workerId>`, start id "0") so EVERY worker
+  sees EVERY control message (fan-out, not competing-consumers). On
+  `CANCEL_RUN`: abort in-flight attempts for the run via a per-run
+  `AbortController` (created lazily at task start so an in-flight task holds a
+  signal a later cancel can abort), short-circuit queued tasks for the run
+  (publish a `CANCELED` result, never execute), and close the run's browser
+  session via `onCancelRun` → `BrowserSessionManager.closeAllForRun` (matches
+  by runId across affinity keys, skips the final screenshot for prompt close,
+  and closes sessions racing an in-flight open so none leak). Duplicate
+  deliveries are no-ops (the canceled-run set is the dedupe key).
+- **gRPC CancelRun (M30d):** idempotent + terminal-no-op. Stop-after-terminal
+  reports the run's ACTUAL terminal outcome (never re-cancels); repeated Stop
+  on a running run is a no-op after the first (the loop's cancel is
+  first-request-wins); unknown run → NOT_FOUND. The TS client now passes
+  `requested_at` (wall-clock UTC ms → Timestamp) for correlation.
+- **Late-result rejection (M30 step 6):** after a run is terminal canceled, a
+  late/forged success for an in-flight node is rejected — the run loop checks
+  cancellation before consuming results, and the node is already terminal, so
+  the late result never overwrites durable state (regression-tested).
+- **Tests added (M30e):**
+  - C++ `distributed_run_loop_test`: cancel-before-dispatch (no attempt rows,
+    all nodes canceled, timestamp stamped despite startup race, exactly one
+    well-formed CANCEL_RUN control message), repeated-cancel idempotency
+    (first reason wins, one control message), Stop-after-terminal no-op, and
+    late-success-after-terminal-canceled rejection. +14 checks.
+  - C++ `pg_run_store_test`: mark_cancel_requested first-write-wins +
+    round-trip + unknown-run false. +6 checks.
+  - C++ `grpc_integration_test`: repeated CancelRun idempotent,
+    Stop-after-terminal reports real outcome, unknown run → NOT_FOUND.
+  - TS `worker.test`: cancel-during-synthetic (in-flight abort → CANCELED
+    result, ERROR_CANCELED, not retryable), queued-task short-circuit (3 tasks
+    never executed, all CANCELED), duplicate CANCEL_RUN idempotent, and
+    cancel-during-mocked-browser (abort + session closed promptly). +4
+    scenarios (9/9).
+  - TS `browser-session-manager.test`: closeAllForRun closes all of a run's
+    sessions regardless of affinity key + idempotent, and cancel racing an
+    in-flight open closes the session (no leak). +2 scenarios (10/10).
+- **Diagnostic latency (NOT benchmark-grade; single samples, labeled):**
+  scheduler cancel→terminal ≈ 19µs (in-process); worker control→abort ≈
+  360–400ms (dominated by the blocking-read slice + Redis round-trip);
+  worker control→browser-stop ≈ 367ms. These are diagnostic only — no
+  benchmark methodology (workload/hardware/sample-count) was satisfied, so no
+  resume number is claimed.
+- **Timestamps:** all durable + control-message timestamps wall-clock UTC;
+  steady_clock used only for the diagnostic latency delta (never persisted).
+- **Phase-1 preservation:** legacy Trigger.dev Stop path untouched (the app
+  routes cancel by engine; legacy still forwards to Trigger.dev). No Phase-1
+  default behavior changed; no test removed; browser credentials stay
+  server/worker-only.
+- **No-go compliance:** no promise of instant interruption of an arbitrary
+  in-flight third-party SDK call (abort is cooperative at the signal boundary;
+  the durable store + late-result rule are the backstop); no new task dispatch
+  after terminal cancellation (asserted); no performance numbers invented; no
+  future component marked implemented; no secret/credential committed.
+- **Validation:**
+  - CMake build → ✅ clean; `ctest` → ✅ 18/18 (incl. new M30 loop + PG +
+    gRPC checks against live local PG/Redis)
+  - `npm test` → ✅ exit 0 across 12 suites (worker 9/9, browser-mgr 10/10,
+    parity 9/9, all prior suites green)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅ (0 errors, 0 warnings)
+  - `npm run build` (production) → ✅ (all routes present)
+  - Manual live-browser Stop: NOT run this session (requires live
+    Browserbase/keys + running scheduler/worker fleet); the durable +
+    mocked-browser paths are covered by the suites. Marked as an open item for
+    the final evidence campaign (M39/M40).
+- **Known limitations:** worker cancel latency is bounded by the blocking-read
+  slice (default 500ms) — a worker mid-slice sees the control message on the
+  next slice. A slow (not dead) worker that misses the control message is still
+  bounded by the late-result rule once the run is terminal. Live-browser Stop
+  deferred to the final campaign.
+- **Human action:** none (local PG migration only; Neon migration still
+  requires explicit approval).
+- **COMMIT:** `<M30_SHA>` — `phase2(m30): implement distributed cancellation`
+- **NEXT:** M31 — Implement worker registry, leases, and heartbeats.

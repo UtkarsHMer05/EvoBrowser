@@ -247,6 +247,67 @@ int main(int argc, char** argv) {
     grpc::Status cs = stub->CancelRun(&cctx, creq, &cr);
     if (!cs.ok()) fail("CancelRun RPC failed");
     else printf("PASS: CancelRun ok=%d\n", cr.ok());
+
+    // --- M30: repeated Stop is idempotent -----------------------------------
+    {
+      grpc::ClientContext rctx;
+      CancelRunRequest rreq;
+      rreq.set_run_id("m17-cancel");
+      rreq.set_reason("second stop request");
+      CancelRunResponse rr;
+      grpc::Status rs = stub->CancelRun(&rctx, rreq, &rr);
+      if (!rs.ok() || !rr.ok()) fail("M30: repeated CancelRun must be ok");
+      else printf("PASS: M30 repeated CancelRun idempotent (ok=%d)\n", rr.ok());
+    }
+
+    // --- M30: Stop-after-terminal is a no-op reporting the real outcome -----
+    // Wait for the canceled run to finalize, then cancel again: the response
+    // must report the run's ACTUAL terminal outcome (CANCELED), not an error.
+    {
+      bool terminal = false;
+      for (int i = 0; i < 100; ++i) {
+        grpc::ClientContext gctx;
+        GetRunRequest greq;
+        greq.set_run_id("m17-cancel");
+        GetRunResponse gr;
+        if (stub->GetRun(&gctx, greq, &gr).ok() &&
+            gr.status() == evo::execution::v1::RUN_CANCELED) {
+          terminal = true;
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+      if (!terminal) fail("M30: canceled run did not reach terminal state");
+
+      grpc::ClientContext tctx;
+      CancelRunRequest treq;
+      treq.set_run_id("m17-cancel");
+      treq.set_reason("stop after terminal");
+      CancelRunResponse tr;
+      grpc::Status ts = stub->CancelRun(&tctx, treq, &tr);
+      if (!ts.ok() || !tr.ok()) {
+        fail("M30: Stop-after-terminal must be an ok no-op");
+      } else if (tr.outcome() != evo::execution::v1::RunOutcome::CANCELED) {
+        fail("M30: Stop-after-terminal must report the real outcome");
+      } else {
+        printf("PASS: M30 Stop-after-terminal no-op reports CANCELED\n");
+      }
+    }
+
+    // --- M30: CancelRun on an unknown run is NOT_FOUND ----------------------
+    {
+      grpc::ClientContext uctx;
+      CancelRunRequest ureq;
+      ureq.set_run_id("m30-no-such-run");
+      ureq.set_reason("unknown");
+      CancelRunResponse ur;
+      grpc::Status us = stub->CancelRun(&uctx, ureq, &ur);
+      if (us.error_code() != grpc::NOT_FOUND) {
+        fail("M30: CancelRun on unknown run must be NOT_FOUND");
+      } else {
+        printf("PASS: M30 CancelRun unknown run -> NOT_FOUND\n");
+      }
+    }
   }
 
   // Terminate the server subprocess and reap it.

@@ -414,6 +414,208 @@ int main() {
           "stop() yields terminal canceled state (no hang)");
   }
 
+  // --- 8. M30: cancel BEFORE dispatch (cancel races run() startup) ----------
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m30-pre";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m30pre";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 10s;
+
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg);
+    // Cancel BEFORE run(): the run row does not exist yet, so the durable
+    // stamp must be retried by run() right after it creates the row.
+    loop.cancel("user requested stop");
+    const auto cancel_at = std::chrono::steady_clock::now();
+    const std::string status = loop.run();
+    // Diagnostic (NOT benchmark-grade; single sample, no methodology):
+    // scheduler-side cancellation latency = cancel() -> run() returns.
+    const auto scheduler_cancel_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - cancel_at)
+            .count();
+    printf("  info m30 scheduler cancel latency (diagnostic, 1 sample): "
+           "%lldus\n",
+           static_cast<long long>(scheduler_cancel_us));
+
+    check(status == evo::run_status::kCanceled,
+          "m30: cancel-before-dispatch terminates canceled");
+    bool all_canceled = true;
+    bool any_attempt = false;
+    for (const char* n : {"start", "a", "b", "c"}) {
+      auto nr = store.get_node_run("run-m30-pre", n);
+      if (!nr.has_value() || nr->status != evo::node_status::kCanceled) {
+        all_canceled = false;
+      }
+      if (store.attempt_row_count("run-m30-pre", n) != 0) any_attempt = true;
+    }
+    check(all_canceled, "m30: every node canceled (none dispatched)");
+    check(!any_attempt, "m30: no attempt rows created (no dispatch after cancel)");
+    auto run = store.get_run("run-m30-pre");
+    check(run.has_value() && run->cancel_requested_at > 0 &&
+              run->cancel_reason == "user requested stop",
+          "m30: cancel timestamp + reason stamped despite startup race");
+
+    // Exactly one CANCEL_RUN control message, well-formed, for this run.
+    const std::string control = evo::control_stream_key(cfg.env_prefix);
+    transport.ensure_group(control, "m30-readers", "0");
+    std::stop_source ss;
+    int cancel_msgs = 0;
+    bool well_formed = true;
+    while (true) {
+      auto m = transport.read(control, "m30-readers", "r", 100ms,
+                              ss.get_token());
+      if (!m) break;
+      evo::execution::v1::ControlEnvelope env;
+      if (!env.ParseFromString(m->payload) ||
+          env.kind() != evo::execution::v1::ControlEnvelope::CANCEL_RUN ||
+          env.run_id() != cfg.run_id) {
+        well_formed = false;
+      }
+      cancel_msgs++;
+      transport.ack(control, "m30-readers", m->id);
+    }
+    check(cancel_msgs == 1 && well_formed,
+          "m30: exactly one well-formed CANCEL_RUN control message");
+  }
+
+  // --- 9. M30: repeated Stop is idempotent (first request wins) -------------
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m30-rep";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m30rep";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 10s;
+
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg);
+    loop.cancel("first request");
+    loop.cancel("second request");  // must be a no-op
+    loop.cancel("third request");   // must be a no-op
+    const std::string status = loop.run();
+    check(status == evo::run_status::kCanceled, "m30: repeated cancel -> canceled");
+    auto run = store.get_run("run-m30-rep");
+    check(run.has_value() && run->cancel_reason == "first request",
+          "m30: first cancel reason wins (repeats do not overwrite)");
+
+    const std::string control = evo::control_stream_key(cfg.env_prefix);
+    transport.ensure_group(control, "m30-readers", "0");
+    std::stop_source ss;
+    int cancel_msgs = 0;
+    while (true) {
+      auto m = transport.read(control, "m30-readers", "r", 100ms,
+                              ss.get_token());
+      if (!m) break;
+      cancel_msgs++;
+      transport.ack(control, "m30-readers", m->id);
+    }
+    check(cancel_msgs == 1,
+          "m30: repeated cancel publishes exactly one control message");
+  }
+
+  // --- 10. M30: Stop-after-terminal is a no-op ------------------------------
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m30-term";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m30term";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 10s;
+
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg);
+    FakeWorker worker(transport, cfg.env_prefix, cfg.run_id);
+    worker.start();
+    const std::string status = loop.run();
+    worker.stop();
+    check(status == evo::run_status::kSucceeded, "m30: run completes first");
+
+    // Cancel after the run is terminal: must not republish, restamp, or
+    // regress the durable state.
+    loop.cancel("too late");
+    auto run = store.get_run("run-m30-term");
+    check(run.has_value() && run->status == evo::run_status::kSucceeded &&
+              run->cancel_requested_at == 0 && run->cancel_reason.empty(),
+          "m30: Stop-after-terminal leaves succeeded run untouched");
+
+    const std::string control = evo::control_stream_key(cfg.env_prefix);
+    transport.ensure_group(control, "m30-readers", "0");
+    std::stop_source ss;
+    auto m = transport.read(control, "m30-readers", "r", 100ms, ss.get_token());
+    check(!m.has_value(),
+          "m30: no control message published after terminal state");
+  }
+
+  // --- 11. M30: late success after terminal canceled is rejected ------------
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m30-late";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m30late";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 10s;
+
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg);
+    // No worker. Cancel once "start" has been dispatched (in flight).
+    std::jthread canceller([&](std::stop_token st) {
+      while (!st.stop_requested()) {
+        bool dispatched = false;
+        for (const auto& ev : loop.events()) {
+          if (ev.kind == "node_dispatched" && ev.node_id == "start") {
+            dispatched = true;
+          }
+        }
+        if (dispatched) break;
+        std::this_thread::sleep_for(1ms);
+      }
+      loop.cancel("user requested stop");
+    });
+    // Inject a forged success for the in-flight node shortly after cancel;
+    // the run loop checks cancellation before consuming results, so this
+    // result must never be applied.
+    std::jthread injector([&](std::stop_token st) {
+      while (!st.stop_requested() &&
+             !store.get_run("run-m30-late").has_value()) {
+        std::this_thread::sleep_for(1ms);
+      }
+      std::this_thread::sleep_for(30ms);
+      transport.publish(evo::result_stream_key(cfg.env_prefix),
+                        encode_success(cfg.run_id, "start", 1, "{\"late\":1}"));
+    });
+
+    const std::string status = loop.run();
+    canceller.request_stop();
+    canceller.join();
+    injector.request_stop();
+    injector.join();
+
+    check(status == evo::run_status::kCanceled, "m30: run terminal canceled");
+    auto ns = store.get_node_run("run-m30-late", "start");
+    check(ns.has_value() && ns->status == evo::node_status::kCanceled &&
+              ns->output_json.find("late") == std::string::npos,
+          "m30: late success did not overwrite terminal canceled node");
+    bool all_terminal = true;
+    for (const char* n : {"start", "a", "b", "c"}) {
+      auto nr = store.get_node_run("run-m30-late", n);
+      if (!nr.has_value() || !evo::node_status::is_terminal(nr->status)) {
+        all_terminal = false;
+      }
+    }
+    check(all_terminal, "m30: all nodes terminal after late-result injection");
+  }
+
   if (failures == 0) {
     printf("\nALL M26 DISTRIBUTED RUN LOOP TESTS PASSED!\n");
     return 0;

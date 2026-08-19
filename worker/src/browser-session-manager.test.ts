@@ -322,6 +322,68 @@ async function main() {
     ok("adapter integration: browser node session owned + reused + closed by manager");
   }
 
+  // --- 10. M30: closeAllForRun closes every session of a canceled run -------
+  {
+    const closed: string[] = [];
+    let shots = 0;
+    const mgr = new BrowserSessionManager({
+      factory: async (key) => {
+        const { stagehand, fake } = makeFakeStagehand(`sess-${key}`);
+        const orig = fake.close;
+        fake.close = async () => {
+          closed.push(key);
+          await orig();
+        };
+        return { stagehand, browserbaseSessionId: `sess-${key}` };
+      },
+      onFinalScreenshot: () => {
+        shots++;
+      },
+    });
+    // Two sessions for run-CX (default + custom affinity key), one for a
+    // different run that must survive the cancel.
+    await mgr.getForTask(makeTask({ runId: "run-CX" }));
+    await mgr.getForTask(
+      makeTask({ runId: "run-CX", affinityKey: "custom:cx" }),
+    );
+    await mgr.getForTask(makeTask({ runId: "run-OTHER" }));
+    assert.equal(mgr.liveCount(), 3);
+
+    await mgr.closeAllForRun("run-CX");
+    assert.equal(mgr.liveCount(), 1, "only the other run's session survives");
+    assert.deepEqual(
+      closed.sort(),
+      ["custom:cx", "run:run-CX"],
+      "both run-CX sessions closed regardless of affinity key",
+    );
+    assert.equal(shots, 0, "cancel path skips the final screenshot (prompt close)");
+
+    await mgr.closeAllForRun("run-CX"); // idempotent
+    assert.equal(mgr.liveCount(), 1, "second closeAllForRun is a no-op");
+    ok("closeAllForRun: closes all of a run's sessions promptly, idempotent");
+  }
+
+  // --- 11. M30: cancel racing an in-flight open does not leak the session ---
+  {
+    let openedSession: FakeStagehand | undefined;
+    const mgr = new BrowserSessionManager({
+      factory: async () => {
+        await new Promise((r) => setTimeout(r, 30)); // slow open
+        const { stagehand, fake } = makeFakeStagehand("sess-race");
+        openedSession = fake;
+        return { stagehand, browserbaseSessionId: "sess-race" };
+      },
+      captureScreenshot: async () => undefined,
+    });
+    const openPromise = mgr.getForTask(makeTask({ runId: "run-RACE" }));
+    // Cancel while the open is still in flight.
+    await mgr.closeAllForRun("run-RACE");
+    await openPromise; // the open completes after the cancel
+    assert.equal(mgr.liveCount(), 0, "raced session closed, not leaked");
+    assert.equal(openedSession!.closeCalls, 1, "raced session was closed");
+    ok("cancel racing an in-flight open closes the session (no leak)");
+  }
+
   console.log(`\nALL M25 BROWSER SESSION MANAGER TESTS PASSED! (${passed}/${passed})`);
 }
 

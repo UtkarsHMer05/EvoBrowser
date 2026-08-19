@@ -105,6 +105,38 @@ int main() {
   check(pre2.has_value() && pre2->status == evo::run_status::kSucceeded,
         "terminal run not regressed by create_run");
 
+  // --- M30: cancellation-request timestamp (first request wins) --------------
+  const std::string cancel_run_id =
+      "m30-cancel-" +
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  evo::RunRecord cancel_run;
+  cancel_run.run_id = cancel_run_id;
+  cancel_run.org_id = "org-pg";
+  cancel_run.workflow_id = wf_id;
+  cancel_run.engine = "evo";
+  cancel_run.status = evo::run_status::kRunning;
+  check(store.create_run(cancel_run, evo::now_wall_ms()),
+        "m30: run row created");
+  const std::int64_t first_ts = evo::now_wall_ms();
+  check(store.mark_cancel_requested(cancel_run_id, "user requested stop",
+                                    first_ts),
+        "m30: mark_cancel_requested stamps first request");
+  auto cr = store.get_run(cancel_run_id);
+  check(cr.has_value() && cr->cancel_requested_at > 0 &&
+            cr->cancel_reason == "user requested stop",
+        "m30: cancel_requested_at + reason round-trip");
+  // Repeated request: idempotent, first timestamp/reason preserved.
+  check(store.mark_cancel_requested(cancel_run_id, "second request",
+                                    first_ts + 60000),
+        "m30: repeated mark_cancel_requested reports success");
+  auto cr2 = store.get_run(cancel_run_id);
+  check(cr2.has_value() && cr2->cancel_reason == "user requested stop" &&
+            cr2->cancel_requested_at == cr->cancel_requested_at,
+        "m30: first request wins (timestamp + reason not overwritten)");
+  // Unknown run: reports false.
+  check(!store.mark_cancel_requested("m30-no-such-run", "x", first_ts),
+        "m30: mark_cancel_requested on unknown run returns false");
+
   // --- Node runs ------------------------------------------------------------
   check(store.create_node_run(run_id, "a", "bench:echo"), "create_node_run a");
   check(store.create_node_run(run_id, "a", "bench:echo"),
