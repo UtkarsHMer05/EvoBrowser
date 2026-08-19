@@ -32,7 +32,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M20 | Implement immutable workflow versions and optimistic concurrency | ✅ DONE | `0ea1c1c` |
 | M21 | Implement Redis Streams transport in the C++ scheduler | ✅ DONE | `47e565e` |
 | M22 | Finalize task/result envelope semantics and event transport | ✅ DONE | `ad88fd0` |
-| M23 | Create the TypeScript distributed worker service | ✅ DONE | `<M23_SHA>` |
+| M23 | Create the TypeScript distributed worker service | ✅ DONE | `dd01b19` |
 
 ---
 
@@ -1174,5 +1174,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - `docker compose -f infra/phase2/docker-compose.yml config` → ✅ valid
     (default: redis+postgres; `--profile worker`: +worker)
 - **Human action:** none.
-- **COMMIT:** `<M23_SHA>` — `phase2(m23): add scalable typescript worker service`
+- **COMMIT:** `dd01b19` — `phase2(m23): add scalable typescript worker service`
 - **NEXT:** M24 — Reuse existing interpolation and node executors inside distributed workers.
