@@ -39,7 +39,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `799a4f6` |
 | M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `c3723bc` |
 | M29 | Achieve UI parity for Evo runs | ✅ DONE | `a24dd9e` |
-| M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `<M30_SHA>` |
+| M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `200386a` |
 
 ---
 
@@ -1764,5 +1764,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   deferred to the final campaign.
 - **Human action:** none (local PG migration only; Neon migration still
   requires explicit approval).
-- **COMMIT:** `<M30_SHA>` — `phase2(m30): implement distributed cancellation`
+- **COMMIT:** `200386a` — `phase2(m30): implement distributed cancellation`
 - **NEXT:** M31 — Implement worker registry, leases, and heartbeats.
