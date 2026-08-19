@@ -18,7 +18,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M11 | Add cooperative cancellation and graceful shutdown | ✅ DONE | `477497c` |
 | M12 | Add execution resource classes and browser affinity policy | ✅ DONE | `cc73f30` |
 | M13 | Instrument the scheduler core with evidence-grade timestamps and counters | ✅ DONE | `916ffc9` |
-| M14 | Harden C++ correctness with sanitizers and concurrency stress | ✅ DONE | `ce2e9d9` |
+| M14 | Harden C++ correctness with sanitizers and concurrency stress | ✅ DONE | `b361a4e` |
 
 ---
 
@@ -664,5 +664,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   No suppressions file needed (no real project bugs suppressed).
 - **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched).
 - **Human action:** none.
-- **COMMIT:** `ce2e9d9` — `phase2(m14): harden concurrent core with sanitizers and stress`
+- **COMMIT:** `b361a4e` — `phase2(m14): harden concurrent core with sanitizers and stress`
 - **NEXT:** M15 — first local benchmark corpus and sequential-vs-concurrent evidence.
