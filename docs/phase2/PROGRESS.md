@@ -28,7 +28,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M16 | Define the shared Protobuf/gRPC execution contract | ✅ DONE | `dbaecf8` |
 | M17 | Implement the C++ scheduler service over gRPC | ✅ DONE | `7cf04f6` |
 | M18 | Create isolated local Redis + PostgreSQL infrastructure | ✅ DONE | `813da0a` |
-| M19 | Add additive Phase-2 Drizzle schema and migrations | ✅ DONE | `<M19_SHA>` |
+| M19 | Add additive Phase-2 Drizzle schema and migrations | ✅ DONE | `f63d9b4` |
 
 ---
 
@@ -918,5 +918,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - Phase-1 regression: `npm test` → ✅ 32/32 (28 Phase-1 + 4 contract)
 - **Human action:** none (local Postgres only; Neon migration requires explicit
   approval and is deferred).
-- **COMMIT:** `<M19_SHA>` — `phase2(m19): add durable phase2 run schema`
+- **COMMIT:** `f63d9b4` — `phase2(m19): add durable phase2 run schema`
 - **NEXT:** M20 — Implement immutable workflow versions and optimistic concurrency.
