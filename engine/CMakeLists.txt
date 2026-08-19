@@ -76,6 +76,7 @@ add_library(evo_scheduler_core STATIC
   core/src/thread_pool.cpp
   core/src/execution_policy.cpp
   core/src/concurrent_scheduler.cpp
+  core/src/transport.cpp
 )
 target_include_directories(evo_scheduler_core PUBLIC core/include)
 target_compile_features(evo_scheduler_core PUBLIC cxx_std_20)
@@ -146,6 +147,37 @@ target_compile_options(evo_proto PUBLIC
   -Wno-gnu-anonymous-struct -Wno-nested-anon-types
 )
 target_compile_features(evo_proto PUBLIC cxx_std_20)
+
+# ---------------------------------------------------------------------------
+# evo_redis_transport — Redis Streams task transport (Milestone 21).
+# Links the self-contained static hiredis built by
+# engine/third_party/build-hiredis.sh (gitignored; arm64). hiredis headers are
+# SYSTEM (third-party). If the prefix is missing, the target is skipped and
+# the redis_transport test is not registered (documented in PROGRESS.md).
+# ---------------------------------------------------------------------------
+set(EVO_HIREDIS_PREFIX ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hiredis-prefix)
+set(EVO_HIREDIS_LIB ${EVO_HIREDIS_PREFIX}/lib/libhiredis.a)
+if(EXISTS ${EVO_HIREDIS_LIB})
+  add_library(evo_redis_transport STATIC redis/src/redis_transport.cpp)
+  target_include_directories(evo_redis_transport PUBLIC redis/include)
+  target_include_directories(evo_redis_transport SYSTEM PUBLIC
+    ${EVO_HIREDIS_PREFIX}/include)
+  target_link_libraries(evo_redis_transport PUBLIC evo_scheduler_core
+    ${EVO_HIREDIS_LIB})
+  target_compile_options(evo_redis_transport PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    # hiredis headers use C99 flexible array members (sds.h) that trip
+    # -Wpedantic in C++ mode; suppress third-party header noise only.
+    -Wno-c99-extensions
+  )
+  target_compile_features(evo_redis_transport PUBLIC cxx_std_20)
+  set(EVO_HAVE_HIREDIS ON)
+else()
+  message(STATUS
+    "hiredis static lib not found at ${EVO_HIREDIS_LIB}; "
+    "run engine/third_party/build-hiredis.sh to enable the Redis transport")
+  set(EVO_HAVE_HIREDIS OFF)
+endif()
 
 # ---------------------------------------------------------------------------
 # evo-smoke — prints version/build metadata only (no scheduling yet)
@@ -271,6 +303,32 @@ target_compile_options(evo_grpc_integration_test PRIVATE
   -Wno-deprecated-declarations
 )
 add_test(NAME grpc_integration COMMAND evo_grpc_integration_test)
+
+# ---------------------------------------------------------------------------
+# evo_transport — in-memory transport fake unit tests (M21). Always built;
+# scheduler-core tests use the fake so they never need Redis.
+# ---------------------------------------------------------------------------
+add_executable(evo_transport_test tests/transport_test.cpp)
+target_link_libraries(evo_transport_test PRIVATE evo_scheduler_core)
+target_compile_options(evo_transport_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME transport COMMAND evo_transport_test)
+
+# ---------------------------------------------------------------------------
+# evo_redis_transport — integration test against the LOCAL Phase-2 Redis
+# (scripts/phase2). Skipped at runtime when EVO_PHASE2_REDIS is unreachable.
+# Only registered when the static hiredis prefix exists.
+# ---------------------------------------------------------------------------
+if(EVO_HAVE_HIREDIS)
+  add_executable(evo_redis_transport_test tests/redis_transport_test.cpp)
+  target_link_libraries(evo_redis_transport_test PRIVATE
+    evo_redis_transport evo_proto evo_scheduler_core)
+  target_compile_options(evo_redis_transport_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  add_test(NAME redis_transport COMMAND evo_redis_transport_test)
+endif()
 # Point the integration test at the real server binary so it runs instead of
 # skipping (the test also honors an EVO_SCHEDULER_SERVER_BIN env override).
 set_tests_properties(grpc_integration PROPERTIES

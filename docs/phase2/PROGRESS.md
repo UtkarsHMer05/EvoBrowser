@@ -30,6 +30,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M18 | Create isolated local Redis + PostgreSQL infrastructure | ✅ DONE | `813da0a` |
 | M19 | Add additive Phase-2 Drizzle schema and migrations | ✅ DONE | `f63d9b4` |
 | M20 | Implement immutable workflow versions and optimistic concurrency | ✅ DONE | `0ea1c1c` |
+| M21 | Implement Redis Streams transport in the C++ scheduler | ✅ DONE | `<M21_SHA>` |
 
 ---
 
@@ -980,3 +981,66 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none (local Postgres only).
 - **COMMIT:** `0ea1c1c` — `phase2(m20): immutable workflow versions + optimistic concurrency`
 - **NEXT:** M21 — Implement Redis Streams transport in the C++ scheduler.
+
+---
+
+## M21 — Implement Redis Streams transport in the C++ scheduler
+
+- **BASE_SHA:** `e686f27`
+- **What was inspected:** master prompt M21 spec + §2.3 (why Redis Streams) +
+  Appendix D (Redis Streams semantics checklist), `engine/proto/evo/execution.proto`
+  (TaskEnvelope/ResultEnvelope), `engine/CMakeLists.txt` (target layout,
+  pkg-config gRPC pattern), `engine/core/include/evo/ready_queue.hpp` (style),
+  hiredis 1.4.1 API, host Homebrew prefixes (Intel `/usr/local` vs ARM
+  `/opt/homebrew`).
+- **What changed:**
+  - `engine/core/include/evo/transport.hpp` + `core/src/transport.cpp` —
+    `TaskTransport` abstraction (ensure_group/publish/read/ack/pending_count/
+    stream_length) + `InMemoryTransport` fake mirroring Redis Streams semantics
+    (append-only, per-group FIFO, pending-until-ack, reclaim/redelivery) +
+    namespaced key helpers (`task/result/control_stream_key`). Scheduler-core
+    tests use the fake; no live Redis needed.
+  - `engine/redis/include/evo/redis_transport.hpp` + `redis/src/redis_transport.cpp`
+    — `RedisTransport` over hiredis: XGROUP CREATE (idempotent, BUSYGROUP=ok),
+    XADD (binary-safe argv), XREADGROUP (at-least-once, stop_token-aware block
+    slices), XACK (workers only; late/dup ack harmless), XPENDING, XLEN.
+    Single mutex-guarded redisContext with bounded exponential-backoff
+    reconnect (base 50ms, cap 2s, max 5 retries/op).
+  - `engine/third_party/build-hiredis.sh` — reproducible arm64 static hiredis
+    build into `engine/third_party/hiredis-prefix/` (gitignored). Needed
+    because the machine's `brew` on PATH is the Intel prefix (x86_64) while the
+    engine builds arm64 against `/opt/homebrew`; ARM brew was blocked by an
+    unrelated untrusted-tap policy, so a self-contained source build avoids
+    changing the user's brew state.
+  - `engine/CMakeLists.txt` — `transport.cpp` in core; `evo_redis_transport`
+    target (hiredis headers SYSTEM, `-Wno-c99-extensions` for sds.h flexible
+    arrays); `transport` + `redis_transport` CTest targets (redis one only when
+    the hiredis prefix exists).
+  - `engine/tests/transport_test.cpp` — 20 in-memory assertions incl. 200-msg
+    concurrent publish/read race smoke.
+  - `engine/tests/redis_transport_test.cpp` — 18 assertions against local Redis:
+    enqueue/read/pending/ack, duplicate payload → new stream id (transport does
+    NOT dedupe; app-level dedupe is by envelope identity in M33), deterministic
+    TaskEnvelope encoding round-trip, idempotent group create, late/dup ack.
+    Skips cleanly when local Redis is unreachable.
+  - `.gitignore` — ignore `engine/third_party/hiredis-src/` + `hiredis-prefix/`.
+- **Concurrency/distributed correctness:** Redis owns stream state; the
+  transport owns one mutex-guarded connection. At-least-once delivery: read
+  marks pending, only the worker acks (scheduler never acks on behalf of
+  workers — M21 no-go honored). Duplicate delivery is expected and safe (dedupe
+  is app-level, M33). Reconnect is bounded; exhausted retries surface as
+  failure to the caller's retry policy. Timestamps in envelopes are wall-clock
+  UTC (proto Timestamp); transport itself adds no timestamps.
+- **No-go compliance:** no ack on behalf of workers; keys namespaced with
+  explicit prefix; no invented perf numbers; scheduler-core tests still use the
+  in-memory fake; Phase-1 untouched.
+- **Validation:**
+  - `cmake --build engine/build` → ✅ clean (arm64)
+  - `./build/evo_transport_test` → ✅ 20/20 in-memory
+  - `./build/evo_redis_transport_test` → ✅ 18/18 vs local Redis
+  - Release CTest → ✅ 14/14
+  - ASan+UBSan CTest → ✅ 14/14
+  - TSan CTest → ✅ 14/14 (no data races in transport)
+- **Human action:** none (hiredis built from source locally; no system changes).
+- **COMMIT:** `<M21_SHA>` — `phase2(m21): add redis streams task transport`
+- **NEXT:** M22 — Finalize task/result envelope semantics and event transport.

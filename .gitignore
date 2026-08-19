@@ -54,3 +54,8 @@ next-env.d.ts
 /engine/vcpkg_installed/
 /engine/benchmarks/results/
 compile_commands.json
+
+# Local third-party builds for the engine (M21: static hiredis). Rebuilt via
+# engine/third_party/build-hiredis.sh; not committed.
+/engine/third_party/hiredis-src/
+/engine/third_party/hiredis-prefix/

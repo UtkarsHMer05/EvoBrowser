@@ -183,3 +183,15 @@ prompt against the actual checked-out repository at the recorded SHAs.
 | 20.4 | Optimistic save rejects `expectedVersion` behind current with a clear conflict error; omitting the token keeps Phase-1 behavior. | Detect stale updates instead of silently overwriting; keep the editor usable with a clear conflict path. | M27 UI can surface the conflict; legacy callers unaffected. |
 | 20.5 | Versioning functions accept an injectable `db` (default `getDb()`). | Integration tests must run against local Postgres via node-postgres, since neon-http cannot open plain TCP. | Added `pg` dependency (also needed by M23+ TS workers). |
 | 20.6 | Version rows are never mutated after creation. | Runs must replay the exact approved graph (M20 no-go). | Re-runs reference old version ids; edits create new versions. |
+
+## M21 — Redis Streams transport in the C++ scheduler
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 21.1 | `TaskTransport` abstraction + `InMemoryTransport` fake in scheduler-core; `RedisTransport` in a separate `evo_redis_transport` target. | Scheduler-core tests must not need live Redis (M21 step 1); keeps the core dependency-free. | Fake mirrors Redis semantics; production swaps in RedisTransport. |
+| 21.2 | hiredis synchronous API, single mutex-guarded `redisContext`, bounded exponential-backoff reconnect (50ms base, 2s cap, 5 retries/op). | hiredis contexts are not thread-safe; bounded backoff satisfies "retryable connection with bounded backoff". | Exhausted retries surface as failure; caller applies its own policy. |
+| 21.3 | Self-contained arm64 static hiredis via `engine/third_party/build-hiredis.sh` (gitignored prefix). | Machine `brew` on PATH is the Intel prefix (x86_64) but the engine builds arm64 against `/opt/homebrew`; ARM brew was blocked by an unrelated untrusted-tap policy. | No system/brew-state changes; reproducible rebuild script committed. |
+| 21.4 | At-least-once delivery: XREADGROUP marks pending; only the worker XACKs; late/duplicate ack harmless. | M21 no-go: scheduler must not ack on behalf of workers; Redis is not exactly-once (§2.3). | Duplicate delivery expected; app-level dedupe is M33. |
+| 21.5 | Transport does NOT dedupe duplicate payloads; duplicate publish gets a new stream id. | Dedupe is by envelope identity (run_id,node_id,attempt), which is application logic, not transport logic. | M33 idempotency keys handle duplicates. |
+| 21.6 | Stream keys namespaced via `task/result/control_stream_key(env_prefix)`. | Multiple stacks can share one Redis without collision (M21 step 3). | Callers pass an explicit env/project prefix. |
+| 21.7 | hiredis headers SYSTEM + `-Wno-c99-extensions` (sds.h flexible arrays). | Third-party C99 headers trip `-Wpedantic -Werror` in C++ mode. | Project code stays `-Werror`; only third-party noise suppressed. |
