@@ -122,3 +122,10 @@ target_compile_options(evo_affinity_scheduler_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME affinity_scheduler COMMAND evo_affinity_scheduler_test)
+
+add_executable(evo_metrics_test tests/metrics_test.cpp)
+target_link_libraries(evo_metrics_test PRIVATE evo_scheduler_core)
+target_compile_options(evo_metrics_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME metrics COMMAND evo_metrics_test)

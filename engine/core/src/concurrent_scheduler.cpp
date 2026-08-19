@@ -22,10 +22,12 @@ std::string ConcurrentRunLog::to_json_string() const {
     o.emplace("ok", json::Value(r.ok()));
     o.emplace("output", json::Value(r.result.output));
     using namespace std::chrono;
-    auto ready_ms = duration_cast<milliseconds>(r.ready_at.time_since_epoch()).count();
+    auto ready_ms = duration_cast<milliseconds>(r.became_ready_at.time_since_epoch()).count();
+    auto dispatch_ms = duration_cast<milliseconds>(r.ready_at.time_since_epoch()).count();
     auto start_ms = duration_cast<milliseconds>(r.started_at.time_since_epoch()).count();
     auto finish_ms = duration_cast<milliseconds>(r.finished_at.time_since_epoch()).count();
-    o.emplace("ready_at_ms", json::Value(static_cast<double>(ready_ms)));
+    o.emplace("became_ready_at_ms", json::Value(static_cast<double>(ready_ms)));
+    o.emplace("ready_at_ms", json::Value(static_cast<double>(dispatch_ms)));
     o.emplace("started_at_ms", json::Value(static_cast<double>(start_ms)));
     o.emplace("finished_at_ms", json::Value(static_cast<double>(finish_ms)));
     arr.push_back(json::Value(std::move(o)));
@@ -78,6 +80,14 @@ ResourcePolicy ConcurrentScheduler::policy_for_node(const NodeId& id) const {
   return policy_.policy_for(*spec);
 }
 
+void ConcurrentScheduler::update_high_water() {
+  // Caller holds dispatch_mu_.
+  const auto now_in_flight = in_flight_.load(std::memory_order_relaxed);
+  if (now_in_flight > max_in_flight_) max_in_flight_ = now_in_flight;
+  const auto qsize = ready_queue_.size();
+  if (qsize > max_queue_depth_) max_queue_depth_ = qsize;
+}
+
 ConcurrentScheduler::~ConcurrentScheduler() {
   pool_.drain();
 }
@@ -112,8 +122,8 @@ ConcurrentRunLog ConcurrentScheduler::run() {
   // If cancellation was already requested before run(), start canceled.
   if (canceled_.load(std::memory_order_relaxed)) {
     state_.cancel_run();
-    finalize_and_collect();
     run_terminal_at_ = std::chrono::steady_clock::now();
+    finalize_and_collect();
     run_finished_.store(true, std::memory_order_relaxed);
     return ConcurrentRunLog{std::move(log_)};
   }
@@ -123,6 +133,7 @@ ConcurrentRunLog ConcurrentScheduler::run() {
   {
     std::lock_guard lock(dispatch_mu_);
     dispatch_ready_nodes_locked();
+    update_high_water();
   }
   dispatch_cv_.notify_one();
 
@@ -142,6 +153,7 @@ ConcurrentRunLog ConcurrentScheduler::run() {
 
     // Retry resource-blocked nodes first; their resource may now be free.
     drain_resource_blocked();
+    update_high_water();
 
     std::optional<NodeId> id_opt;
     while ((id_opt = ready_queue_.try_pop())) {
@@ -153,12 +165,13 @@ ConcurrentRunLog ConcurrentScheduler::run() {
       ResourcePolicy rp = policy_for_node(id);
       int& used = resource_usage_[rp.affinity_key];
       if (used >= rp.capacity) {
-        // No capacity: defer (node stays READY; retried when a slot frees).
+        // No capacity: defer (node stays READY; retried on next slot free).
         resource_blocked_.push_back(id);
         continue;
       }
       used++;
       state_.dispatch_node(id);
+      dispatch_count_.fetch_add(1, std::memory_order_relaxed);
       in_flight_.fetch_add(1, std::memory_order_relaxed);
       const auto ready_at = std::chrono::steady_clock::now();
       pool_.submit([this, id, ready_at]() { worker_task(id, ready_at); });
@@ -175,8 +188,8 @@ ConcurrentRunLog ConcurrentScheduler::run() {
   // are dispatched because the loop above has exited on cancellation.
   pool_.drain();
 
-  finalize_and_collect();
   run_terminal_at_ = std::chrono::steady_clock::now();
+  finalize_and_collect();
   run_finished_.store(true, std::memory_order_relaxed);
   return ConcurrentRunLog{std::move(log_)};
 }
@@ -187,6 +200,8 @@ void ConcurrentScheduler::dispatch_ready_nodes_locked() {
     if (!ready_queue_.push(id)) {
       break;
     }
+    // Record when deps were satisfied (M13: ready-to-dispatch latency input).
+    ready_times_[id] = std::chrono::steady_clock::now();
   }
 }
 
@@ -197,6 +212,7 @@ void ConcurrentScheduler::drain_resource_blocked() {
     if (used < rp.capacity) {
       used++;
       state_.dispatch_node(*it);
+      dispatch_count_.fetch_add(1, std::memory_order_relaxed);
       in_flight_.fetch_add(1, std::memory_order_relaxed);
       const auto ready_at = std::chrono::steady_clock::now();
       NodeId id = *it;
@@ -233,7 +249,13 @@ void ConcurrentScheduler::worker_task(const NodeId& id,
   rec.id = id;
   rec.type = spec ? spec->type : std::string{};
   rec.sequence = sequence_counter_.fetch_add(1, std::memory_order_relaxed);
-  rec.ready_at = ready_at;
+  {
+    std::lock_guard lock(log_mu_);
+    auto it = ready_times_.find(id);
+    rec.became_ready_at =
+        it == ready_times_.end() ? started_at : it->second;
+    rec.ready_at = ready_at;
+  }
   rec.started_at = started_at;
   rec.finished_at = finished_at;
   rec.result = result;
@@ -257,7 +279,10 @@ void ConcurrentScheduler::on_node_complete(const NodeId& id, const TaskResult& r
     }
     // Re-attempt deferred nodes now that a resource slot freed.
     drain_resource_blocked();
+    update_high_water();
   }
+
+  completion_count_.fetch_add(1, std::memory_order_relaxed);
 
   // If cancellation is in progress, do not unlock successors — pending/blocked
   // nodes are already CANCELED by cancel_run().
@@ -266,8 +291,10 @@ void ConcurrentScheduler::on_node_complete(const NodeId& id, const TaskResult& r
     {
       std::lock_guard lock(dispatch_mu_);
       for (const auto& nid : newly_ready) {
+        ready_times_[nid] = std::chrono::steady_clock::now();
         ready_queue_.push(nid);
       }
+      update_high_water();
     }
   }
 
@@ -277,6 +304,16 @@ void ConcurrentScheduler::on_node_complete(const NodeId& id, const TaskResult& r
 
 void ConcurrentScheduler::finalize_and_collect() {
   state_.finalize_run();
+
+  // Populate aggregate metrics (M13).
+  metrics_.run_start = run_start_time_;
+  metrics_.run_terminal = run_terminal_at_;
+  metrics_.cancel_requested = cancel_requested_at_;
+  metrics_.dispatch_count = dispatch_count_.load(std::memory_order_relaxed);
+  metrics_.completion_count = completion_count_.load(std::memory_order_relaxed);
+  metrics_.max_in_flight = max_in_flight_;
+  metrics_.max_queue_depth = max_queue_depth_;
+  metrics_.retry_count = 0;  // placeholder; retries arrive in a later milestone
 
   std::sort(log_.begin(), log_.end(),
             [](const ConcurrentNodeRun& a, const ConcurrentNodeRun& b) {

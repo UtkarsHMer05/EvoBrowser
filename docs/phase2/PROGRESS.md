@@ -17,6 +17,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M10 | Build the local concurrent dependency-aware DAG scheduler | ✅ DONE | `0f40920` |
 | M11 | Add cooperative cancellation and graceful shutdown | ✅ DONE | `477497c` |
 | M12 | Add execution resource classes and browser affinity policy | ✅ DONE | `cc73f30` |
+| M13 | Instrument the scheduler core with evidence-grade timestamps and counters | ✅ DONE | `73c88dd` |
 
 ---
 
@@ -543,4 +544,63 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched).
 - **Human action:** none.
 - **COMMIT:** `cc73f30` — `phase2(m12): add resource-aware scheduling and browser affinity`
-- **NEXT:** M13 — scheduler clock discipline and run/node timestamp instrumentation.
+---
+
+## M13 — Instrument the scheduler core with evidence-grade timestamps and counters
+
+- **BASE_SHA:** `cc73f30`
+- **What changed:**
+  - `engine/core/include/evo/metrics.hpp` (NEW) — `RunMetrics` struct with run-level
+    counters (`dispatch_count`, `completion_count`, `max_in_flight`,
+    `max_queue_depth`, `retry_count` placeholder) and steady_clock markers
+    (`run_start`, `run_terminal`, `cancel_requested`). Provides `to_json_string()`
+    for benchmark-harness export; durations are milliseconds derived from
+    `steady_clock` (never `system_clock`, per §14). Metric definitions follow
+    ARCHITECTURE.md §14 formulas (14.2 ready-to-dispatch latency, 14.4 node
+    execution latency, 14.5 logical node latency; high-water marks for active
+    workers and queue depth).
+  - `engine/core/include/evo/concurrent_scheduler.hpp` — `ConcurrentNodeRun` now
+    records `became_ready_at` (deps satisfied, when pushed to the ready queue) in
+    addition to `ready_at` (popped for dispatch)/`started_at`/`finished_at`, with
+    `ready_to_dispatch_latency()` accessor. Scheduler exposes `metrics()`,
+    `cancel_requested_at()`, and `run_terminal_at()`. Added `ready_times_` map
+    (guarded by `log_mu_`) and run-level counter fields.
+  - `engine/core/src/concurrent_scheduler.cpp` — counters update on the hot path:
+    `dispatch_count_`/`completion_count_` are atomic (written from worker threads);
+    `max_in_flight`/`max_queue_depth` updated under `dispatch_mu_` in
+    `update_high_water()`; `run_terminal_at_` is set *before* `finalize_and_collect()`
+    populates `metrics_` (fixed a bug where the terminal timestamp was unset in the
+    exported JSON because finalization read it too early). `run()` records
+    `run_start_time_` on entry.
+  - `engine/tests/metrics_test.cpp` (NEW) — 5 suites: timestamp monotonicity
+    (`became_ready <= ready <= started <= finished` per node + dependency ordering),
+    exact logical counters (`dispatch_count == completion_count == node count`),
+    JSON export shape (all expected keys present), cancellation metrics
+    (`cancel_requested` + `run_terminal` recorded, `run_terminal >= cancel_requested`
+    on clean shutdown), and wide-fan metrics (counters consistent on 9-node graph).
+  - `engine/CMakeLists.txt` — added the `evo_metrics_test` CTest target.
+- **Measurement/presentation separation:** counters are updated inline on the dispatch
+  and completion paths; structured JSON export is a separate `to_json_string()` call
+  invoked by tests/harnesses post-run. No locks on the atomic counter hot path;
+  high-water marks use a cheap `max` under the existing `dispatch_mu_` (never on the
+  worker `log_mu_`).
+- **Concurrency correctness:** `dispatch_count_`/`completion_count_` are atomic
+  (multi-writer, no lock contention on the metrics hot path); `max_in_flight`/
+  `max_queue_depth`/`run_terminal_at_` are set on the dispatcher thread or at
+  run-terminal (single-threaded snapshot), so no data race. `ready_times_` is
+  written from `dispatch_ready_nodes_locked` and `on_node_complete` under `log_mu_`
+  (in the dispatch path) and read under `log_mu_` in `worker_task`.
+- **No-go compliance:** did not add CPU/memory metrics (no collector exists yet);
+  did not use `system_clock` for durations; did not fabricate performance numbers;
+  did not change Phase-1 behavior.
+- **Validation:**
+  - Release build → ✅ clean under `-Wall -Wextra -Wpedantic -Werror`
+  - `ctest --test-dir engine/build --output-on-failure` → ✅ 9/9
+  - `ctest --test-dir engine/build-asan --output-on-failure` → ✅ 9/9 (ASan+UBSan,
+    no sanitizer errors)
+  - `npm test` (Phase-1) → ✅ 28/28 (run as evidence; no TS/app code touched)
+  - `./build/evo_metrics_test` → "all metrics tests passed"
+- **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched).
+- **Human action:** none.
+- **COMMIT:** `73c88dd` — `phase2(m13): instrument scheduler metrics`
+- **NEXT:** M14 — deterministic test fixtures and property-based equivalence testing.

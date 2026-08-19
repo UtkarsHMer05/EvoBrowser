@@ -1,7 +1,8 @@
 #pragma once
 
 // Concurrent dependency-aware DAG scheduler (Milestone 10) with cooperative
-// cancellation (Milestone 11) and resource-aware dispatch (Milestone 12).
+// cancellation (Milestone 11), resource-aware dispatch (Milestone 12), and
+// evidence-grade metrics instrumentation (Milestone 13).
 //
 // Combines the thread pool (M09), ready queue (M08), and thread-safe state
 // machine (M07) into a scheduler that executes independent branches in parallel
@@ -20,6 +21,10 @@
 // independent of dependency readiness. The default ExecutionPolicy serializes
 // all browser-class nodes in a run on one capacity-1 browser-affinity resource
 // so they never run concurrently against the same browser session.
+//
+// Metrics (M13): run-level counters and high-water marks (dispatch/completion
+// counts, max in-flight, max queue depth, retry placeholder) are collected on
+// the hot path and exported as structured JSON for benchmark harnesses.
 
 #include <atomic>
 #include <chrono>
@@ -36,6 +41,7 @@
 
 #include "evo/dag.hpp"
 #include "evo/execution_policy.hpp"
+#include "evo/metrics.hpp"
 #include "evo/ready_queue.hpp"
 #include "evo/scheduler.hpp"
 #include "evo/state_machine.hpp"
@@ -56,14 +62,18 @@ struct ConcurrentNodeRun {
   NodeId id;
   std::string type;
   std::size_t sequence;  // order of logical completion (not dispatch order)
-  std::chrono::steady_clock::time_point ready_at;   // when deps satisfied
-  std::chrono::steady_clock::time_point started_at; // when worker began exec
-  std::chrono::steady_clock::time_point finished_at; // when worker finished
+  std::chrono::steady_clock::time_point became_ready_at;  // deps satisfied
+  std::chrono::steady_clock::time_point ready_at;         // popped for dispatch
+  std::chrono::steady_clock::time_point started_at;       // worker began exec
+  std::chrono::steady_clock::time_point finished_at;      // worker finished
   TaskResult result;
 
   bool ok() const { return result.completed; }
   std::chrono::nanoseconds duration() const { return finished_at - started_at; }
   std::chrono::nanoseconds queue_latency() const { return started_at - ready_at; }
+  std::chrono::nanoseconds ready_to_dispatch_latency() const {
+    return ready_at - became_ready_at;
+  }
 };
 
 // Run log for the concurrent scheduler. The `runs` vector is sorted by
@@ -78,7 +88,8 @@ struct ConcurrentRunLog {
   }
 
   // Canonical serialization for deterministic test/benchmark assertions.
-  // Produces the same field names as the sequential RunLog plus `ready_at`.
+  // Produces the same field names as the sequential RunLog plus readiness
+  // timestamps (M13).
   std::string to_json_string() const;
 };
 
@@ -152,6 +163,9 @@ class ConcurrentScheduler {
     return run_terminal_at_;
   }
 
+  // Aggregate run metrics (M13). Call after run() completes.
+  const RunMetrics& metrics() const { return metrics_; }
+
  private:
   void init();
   void dispatch_ready_nodes_locked();
@@ -164,6 +178,9 @@ class ConcurrentScheduler {
 
   // Resolve the resource policy for a node (see ExecutionPolicy).
   ResourcePolicy policy_for_node(const NodeId& id) const;
+
+  // Update high-water marks (under dispatch_mu_).
+  void update_high_water();
 
   Dag dag_;
   std::map<std::string, ConcurrentTaskFn> tasks_;
@@ -185,6 +202,10 @@ class ConcurrentScheduler {
   std::map<std::string, int> resource_usage_;  // affinity_key -> in-use count
   std::vector<NodeId> resource_blocked_;        // ready but waiting for capacity
 
+  // Per-node "became ready" timestamps (when deps were satisfied), guarded by
+  // log_mu_ (written from workers via on_node_complete, read in finalize).
+  std::map<NodeId, std::chrono::steady_clock::time_point> ready_times_;
+
   std::mutex log_mu_;
   std::vector<ConcurrentNodeRun> log_;
   std::atomic<std::size_t> sequence_counter_{0};
@@ -195,6 +216,16 @@ class ConcurrentScheduler {
   std::chrono::steady_clock::time_point run_start_time_;
   std::chrono::steady_clock::time_point cancel_requested_at_;
   std::chrono::steady_clock::time_point run_terminal_at_;
+
+  // Run-level counters/metrics (M13). dispatch_count/completion_count are
+  // atomic (updated from multiple threads); high-water marks are updated under
+  // dispatch_mu_.
+  std::atomic<std::size_t> dispatch_count_{0};
+  std::atomic<std::size_t> completion_count_{0};
+  std::size_t max_in_flight_ = 0;
+  std::size_t max_queue_depth_ = 0;
+
+  RunMetrics metrics_;
 };
 
 }  // namespace evo
