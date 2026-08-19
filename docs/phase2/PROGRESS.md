@@ -40,6 +40,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `c3723bc` |
 | M29 | Achieve UI parity for Evo runs | ✅ DONE | `a24dd9e` |
 | M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `200386a` |
+| M31 | Implement worker registry, leases, and heartbeats | 🚧 IN PROGRESS (claimed by session B) | — |
 
 ---
 
