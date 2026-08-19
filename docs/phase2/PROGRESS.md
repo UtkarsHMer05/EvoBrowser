@@ -3,6 +3,11 @@
 One entry per milestone. Entries record observed results, not promises.
 Commit subjects follow `phase2(mNN): <description>`.
 
+> **Concurrent-session coordination:** two agent sessions work this repo.
+> Git is the shared channel — pull before starting work, and claim a
+> milestone in the table below (status 🚧 IN PROGRESS + claimant) before
+> editing its files. Never rewrite another session's commits.
+
 | Milestone | Title | Status | Commit |
 | :--- | :--- | :--- | :--- |
 | M01 | Reconcile the real Phase-1 source and archive | ✅ DONE | `39fa8e1` |
@@ -22,7 +27,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M15 | Create the first local benchmark corpus and sequential-vs-concurrent evidence | ✅ DONE | `bea4b06` |
 | M16 | Define the shared Protobuf/gRPC execution contract | ✅ DONE | `dbaecf8` |
 | M17 | Implement the C++ scheduler service over gRPC | ✅ DONE | `7cf04f6` |
-| M18 | Create isolated local Redis + PostgreSQL infrastructure | ⛔ BLOCKED | Docker not installed; requires `brew install --cask docker` then start Docker Desktop |
+| M18 | Create isolated local Redis + PostgreSQL infrastructure | ✅ DONE | `<M18_SHA>` |
 
 ---
 
@@ -815,3 +820,50 @@ Commit subjects follow `phase2(mNN): <description>`.
   - TS contract regression: `npx tsc --noEmit` + `npm run lint` → ✅ exit 0.
 - **COMMIT:** `7cf04f6` — `M17: gRPC ControlService (SubmitRun/CancelRun/GetRun/Health)`
 - **NEXT:** M18 — Create isolated local Redis + PostgreSQL infrastructure.
+
+---
+
+## M18 — Create isolated local Redis + PostgreSQL infrastructure
+
+- **BASE_SHA:** `f2e1e88`
+- **What was inspected:** master prompt M18 spec, `AGENTS.md`, `.env.example`,
+  `.gitignore`, `drizzle.config.ts` (Neon connection convention), host toolchain
+  (Docker 29.7.2 aarch64 + Compose v5.4.0, Redis 8.4.0 local, Homebrew Postgres).
+- **What changed:**
+  - `infra/phase2/docker-compose.yml` — compose project `evo-phase2`:
+    `redis:7.4-alpine` + `postgres:16-alpine`, loopback-only port bindings
+    (`127.0.0.1:6390`, `127.0.0.1:5433`), health checks, named volumes,
+    env-overridable ports/credentials (`EVO_PHASE2_*`).
+  - `scripts/phase2/{lib,up,down,reset,health}.sh` — start/stop/reset/verify
+    with fail-fast Docker guards. `reset.sh` only removes volumes owned by
+    the `evo-phase2` compose project; it never references `DATABASE_URL` /
+    `DATABASE_URL_UNPOOLED` / Neon.
+  - `docs/phase2/LOCAL_INFRA.md` — layout, endpoints, commands, and how the
+    Phase-2 engine will later use the same schema against standard
+    Postgres/Neon (additive Drizzle migrations, portable SQL only).
+  - `.env.example` — documented the optional `EVO_PHASE2_*` local defaults
+    (non-secret, loopback-only).
+  - `docs/phase2/DECISIONS.md` — caught up M06–M17 decision entries; added M18.
+- **Concurrency/distributed correctness:** this milestone introduces no mutable
+  application state — only container lifecycle. Ownership: Docker daemon owns
+  container/volume state; scripts are idempotent (`up` on a running stack is a
+  no-op; `down` on a stopped stack is a no-op). Duplicate invocation is safe.
+  Crash/shutdown semantics: `down` preserves volumes; `reset` is the only
+  destructive path and is local-only by construction.
+- **No-go compliance:** reset never points at a remote DB; no secrets committed
+  (credentials are documented non-secret local defaults); no perf numbers
+  invented; Phase-1 default behavior untouched (app still uses Neon).
+- **Validation:**
+  - `docker compose -f infra/phase2/docker-compose.yml config` → ✅ valid
+  - `scripts/phase2/up.sh` → ✅ both containers Healthy (redis, postgres)
+  - `scripts/phase2/health.sh` → ✅ redis PONG; postgres ok
+    (PostgreSQL 16.15 on aarch64-unknown-linux-musl)
+  - Port binding check → ✅ `127.0.0.1:6390->6379`, `127.0.0.1:5433->5432`
+    (loopback only, not exposed off-machine)
+  - `scripts/phase2/down.sh` → ✅ clean shutdown (network removed, volumes kept)
+  - `scripts/phase2/reset.sh` → ✅ volumes wiped, fresh stack Healthy
+  - Phase-1 regression: `npm test` → ✅ 32/32 (28 Phase-1 + 4 contract)
+  - Engine: `ctest --test-dir engine/build` → ✅ 12/12 (incl. grpc_integration)
+- **Human action:** Docker Desktop (ARM) installed and running — complete.
+- **COMMIT:** `<M18_SHA>` — `phase2(m18): add isolated redis postgres dev stack`
+- **NEXT:** M19 — Add additive Phase-2 Drizzle schema and migrations.

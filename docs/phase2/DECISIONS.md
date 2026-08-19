@@ -57,3 +57,107 @@ prompt against the actual checked-out repository at the recorded SHAs.
 | 5.4 | Canonical JSON shape (no React Flow fields) with deterministic node/edge ordering. | Scheduler core must be independent of UI field names; deterministic serialization enables byte-identical round-trip tests and reproducible benchmarks. | `to_json`/`from_json_string` sorted by id; M15 benchmark workloads serialize graphs deterministically. |
 | 5.5 | Deterministic topo order: Kahn's algorithm with lexicographic tie-break. | Tests/benchmarks must be reproducible; nondeterminism would make M15 speedup claims uninterpretable. | `topo_order()` is stable across runs given identical input. |
 | 5.6 | Keep M04–M15 purely standard-library; no gRPC/Redis/Postgres here. | M05 is the graph model, not transport; adding deps early violates the milestone no-go list. | JSON parser is hand-written (no third-party JSON lib). |
+
+## M06 — Deterministic sequential reference scheduler
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 6.1 | Sequential scheduler walks `topo_order()` and halts on first failure. | Establishes a deterministic correctness baseline that the concurrent scheduler (M10) must match node-for-node. | M15 compares sequential vs concurrent on identical DAGs. |
+| 6.2 | `TaskResult{bool completed; std::string output}` and `TaskFn = std::function<TaskResult(const NodeSpec&)>`. | Minimal interface; no exceptions cross the scheduler boundary. | M10 extends to `ConcurrentTaskFn` adding `std::stop_token`. |
+| 6.3 | `RunLog` records per-node start/finish in `steady_clock`. | In-process latency must be monotonic; wall-clock is reserved for process boundaries (M16/M17). | Metrics (M13) derive durations from steady_clock only. |
+
+## M07 — Scheduler state machines and dependency counters
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 7.1 | Every public `StateMachine` method takes `std::lock_guard lock(mu_)`; results returned by value. | The state machine is shared between the dispatcher and worker threads; coarse locking is correct-first, optimized later if benchmarked. | No data races under TSan; M10 reuses it safely. |
+| 7.2 | Dependency counters decrement on upstream success; a node becomes READY only when its counter hits zero (fan-in invariant). | Encodes the DAG join semantics without re-scanning edges. | Fan-in nodes (diamond join) dispatch exactly once. |
+| 7.3 | `finalize_run()` derives terminal RunState from node outcomes; idempotent completion. | A node completing twice (duplicate delivery) must not corrupt state. | M33 idempotency builds on this guarantee. |
+| 7.4 | `mark_canceled_transitive` called with lock held; cancellation is cooperative. | Cancellation races completion; holding the lock serializes the two. | M11 wires `stop_token` through to tasks. |
+
+## M08 — Thread-safe blocking ready queue
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 8.1 | Blocking FIFO with `mutex` + `condition_variable_any` + `stop_token`; `pop(stop_token)` returns on close or stop. | Workers must block without busy-spin and wake cleanly on shutdown. | M09 pool drains the queue; M11 shutdown is graceful. |
+| 8.2 | Bounded capacity with backpressure on `push`. | Prevents unbounded memory growth when producers outrun consumers. | M36 quota/backpressure reuses this primitive. |
+
+## M09 — Bounded std::jthread worker pool
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 9.1 | Fixed-size pool of `std::jthread` workers; `submit`/`drain`/`stop`; exceptions captured into a queue, never thrown across the boundary. | jthread guarantees join on destruction; captured exceptions keep the pool alive. | `take_exceptions()` surfaces failures to tests/M13 metrics. |
+| 9.2 | No detached threads; pool destructor joins all workers. | Engine contract §8 forbids detached threads. | Clean shutdown verified by TSan. |
+
+## M10 — Local concurrent dependency-aware DAG scheduler
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 10.1 | `ConcurrentScheduler` composes StateMachine (M07) + ReadyQueue (M08) + ThreadPool (M09); dispatcher loop moves READY→DISPATCHED→RUNNING. | Reuses proven thread-safe primitives instead of a monolithic lock. | Each component is independently tested. |
+| 10.2 | `ConcurrentTaskFn = std::function<TaskResult(const NodeSpec&, std::stop_token)>`. | Tasks must observe cancellation cooperatively. | M11 cooperative variants plug in directly. |
+| 10.3 | `ConcurrentConfig{num_workers, ready_queue_capacity, run_id}`. | Deterministic, configurable concurrency for benchmarks. | M15 sweeps worker counts. |
+
+## M11 — Cooperative cancellation and graceful shutdown
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 11.1 | Cancellation propagates via `std::stop_token` checked inside tasks (`sleep_task_cooperative`/`burn_task_cooperative`). | Cooperative cancellation is the only safe model; forced kill would leak browser sessions. | Long tasks must poll the token. |
+| 11.2 | `cancel()` requests stop; in-flight tasks finish their current step; queued nodes become CANCELED. | Matches the run-level cancel semantics the UI expects (M30). | CancelRun (M17) maps to this. |
+
+## M12 — Resource classes and browser affinity policy
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 12.1 | Browser affinity = capacity-1 resource group keyed by affinity key; same-session browser nodes never run in parallel. | Browser-mutating nodes sharing one session must serialize (decision 3.6). | M25 pins a browser resource group to the owning worker. |
+| 12.2 | Resource class is a first-class envelope field, not inferred from node type. | Keeps scheduling policy data-driven and testable. | Proto (M16) carries resource_class/affinity_key. |
+
+## M13 — Evidence-grade timestamps and counters
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 13.1 | In-process scheduling latency uses `steady_clock`; wall-clock UTC only at process boundaries. | steady_clock is monotonic and immune to NTP jumps; wall-clock is for cross-process correlation. | Proto Timestamps (M16) are wall-clock; internal metrics are steady. |
+| 13.2 | Metrics are counters/histograms keyed by the §14 definitions, not ad-hoc timers. | Evidence-grade, comparable numbers across milestones. | M39 reports use these exact keys. |
+
+## M14 — Sanitizers and concurrency stress
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 14.1 | Maintain three build trees: Release, ASan+UBSan (`build-asan`), TSan (`build-tsan`). | Races/UB must be caught before they reach distributed code. | CI gate (M38) runs all three. |
+| 14.2 | Stress test hammers fan-in/fan-out + cancel races. | The hardest correctness cases are concurrency races. | TSan 12/12 green is a standing gate. |
+
+## M15 — First benchmark corpus and sequential-vs-concurrent evidence
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 15.1 | Synthetic workloads `bench:sleep`/`bench:burn` generated by seed (`generate_workload`); never added to the TS node registry. | Benchmarks must be reproducible and must not pollute the product node catalog. | Results are labeled synthetic, not production. |
+| 15.2 | Results identify workload, build mode, hardware, sample count, and commit before being evidence-grade. | Master prompt performance-evidence rule. | Raw data stored under `engine/benchmarks/results/` (gitignored). |
+
+## M16 — Shared Protobuf/gRPC execution contract
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 16.1 | Proto package `evo.execution.v1`; ControlService = SubmitRun/CancelRun/GetRun/Health. | Versioned namespace allows future breaking changes under v2. | TS/C++ bindings generated from one source of truth. |
+| 16.2 | `node_payload_json` is opaque to transport and carries no secrets by contract; resource class/affinity are first-class fields. | Transport must not need to understand node internals; secrets never cross the wire in payloads. | M24 workers parse payloads; M36 enforces no-secret rule. |
+| 16.3 | Generated code in a separate `evo_proto` target with protobuf headers as SYSTEM includes. | `-Werror` on project code must not flag third-party generated warnings. | No `-Werror` on third-party headers. |
+| 16.4 | TS bindings use the already-installed `protobufjs` runtime; typed codegen deferred. | Avoids a new dependency before it is needed. | M17+ may add `ts-proto` if typed stubs are required. |
+
+## M17 — C++ scheduler service over gRPC
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 17.1 | Heap-stable `std::map<std::string, std::unique_ptr<ActiveRun>>` for active runs. | `unordered_map` rehash would dangle pointers held by the runner thread. | No use-after-free under concurrent submit/complete. |
+| 17.2 | Runner thread publishes log/outcome/done under `runs_mu_`. | Serializes writer (runner) and readers (GetRun) on ActiveRun state. | No data race on ActiveRun::log (TSan clean). |
+| 17.3 | `sigwait`-based graceful shutdown thread calling `server->Shutdown()`. | Signal handlers must not run gRPC code inline; a dedicated thread does the shutdown. | SIGTERM drains cleanly. |
+| 17.4 | Default bind `127.0.0.1:50051` (not `0.0.0.0`). | The scheduler service must not be exposed off-machine by default. | Production exposure is an explicit later decision. |
+| 17.5 | Manual `Timestamp` conversion (protobuf 35 removed `TimePointToTimestamp`); explicit `duration_cast<system_clock::duration>` in `to_wall`. | Homebrew protobuf 35 dropped the helper; libc++ steady/system clock arithmetic needs an explicit cast. | Compiles clean under `-Werror`. |
+| 17.6 | gRPC linked via pkg-config `grpc++` for the complete absl link set; `find_package(PkgConfig)` added before gRPC detection. | Homebrew grpc 1.83 requires the full absl transitive set; a bare `find_package(gRPC)` under-links `_grpc_slice_*`. | Link succeeds on arm64 macOS. |
+
+## M18 — Isolated local Redis + PostgreSQL infrastructure
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 18.1 | Compose project `evo-phase2` with loopback-only port bindings (`127.0.0.1:6390` redis, `127.0.0.1:5433` postgres). | The dev stack must never be reachable off-machine and must never collide with the app's Neon connection or a local default Postgres on 5432. | Integration tests connect to fixed local endpoints; no accidental remote exposure. |
+| 18.2 | Credentials are documented non-secret local defaults, overridable via `EVO_PHASE2_*` env vars. | M18 requires committed non-secret dev defaults; a separate namespace guarantees no overlap with `DATABASE_URL`/`DATABASE_URL_UNPOOLED`. | Reset scripts can never be pointed at Neon by construction. |
+| 18.3 | `reset.sh` destroys only volumes owned by the `evo-phase2` compose project. | Destructive operations must be scoped to local throwaway data. | Wipe is reproducible and safe; `down.sh` preserves volumes. |
+| 18.4 | Redis 7.4-alpine + Postgres 16-alpine pinned by tag. | Reproducible infra across machines; alpine keeps images small. | Version bumps are explicit compose edits. |
+| 18.5 | Phase-2 schema will be portable SQL (no local-only extensions) so the same additive Drizzle migrations apply to local Postgres now and Neon later. | M19+ must run against this local stack, then Neon after explicit human approval. | No divergence between local and remote schema. |

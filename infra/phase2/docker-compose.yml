@@ -1,0 +1,57 @@
+# Phase 2 — isolated local dev stack (Milestone 18).
+#
+# Purpose: reproducible local Redis + PostgreSQL for Phase-2 integration tests
+# and the distributed worker runtime, WITHOUT touching the app's Neon database.
+#
+# - The Next.js app keeps using DATABASE_URL / DATABASE_URL_UNPOOLED (Neon).
+#   Nothing in this file is referenced by the production app.
+# - Credentials below are NON-SECRET local development defaults, suitable
+#   only for throwaway local containers bound to 127.0.0.1. Never reuse them
+#   against a shared or remote database.
+# - All ports/credentials are overridable via env vars (see .env.example,
+#   "Phase 2 local infra" section).
+#
+# Usage: scripts/phase2/up.sh | down.sh | reset.sh | health.sh
+
+name: evo-phase2
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: evo-phase2-redis
+    # Loopback-only binding: this stack must never be reachable off-machine.
+    ports:
+      - "127.0.0.1:${EVO_PHASE2_REDIS_PORT:-6390}:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: evo-phase2-postgres
+    environment:
+      POSTGRES_USER: ${EVO_PHASE2_PG_USER:-evo}
+      POSTGRES_PASSWORD: ${EVO_PHASE2_PG_PASSWORD:-evo_dev_password}
+      POSTGRES_DB: ${EVO_PHASE2_PG_DB:-evo_phase2}
+    ports:
+      - "127.0.0.1:${EVO_PHASE2_PG_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:
