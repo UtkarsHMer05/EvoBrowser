@@ -30,7 +30,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M18 | Create isolated local Redis + PostgreSQL infrastructure | ✅ DONE | `813da0a` |
 | M19 | Add additive Phase-2 Drizzle schema and migrations | ✅ DONE | `f63d9b4` |
 | M20 | Implement immutable workflow versions and optimistic concurrency | ✅ DONE | `0ea1c1c` |
-| M21 | Implement Redis Streams transport in the C++ scheduler | ✅ DONE | `<M21_SHA>` |
+| M21 | Implement Redis Streams transport in the C++ scheduler | ✅ DONE | `47e565e` |
 
 ---
 
@@ -1042,5 +1042,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - ASan+UBSan CTest → ✅ 14/14
   - TSan CTest → ✅ 14/14 (no data races in transport)
 - **Human action:** none (hiredis built from source locally; no system changes).
-- **COMMIT:** `<M21_SHA>` — `phase2(m21): add redis streams task transport`
+- **COMMIT:** `47e565e` — `phase2(m21): add redis streams task transport`
 - **NEXT:** M22 — Finalize task/result envelope semantics and event transport.
