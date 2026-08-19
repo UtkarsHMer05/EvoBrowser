@@ -20,7 +20,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M13 | Instrument the scheduler core with evidence-grade timestamps and counters | ✅ DONE | `916ffc9` |
 | M14 | Harden C++ correctness with sanitizers and concurrency stress | ✅ DONE | `b361a4e` |
 | M15 | Create the first local benchmark corpus and sequential-vs-concurrent evidence | ✅ DONE | `bea4b06` |
-| M16 | Define the shared Protobuf/gRPC execution contract | ✅ DONE | `TBD-M16` |
+| M16 | Define the shared Protobuf/gRPC execution contract | ✅ DONE | `dbaecf8` |
 
 ---
 
@@ -796,5 +796,5 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Phase-1 regression:** `npm test` → ✅ 32/32 (28 Phase-1 + 4 new contract suites;
   Phase-1 tests unchanged and green).
 - **Human action:** none.
-- **COMMIT:** `TBD-M16` — `phase2(m16): define versioned grpc protocol`
+- **COMMIT:** `dbaecf8` — `phase2(m16): define versioned grpc protocol`
 - **NEXT:** M17 — implement the C++ scheduler service over gRPC.
