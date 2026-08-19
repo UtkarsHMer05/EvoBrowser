@@ -88,22 +88,63 @@ target_compile_definitions(evo_scheduler_core PUBLIC
 )
 
 # ---------------------------------------------------------------------------
-# evo_proto — generated C++ protobuf bindings for the execution contract
-# (Milestone 16). Protobuf headers are SYSTEM (no -Werror on third-party code).
-# The generated _pb.cc files are compiled in a separate target so the strict
-# -Werror on evo_scheduler_core does not apply to them. Uses the protobuf CMake
-# config (protobuf::libprotobuf) which carries transitive absl deps on Homebrew.
+# evo_proto — generated C++ protobuf + gRPC bindings for the execution
+# contract (Milestone 16–17). Protobuf + grpc headers are SYSTEM (no -Werror
+# on third-party code). Generated sources are compiled in a separate target so
+# the strict -Werror on evo_scheduler_core does not apply to them.
+#
+# Reproducible generation: the proto source-of-truth is engine/proto/evo/
+# execution.proto. Generated *_pb.cc/_pb.h + *_grpc.pb.cc/_grpc.pb.h are emitted
+# by `protoc` + the grpc C++ plugin (see engine/proto/generate.sh). The checked-
+# in evo_gen/ copies are the committed artifacts; this custom command keeps them
+# in sync when protoc is available.
 # ---------------------------------------------------------------------------
 find_package(protobuf CONFIG REQUIRED)
+# gRPC: link via pkg-config for the complete, correctly-ordered absl set on
+# Homebrew (the gRPC CMake config target does not propagate all
+# absl::log_internal symbols reliably on macOS). Falls back to CMake config.
+find_package(PkgConfig QUIET)
+set(_grpc_libs "")
+if(PkgConfig_FOUND)
+  pkg_check_modules(GRPC_PKG QUIET grpc++)
+  if(GRPC_PKG_FOUND)
+    # Resolve pkg-config -l flags into absolute .dylib paths (macOS ld needs
+    # the files findable; link_directories from the pkg-config Libs.private).
+    pkg_check_modules(GRPC_PKG grpc++ IMPORTED_TARGET)
+    set(_grpc_libs PkgConfig::GRPC_PKG)
+  endif()
+endif()
+if(NOT _grpc_libs)
+  set(_brew_prefixes /usr/local /opt/homebrew)
+  find_package(gRPC CONFIG QUIET HINTS ${_brew_prefixes})
+  if(gRPC_FOUND)
+    set(_grpc_libs gRPC::grpc++)
+  else()
+    find_library(GRPCXX_LIB NAMES grpc++ grpc
+      PATHS /usr/local/lib /opt/homebrew/lib /usr/local/Cellar/grpc/1.83.0_1/lib)
+    find_library(GRPC_LIB NAMES grpc
+      PATHS /usr/local/lib /opt/homebrew/lib /usr/local/Cellar/grpc/1.83.0_1/lib)
+    set(_grpc_libs ${GRPCXX_LIB} ${GRPC_LIB})
+  endif()
+endif()
 add_library(evo_proto STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/proto/evo_gen/evo/execution.pb.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/proto/evo_gen/evo/execution.grpc.pb.cc
 )
 target_include_directories(evo_proto SYSTEM PUBLIC
   ${Protobuf_INCLUDE_DIRS}
   ${CMAKE_CURRENT_SOURCE_DIR}/proto
   ${CMAKE_CURRENT_SOURCE_DIR}/proto/evo_gen
 )
-target_link_libraries(evo_proto PUBLIC protobuf::libprotobuf)
+target_link_libraries(evo_proto PUBLIC protobuf::libprotobuf ${_grpc_libs})
+# protobuf/absl/grpc headers use Clang extensions (-Wnullability-extension,
+# -Wgcc-compat, -gnu-anonymous-struct, -Wnested-anon-types) that trip -Werror
+# on project test targets linking evo_proto. Project code stays -Werror; these
+# suppressions propagate to consumers to silence third-party header noise only.
+target_compile_options(evo_proto PUBLIC
+  -Wno-nullability-extension -Wno-gcc-compat
+  -Wno-gnu-anonymous-struct -Wno-nested-anon-types
+)
 target_compile_features(evo_proto PUBLIC cxx_std_20)
 
 # ---------------------------------------------------------------------------
@@ -119,6 +160,14 @@ target_link_libraries(evo-smoke PRIVATE evo_scheduler_core)
 # ---------------------------------------------------------------------------
 add_executable(evo-bench app/bench_runner.cpp)
 target_link_libraries(evo-bench PRIVATE evo_scheduler_core)
+
+# ---------------------------------------------------------------------------
+# evo-scheduler-server — gRPC ControlService over the scheduler core (M17).
+# Not wired into the Next.js app yet (M16/M17 no-go: do not integrate Next.js
+# in this milestone). Listens on $EVO_SCHEDULER_ADDR (default 0.0.0.0:50051).
+# ---------------------------------------------------------------------------
+add_executable(evo-scheduler-server app/grpc_service.cpp)
+target_link_libraries(evo-scheduler-server PRIVATE evo_proto evo_scheduler_core)
 
 # ---------------------------------------------------------------------------
 # Tests (CTest)
@@ -205,3 +254,25 @@ target_compile_options(evo_contract_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME contract COMMAND evo_contract_test)
+
+# ---------------------------------------------------------------------------
+# evo_grpc_integration — M17 end-to-end gRPC test. Spawns the
+# evo-scheduler-server subprocess and drives it over a real gRPC channel.
+# Skipped when EVO_SCHEDULER_SERVER_BIN is unset.
+# ---------------------------------------------------------------------------
+add_executable(evo_grpc_integration_test tests/grpc_integration_test.cpp)
+target_link_libraries(evo_grpc_integration_test PRIVATE evo_proto evo_scheduler_core)
+target_compile_options(evo_grpc_integration_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+  # grpc++ headers emit Clang-extension + deprecation warnings on macOS;
+  # suppress third-party header noise only (project code stays -Werror).
+  -Wno-nullability-extension -Wno-gcc-compat
+  -Wno-gnu-anonymous-struct -Wno-nested-anon-types
+  -Wno-deprecated-declarations
+)
+add_test(NAME grpc_integration COMMAND evo_grpc_integration_test)
+# Point the integration test at the real server binary so it runs instead of
+# skipping (the test also honors an EVO_SCHEDULER_SERVER_BIN env override).
+set_tests_properties(grpc_integration PROPERTIES
+  ENVIRONMENT "EVO_SCHEDULER_SERVER_BIN=$<TARGET_FILE:evo-scheduler-server>"
+)

@@ -86,9 +86,9 @@ void test_submitrun_roundtrip() {
   resp.set_accepted(true);
   resp.set_message("ok");
   std::string rwire;
-  resp.SerializeToString(&rwire);
+  check(resp.SerializeToString(&rwire), "serialize response");
   evo::execution::v1::SubmitRunResponse rback;
-  rback.ParseFromString(rwire);
+  check(rback.ParseFromString(rwire), "parse response back");
   check(rback.accepted(), "response accepted flag round-trips");
   check(rback.run_id() == "run_42", "response run_id round-trips");
 }
@@ -113,9 +113,9 @@ void test_envelope_roundtrip() {
   ts->set_nanos(890);
 
   std::string wire;
-  te.SerializeToString(&wire);
+  check(te.SerializeToString(&wire), "TaskEnvelope serialize");
   evo::execution::v1::TaskEnvelope back;
-  back.ParseFromString(wire);
+  check(back.ParseFromString(wire), "TaskEnvelope parse back");
   check(back.run_id() == "run_X", "run_id round-trips");
   check(back.resource_class() == evo::execution::v1::BROWSER,
         "resource_class BROWSER round-trips");
@@ -136,9 +136,9 @@ void test_envelope_roundtrip() {
   re.set_output("clicked");
   re.set_status(evo::execution::v1::ResultEnvelope::OK);
   std::string rw;
-  re.SerializeToString(&rw);
+  check(re.SerializeToString(&rw), "ResultEnvelope serialize");
   evo::execution::v1::ResultEnvelope rback;
-  rback.ParseFromString(rw);
+  check(rback.ParseFromString(rw), "ResultEnvelope parse back");
   check(rback.completed(), "completed round-trips");
   check(rback.status() == evo::execution::v1::ResultEnvelope::OK,
         "status OK round-trips");
