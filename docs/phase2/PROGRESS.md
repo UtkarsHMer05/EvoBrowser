@@ -37,6 +37,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M25 | Implement distributed browser session ownership and live-view parity | ✅ DONE | `3828448` |
 | M26 | Persist results and unlock dependencies through the distributed loop | ✅ DONE | `2db7bb9` |
 | M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `799a4f6` |
+| M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `<M28_SHA>` |
 
 ---
 
@@ -1470,3 +1471,86 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `799a4f6` — `phase2(m27): add dual execution engine abstraction`
 - **NEXT:** M28 — Build engine-neutral Evo run events and realtime frontend transport.
+
+## M28 — Build engine-neutral Evo run events and realtime frontend transport
+
+- **Status:** ✅ DONE
+- **What was inspected:** master prompt M28 spec (steps 1–17, no-go list,
+  required validation); `features/workflows/components/workflow-runs-provider.tsx`
+  (shared-provider architecture to preserve); `app/(dashboard)/workflows/[id]/page.tsx`;
+  `app/api/runs/[runId]/screenshot/route.ts` (auth pattern); `lib/auth.ts`;
+  `lib/db/schema.ts` (workflow_runs/node_runs); C++ `RunEvent::to_json_string`
+  + event-stream publish path (M26); `worker/src/redis-streams.ts` (wire
+  protocol); bundled Next.js streaming docs (`node_modules/next/dist/docs/01-app/02-guides/streaming.md`).
+- **What changed:**
+  - `features/workflows/lib/run-view-model.ts` — NEW normalized engine-neutral
+    run view model (M28 steps 1–2): `NormalizedRunViewModel` (status, steps,
+    timing, browser session id, final URL, output, stats), `triggerRunToViewModel`
+    (legacy Trigger adapter: output steps preferred, metadata fallback, live
+    session id), `reduceEvoEvents` (folds ordered C++ RunEvents idempotently
+    per (kind, node_id); node type from dispatch `detail`, output from success
+    `detail`; cross-run isolation; unknown kinds ignored; cancel never
+    overwrites a completed node).
+  - `lib/evo-redis.ts` — NEW server-side Redis client (lazy, cached; local
+    Phase-2 Redis; credentials server-only — never sent to the browser).
+  - `features/workflows/lib/evo-run-events.ts` — NEW server-side event reader
+    (M28 steps 3+5): `readEvoRunEvents` (XRANGE replay filtered to one run),
+    `tailEvoRunEvents` (blocking XREAD tail with abort/timeout/onIdle hooks;
+    never throws on Redis hiccups — client reconnects and replays),
+    `durableRunSnapshot` (reconnect fallback reconstructing the view from
+    workflow_runs + node_runs — durable state is persisted BEFORE events are
+    published, so the snapshot is always at least as fresh), `loadEvoRunView`.
+  - `features/workflows/lib/evo-run-events-route.ts` — NEW authorized-route
+    core (M28 step 4): `buildEvoRunEventsResponse` checks run row existence +
+    org ownership + engine=evo (unknown/tenant-mismatch/legacy all 404 so
+    cross-tenant existence is not leaked; legacy stays on the Trigger
+    provider), then streams SSE: replay (or resume after Last-Event-ID) →
+    durable snapshot fallback → live tail until terminal/disconnect/10-min cap,
+    with 15s keep-alive pings. Split from the route so authorization +
+    reconnect behavior are unit-testable without Clerk.
+  - `app/api/runs/[runId]/events/route.ts` — NEW thin route handler: Clerk
+    session + `resolveActiveOrgId()` before delegating to the builder;
+    `force-dynamic`; passes request signal for client-disconnect abort.
+  - `features/workflows/components/evo-run-events-provider.tsx` — NEW shared
+    client provider (M28 step 6): ONE EventSource per run shared by all
+    components (no per-component subscriptions); keyed remount per runId;
+    consumes `run-event` frames through `reduceEvoEvents` and `snapshot`
+    frames as wholesale fallback; EventSource auto-reconnect sends
+    Last-Event-ID and the idempotent reducer makes duplicate delivery safe;
+    closes for good after a terminal event. Exports `useEvoRunView` /
+    `useEvoRunEventsError`. The Trigger provider is NOT deleted (no-go).
+  - `features/workflows/lib/run-view-model.test.ts` — 20 tests: normalized
+    model + legacy mapper regression (Phase-1 provider regression), event
+    ordering, duplicate idempotency, cross-run isolation, unknown kinds,
+    failure/cancel/terminal paths, cancel-vs-completion race, authorized-route
+    404 matrix (unknown/tenant/legacy), ordered replay + close-at-terminal,
+    reconnect resume after Last-Event-ID, durable snapshot fallback, live tail
+    delivering late events. Redis+Postgres sections skip cleanly when the
+    local stack is down.
+  - `package.json` — wired the M28 test into `npm test`.
+- **Concurrency/distributed correctness:** the event stream is append-only and
+  owned by the C++ run loop (single writer per run); the SSE route is a pure
+  reader with per-request cursors — no shared mutable state. Duplicate event
+  delivery is safe (reducer idempotent per (kind, node_id)). Reconnect never
+  loses progress: replay from stream or durable snapshot (persisted before
+  publish). Cancellation racing completion: a `node_canceled` after
+  `node_succeeded` cannot overwrite the terminal step status. Client
+  disconnect aborts the tail via the request signal; a 10-minute cap prevents
+  pinned connections. Late results cannot overwrite newer state — the reducer
+  only folds forward and the durable store enforces at-most-once terminal
+  completion (M26).
+- **Timestamps:** event `wall_ms` and Postgres timestamps are wall-clock UTC;
+  no steady_clock value crosses the process boundary.
+- **Phase-1 preservation:** Trigger realtime provider untouched and still the
+  default path; legacy runs get 404 on the Evo events route; Clerk auth stays
+  server-side; no Phase-1 default behavior changed; no test removed.
+- **Validation:**
+  - `npm test` → ✅ exit 0 across 12 suites (incl. M28: 20 passed —
+    normalized model, authorized event route, reconnect simulation, Phase-1
+    provider regression)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅
+  - `npm run build` (production) → ✅ (`/api/runs/[runId]/events` present,
+    dynamic)
+- **Human action:** none.
+- **COMMIT:** `<M28_SHA>` — `phase2(m28): add engine-neutral realtime run model`
+- **NEXT:** M29 — Achieve UI parity for Evo runs.
