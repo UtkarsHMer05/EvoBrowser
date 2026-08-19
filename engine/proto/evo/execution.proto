@@ -31,6 +31,18 @@ import "google/protobuf/timestamp.proto";
 
 // ---- Enumerations ----------------------------------------------------------
 
+// Error classification for a failed attempt (Milestone 22). Drives the
+// retryability HINT on ResultEnvelope; the scheduler's retry policy (M32)
+// makes the final retry decision — this is advice from the worker, not a
+// command.
+enum ErrorClass {
+  ERROR_CLASS_UNSPECIFIED  = 0;
+  ERROR_TRANSIENT          = 1; // network blip, 5xx, timeout — retry likely helps
+  ERROR_PERMANENT          = 2; // bad input, 4xx, logic error — retry won't help
+  ERROR_RESOURCE_EXHAUSTED = 3; // quota/rate limit — retry only after backoff
+  ERROR_CANCELED           = 4; // attempt was canceled (not a failure per se)
+}
+
 // Lifecycle state of an individual node within a run.
 enum NodeState {
   NODE_STATE_UNSPECIFIED = 0;
@@ -63,6 +75,18 @@ enum ResourceClass {
 
 // A task envelope handed to a worker for execution. Separated from control RPC
 // messages (ARCHITECTURE.md §4.3: Redis may transport these later).
+//
+// Identity semantics (Milestone 22):
+//   logical task id  = (run_id, node_id)          — one per DAG node per run
+//   attempt id       = (run_id, node_id, attempt) — one per execution attempt
+// The transport assigns its own message id (Redis stream id); that id is NOT
+// the task or attempt identity. Dedupe/late-result rules key off the fields
+// below, never off transport ids (see evo/envelope.hpp).
+//
+// Payload rule: node_payload_json carries ONLY the node's execution inputs
+// (its `values`), never React Flow UI state (coordinates, selection) and never
+// secrets. The worker combines node_type + node_payload_json with its local
+// node-executor registry.
 message TaskEnvelope {
   // Globally unique identifiers scoped to the run and attempt.
   string run_id            = 1;
@@ -89,6 +113,17 @@ message TaskEnvelope {
 }
 
 // Result of a single task attempt.
+//
+// Semantics (Milestone 22):
+//   - Identity: (run_id, node_id, attempt_number). The scheduler dedupes
+//     repeated result events by this triple (see evo/envelope.hpp).
+//   - Late results: a result whose attempt_number is older than the node's
+//     current attempt, or that arrives after the node reached a terminal
+//     state, is IGNORED (never overwrites newer logical state).
+//   - error_class + retryable are a HINT from the worker; the scheduler's
+//     retry policy (M32) makes the final decision.
+//   - output is opaque JSON owned by the node executor; the transport and
+//     scheduler do not interpret it.
 message ResultEnvelope {
   string run_id             = 1;
   string node_id            = 2;
@@ -116,6 +151,24 @@ message ResultEnvelope {
   // If true, the attempt was abandoned (e.g. canceled) and may be retried if
   // the run is not terminal.
   bool abandoned = 10;
+
+  // ---- Milestone 22 additions (additive; field numbers never reused) ----
+
+  // Classification of the failure (ERROR_CLASS_UNSPECIFIED on success).
+  ErrorClass error_class = 11;
+
+  // Worker's retryability HINT for this failure. Advisory only; the
+  // scheduler's retry policy decides. `optional` gives explicit presence so
+  // "unset" (defer to error_class default) is distinguishable from an
+  // explicit false.
+  optional bool retryable = 12;
+
+  // The worker that executed this attempt (empty if unknown/legacy).
+  string worker_id = 13;
+
+  // Wall-clock (UTC) when the worker started the attempt. Paired with
+  // finished_at this bounds the attempt's wall-clock duration.
+  google.protobuf.Timestamp started_at = 14;
 }
 
 // ---- Control RPCs (service surface) ----------------------------------------

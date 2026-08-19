@@ -195,3 +195,15 @@ prompt against the actual checked-out repository at the recorded SHAs.
 | 21.5 | Transport does NOT dedupe duplicate payloads; duplicate publish gets a new stream id. | Dedupe is by envelope identity (run_id,node_id,attempt), which is application logic, not transport logic. | M33 idempotency keys handle duplicates. |
 | 21.6 | Stream keys namespaced via `task/result/control_stream_key(env_prefix)`. | Multiple stacks can share one Redis without collision (M21 step 3). | Callers pass an explicit env/project prefix. |
 | 21.7 | hiredis headers SYSTEM + `-Wno-c99-extensions` (sds.h flexible arrays). | Third-party C99 headers trip `-Wpedantic -Werror` in C++ mode. | Project code stays `-Werror`; only third-party noise suppressed. |
+
+## M22 — Task/result envelope semantics and event transport
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 22.1 | Identity = (run_id,node_id) for a task, (run_id,node_id,attempt) for an attempt; transport message ids are NOT identity. | Dedupe/late-result rules must key off logical identity, not Redis stream ids. | M33 idempotency and M31 leases use these keys. |
+| 22.2 | Additive proto: `ErrorClass` enum + ResultEnvelope fields 11–14 (`error_class`, `optional retryable`, `worker_id`, `started_at`). No field numbers reused. | Protobuf additive-evolution rule; `optional` gives explicit presence for the retry hint. | Old decoders ignore new fields; wire-compatible. |
+| 22.3 | `retryable` is an advisory HINT; `should_consider_retry` applies a policy floor (permanent/canceled never retry; transient/exhausted default retry unless explicitly false). | The worker advises; the scheduler's retry policy (M32) decides. | Prevents a worker from forcing retries on permanent errors. |
+| 22.4 | Late results are IGNORED (older attempt, or node already terminal) — never overwrite newer logical state. | A slow/crashed worker's stale result must not corrupt a newer attempt. | `is_late_result` is the single guard. |
+| 22.5 | `kMaxEnvelopeBytes` = 256 KiB; oversized/malformed envelopes rejected before durable mutation. | Bounds stream/worker memory; validates at the trust boundary. | Callers quarantine/log rejected payloads. |
+| 22.6 | Cross-language compatibility proven via committed golden byte fixtures: C++ generator + TS protobufjs decode + byte-identical re-encode. | Proves C++ <-> TS encoders agree on the wire format, not just field names. | Fixtures regenerated on proto change; byte-stability self-checked. |
+| 22.7 | `evo_envelope` is a separate target linking evo_proto (not transport). | Semantics are testable without Redis; keeps scheduler-core dependency-free. | Clean layering: transport (M21) carries, envelope (M22) enforces. |

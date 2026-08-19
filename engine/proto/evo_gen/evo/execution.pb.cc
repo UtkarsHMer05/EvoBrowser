@@ -1411,12 +1411,12 @@ constexpr ResultEnvelope::ParseTableT_ ResultEnvelope::InternalGenerateParseTabl
     {
       PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_._has_bits_),
       0, // no _extensions_
-      10, 120,  // max_field_number, fast_idx_mask
+      14, 120,  // max_field_number, fast_idx_mask
       offsetof(ParseTableT_, field_lookup_table),
-      4294966272,  // skipmap
+      4294950912,  // skipmap
       offsetof(ParseTableT_, field_entries),
-      10,  // num_field_entries
-      1,  // num_aux_entries
+      14,  // num_field_entries
+      2,  // num_aux_entries
       offsetof(ParseTableT_, aux_entries),
       class_data,
       nullptr,  // post_loop_handler
@@ -1435,16 +1435,16 @@ constexpr ResultEnvelope::ParseTableT_ ResultEnvelope::InternalGenerateParseTabl
        {18, 1, 0,
         PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.node_id_)}},
       // uint32 attempt_number = 3;
-      {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(ResultEnvelope, _impl_.attempt_number_), 6>(),
-       {24, 6, 0,
+      {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(ResultEnvelope, _impl_.attempt_number_), 8>(),
+       {24, 8, 0,
         PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.attempt_number_)}},
       // string trace_id = 4;
       {::_pbi::TcParser::FastUS1,
        {34, 2, 0,
         PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.trace_id_)}},
       // bool completed = 5;
-      {::_pbi::TcParser::SingularVarintNoZag1<bool, offsetof(ResultEnvelope, _impl_.completed_), 7>(),
-       {40, 7, 0,
+      {::_pbi::TcParser::SingularVarintNoZag1<bool, offsetof(ResultEnvelope, _impl_.completed_), 10>(),
+       {40, 10, 0,
         PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.completed_)}},
       // string output = 6;
       {::_pbi::TcParser::FastUS1,
@@ -1460,16 +1460,28 @@ constexpr ResultEnvelope::ParseTableT_ ResultEnvelope::InternalGenerateParseTabl
         PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.status_)}},
       // .google.protobuf.Timestamp finished_at = 9;
       {::_pbi::TcParser::FastMtS1,
-       {74, 5, 0,
+       {74, 6, 0,
         PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.finished_at_)}},
       // bool abandoned = 10;
-      {::_pbi::TcParser::SingularVarintNoZag1<bool, offsetof(ResultEnvelope, _impl_.abandoned_), 8>(),
-       {80, 8, 0,
+      {::_pbi::TcParser::SingularVarintNoZag1<bool, offsetof(ResultEnvelope, _impl_.abandoned_), 11>(),
+       {80, 11, 0,
         PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.abandoned_)}},
-      {::_pbi::TcParser::MiniParse, {}},
-      {::_pbi::TcParser::MiniParse, {}},
-      {::_pbi::TcParser::MiniParse, {}},
-      {::_pbi::TcParser::MiniParse, {}},
+      // .evo.execution.v1.ErrorClass error_class = 11;
+      {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(ResultEnvelope, _impl_.error_class_), 13>(),
+       {88, 13, 0,
+        PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.error_class_)}},
+      // optional bool retryable = 12;
+      {::_pbi::TcParser::SingularVarintNoZag1<bool, offsetof(ResultEnvelope, _impl_.retryable_), 12>(),
+       {96, 12, 0,
+        PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.retryable_)}},
+      // string worker_id = 13;
+      {::_pbi::TcParser::FastUS1,
+       {106, 5, 0,
+        PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.worker_id_)}},
+      // .google.protobuf.Timestamp started_at = 14;
+      {::_pbi::TcParser::FastMtS1,
+       {114, 7, 1,
+        PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.started_at_)}},
       {::_pbi::TcParser::MiniParse, {}},
     }}, {{
       65535, 65535
@@ -1479,11 +1491,11 @@ constexpr ResultEnvelope::ParseTableT_ ResultEnvelope::InternalGenerateParseTabl
       // string node_id = 2;
       {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.node_id_), _Internal::kHasBitsOffset + 1, 0, (0 | ::_fl::kFcOptional | ::_fl::kUtf8String | ::_fl::kRepAString)},
       // uint32 attempt_number = 3;
-      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.attempt_number_), _Internal::kHasBitsOffset + 6, 0, (0 | ::_fl::kFcOptional | ::_fl::kUInt32)},
+      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.attempt_number_), _Internal::kHasBitsOffset + 8, 0, (0 | ::_fl::kFcOptional | ::_fl::kUInt32)},
       // string trace_id = 4;
       {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.trace_id_), _Internal::kHasBitsOffset + 2, 0, (0 | ::_fl::kFcOptional | ::_fl::kUtf8String | ::_fl::kRepAString)},
       // bool completed = 5;
-      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.completed_), _Internal::kHasBitsOffset + 7, 0, (0 | ::_fl::kFcOptional | ::_fl::kBool)},
+      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.completed_), _Internal::kHasBitsOffset + 10, 0, (0 | ::_fl::kFcOptional | ::_fl::kBool)},
       // string output = 6;
       {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.output_), _Internal::kHasBitsOffset + 3, 0, (0 | ::_fl::kFcOptional | ::_fl::kUtf8String | ::_fl::kRepAString)},
       // string error = 7;
@@ -1491,9 +1503,17 @@ constexpr ResultEnvelope::ParseTableT_ ResultEnvelope::InternalGenerateParseTabl
       // .evo.execution.v1.ResultEnvelope.StatusCode status = 8;
       {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.status_), _Internal::kHasBitsOffset + 9, 0, (0 | ::_fl::kFcOptional | ::_fl::kOpenEnum)},
       // .google.protobuf.Timestamp finished_at = 9;
-      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.finished_at_), _Internal::kHasBitsOffset + 5, 0, (0 | ::_fl::kFcOptional | ::_fl::kMessage | ::_fl::kTvTable)},
+      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.finished_at_), _Internal::kHasBitsOffset + 6, 0, (0 | ::_fl::kFcOptional | ::_fl::kMessage | ::_fl::kTvTable)},
       // bool abandoned = 10;
-      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.abandoned_), _Internal::kHasBitsOffset + 8, 0, (0 | ::_fl::kFcOptional | ::_fl::kBool)},
+      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.abandoned_), _Internal::kHasBitsOffset + 11, 0, (0 | ::_fl::kFcOptional | ::_fl::kBool)},
+      // .evo.execution.v1.ErrorClass error_class = 11;
+      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.error_class_), _Internal::kHasBitsOffset + 13, 0, (0 | ::_fl::kFcOptional | ::_fl::kOpenEnum)},
+      // optional bool retryable = 12;
+      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.retryable_), _Internal::kHasBitsOffset + 12, 0, (0 | ::_fl::kFcOptional | ::_fl::kBool)},
+      // string worker_id = 13;
+      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.worker_id_), _Internal::kHasBitsOffset + 5, 0, (0 | ::_fl::kFcOptional | ::_fl::kUtf8String | ::_fl::kRepAString)},
+      // .google.protobuf.Timestamp started_at = 14;
+      {PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.started_at_), _Internal::kHasBitsOffset + 7, 1, (0 | ::_fl::kFcOptional | ::_fl::kMessage | ::_fl::kTvTable)},
     }},
     {{
         #ifndef PROTOBUF_MESSAGE_GLOBALS
@@ -1501,15 +1521,21 @@ constexpr ResultEnvelope::ParseTableT_ ResultEnvelope::InternalGenerateParseTabl
         #else
         {::_pbi::FieldAuxMessageGlobals(), &::google::protobuf::Timestamp_globals_},
         #endif
+        #ifndef PROTOBUF_MESSAGE_GLOBALS
+        {::_pbi::TcParser::GetTable<::google::protobuf::Timestamp>()},
+        #else
+        {::_pbi::FieldAuxMessageGlobals(), &::google::protobuf::Timestamp_globals_},
+        #endif
     }},
     {{
-      "\37\6\7\0\10\0\6\5\0\0\0\0\0\0\0\0"
+      "\37\6\7\0\10\0\6\5\0\0\0\0\0\11\0\0"
       "evo.execution.v1.ResultEnvelope"
       "run_id"
       "node_id"
       "trace_id"
       "output"
       "error"
+      "worker_id"
     }},
   };
 }
@@ -1534,11 +1560,17 @@ inline constexpr ResultEnvelope::Impl_::Impl_(
         error_(
             &::google::protobuf::internal::fixed_address_empty_string,
             ::_pbi::ConstantInitialized()),
+        worker_id_(
+            &::google::protobuf::internal::fixed_address_empty_string,
+            ::_pbi::ConstantInitialized()),
         finished_at_{nullptr},
+        started_at_{nullptr},
         attempt_number_{0u},
+        status_{static_cast< ::evo::execution::v1::ResultEnvelope_StatusCode >(0)},
         completed_{false},
         abandoned_{false},
-        status_{static_cast< ::evo::execution::v1::ResultEnvelope_StatusCode >(0)} {}
+        retryable_{false},
+        error_class_{static_cast< ::evo::execution::v1::ErrorClass >(0)} {}
 
 template <typename>
 constexpr ResultEnvelope::ResultEnvelope(::_pbi::ConstantInitialized,
@@ -2256,7 +2288,7 @@ const ::_pbi::ClassData* GetRunResponse_get_class_data() {
 }  // namespace execution
 }  // namespace evo
 static const ::_pb::EnumDescriptor* PROTOBUF_NONNULL
-    file_level_enum_descriptors_evo_2fexecution_2eproto[5];
+    file_level_enum_descriptors_evo_2fexecution_2eproto[6];
 static constexpr const ::_pb::ServiceDescriptor* PROTOBUF_NONNULL* PROTOBUF_NULLABLE
     file_level_service_descriptors_evo_2fexecution_2eproto = nullptr;
 const ::uint32_t
@@ -2291,7 +2323,7 @@ const ::uint32_t
         9,
         0x081, // bitmap
         PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_._has_bits_),
-        13, // hasbit index offset
+        17, // hasbit index offset
         PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.run_id_),
         PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.node_id_),
         PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.attempt_number_),
@@ -2302,16 +2334,24 @@ const ::uint32_t
         PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.status_),
         PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.finished_at_),
         PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.abandoned_),
+        PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.error_class_),
+        PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.retryable_),
+        PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.worker_id_),
+        PROTOBUF_FIELD_OFFSET(::evo::execution::v1::ResultEnvelope, _impl_.started_at_),
         0,
         1,
-        6,
+        8,
         2,
-        7,
+        10,
         3,
         4,
         9,
+        6,
+        11,
+        13,
+        12,
         5,
-        8,
+        7,
         0x081, // bitmap
         PROTOBUF_FIELD_OFFSET(::evo::execution::v1::SubmitRunRequest_NodeTaskTypesEntry_DoNotUse, _impl_._has_bits_),
         5, // hasbit index offset
@@ -2420,16 +2460,16 @@ static const ::_pbi::MigrationSchema
     schemas[] ABSL_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
         {0, sizeof(::evo::execution::v1::TaskEnvelope)},
         {27, sizeof(::evo::execution::v1::ResultEnvelope)},
-        {50, sizeof(::evo::execution::v1::SubmitRunRequest_NodeTaskTypesEntry_DoNotUse)},
-        {57, sizeof(::evo::execution::v1::SubmitRunRequest)},
-        {74, sizeof(::evo::execution::v1::SubmitRunResponse)},
-        {83, sizeof(::evo::execution::v1::CancelRunRequest)},
-        {94, sizeof(::evo::execution::v1::CancelRunResponse)},
-        {101, sizeof(::evo::execution::v1::GetRunRequest)},
-        {106, sizeof(::evo::execution::v1::NodeStatus)},
-        {127, sizeof(::evo::execution::v1::GetRunResponse)},
-        {144, sizeof(::evo::execution::v1::HealthRequest)},
-        {145, sizeof(::evo::execution::v1::HealthResponse)},
+        {58, sizeof(::evo::execution::v1::SubmitRunRequest_NodeTaskTypesEntry_DoNotUse)},
+        {65, sizeof(::evo::execution::v1::SubmitRunRequest)},
+        {82, sizeof(::evo::execution::v1::SubmitRunResponse)},
+        {91, sizeof(::evo::execution::v1::CancelRunRequest)},
+        {102, sizeof(::evo::execution::v1::CancelRunResponse)},
+        {109, sizeof(::evo::execution::v1::GetRunRequest)},
+        {114, sizeof(::evo::execution::v1::NodeStatus)},
+        {135, sizeof(::evo::execution::v1::GetRunResponse)},
+        {152, sizeof(::evo::execution::v1::HealthRequest)},
+        {153, sizeof(::evo::execution::v1::HealthResponse)},
 };
 static const ::_pbi::MessageGlobalsBase* PROTOBUF_NONNULL const
     file_message_globals[] = {
@@ -2458,70 +2498,77 @@ const char descriptor_table_protodef_evo_2fexecution_2eproto[] ABSL_ATTRIBUTE_SE
     "id\030\010 \001(\t\022\017\n\007span_id\030\t \001(\t\022\021\n\tnode_type\030\n"
     " \001(\t\022\031\n\021node_payload_json\030\013 \001(\t\0223\n\017becam"
     "e_ready_at\030\014 \001(\0132\032.google.protobuf.Times"
-    "tamp\"\377\002\n\016ResultEnvelope\022\016\n\006run_id\030\001 \001(\t\022"
+    "tamp\"\233\004\n\016ResultEnvelope\022\016\n\006run_id\030\001 \001(\t\022"
     "\017\n\007node_id\030\002 \001(\t\022\026\n\016attempt_number\030\003 \001(\r"
     "\022\020\n\010trace_id\030\004 \001(\t\022\021\n\tcompleted\030\005 \001(\010\022\016\n"
     "\006output\030\006 \001(\t\022\r\n\005error\030\007 \001(\t\022;\n\006status\030\010"
     " \001(\0162+.evo.execution.v1.ResultEnvelope.S"
     "tatusCode\022/\n\013finished_at\030\t \001(\0132\032.google."
-    "protobuf.Timestamp\022\021\n\tabandoned\030\n \001(\010\"o\n"
-    "\nStatusCode\022\026\n\022STATUS_UNSPECIFIED\020\000\022\006\n\002O"
-    "K\020\001\022\017\n\013NODE_FAILED\020\002\022\014\n\010CANCELED\020\003\022\013\n\007TI"
-    "MEOUT\020\004\022\025\n\021DEADLINE_EXCEEDED\020\005\"\253\002\n\020Submi"
-    "tRunRequest\022\016\n\006org_id\030\001 \001(\t\022\033\n\023workflow_"
-    "version_id\030\002 \001(\t\022\016\n\006run_id\030\003 \001(\t\022\020\n\010dag_"
-    "json\030\004 \001(\t\022N\n\017node_task_types\030\005 \003(\01325.ev"
-    "o.execution.v1.SubmitRunRequest.NodeTask"
-    "TypesEntry\0220\n\014requested_at\030\006 \001(\0132\032.googl"
-    "e.protobuf.Timestamp\022\020\n\010trace_id\030\007 \001(\t\0324"
-    "\n\022NodeTaskTypesEntry\022\013\n\003key\030\001 \001(\t\022\r\n\005val"
-    "ue\030\002 \001(\t:\0028\001\"F\n\021SubmitRunResponse\022\016\n\006run"
-    "_id\030\001 \001(\t\022\020\n\010accepted\030\002 \001(\010\022\017\n\007message\030\003"
-    " \001(\t\"v\n\020CancelRunRequest\022\016\n\006run_id\030\001 \001(\t"
-    "\022\016\n\006reason\030\002 \001(\t\0220\n\014requested_at\030\003 \001(\0132\032"
-    ".google.protobuf.Timestamp\022\020\n\010trace_id\030\004"
-    " \001(\t\"N\n\021CancelRunResponse\022\n\n\002ok\030\001 \001(\010\022-\n"
-    "\007outcome\030\002 \001(\0162\034.evo.execution.v1.RunOut"
-    "come\"\037\n\rGetRunRequest\022\016\n\006run_id\030\001 \001(\t\"\255\002"
-    "\n\nNodeStatus\022\017\n\007node_id\030\001 \001(\t\022\021\n\tnode_ty"
-    "pe\030\002 \001(\t\022*\n\005state\030\003 \001(\0162\033.evo.execution."
-    "v1.NodeState\022\026\n\016attempt_number\030\004 \001(\r\0227\n\016"
-    "resource_class\030\005 \001(\0162\037.evo.execution.v1."
-    "ResourceClass\022.\n\nstarted_at\030\006 \001(\0132\032.goog"
-    "le.protobuf.Timestamp\022/\n\013finished_at\030\007 \001"
-    "(\0132\032.google.protobuf.Timestamp\022\016\n\006output"
-    "\030\010 \001(\t\022\r\n\005error\030\t \001(\t\"\247\002\n\016GetRunResponse"
-    "\022\016\n\006run_id\030\001 \001(\t\022\033\n\023workflow_version_id\030"
-    "\002 \001(\t\022+\n\006status\030\003 \001(\0162\033.evo.execution.v1"
-    ".RunStatus\022-\n\007outcome\030\004 \001(\0162\034.evo.execut"
-    "ion.v1.RunOutcome\022+\n\005nodes\030\005 \003(\0132\034.evo.e"
-    "xecution.v1.NodeStatus\022.\n\ncreated_at\030\006 \001"
-    "(\0132\032.google.protobuf.Timestamp\022/\n\013finish"
-    "ed_at\030\007 \001(\0132\032.google.protobuf.Timestamp\""
-    "\017\n\rHealthRequest\",\n\016HealthResponse\022\n\n\002ok"
-    "\030\001 \001(\010\022\016\n\006detail\030\002 \001(\t*\323\001\n\tNodeState\022\032\n\026"
-    "NODE_STATE_UNSPECIFIED\020\000\022\026\n\022NODE_STATE_B"
-    "LOCKED\020\001\022\024\n\020NODE_STATE_READY\020\002\022\026\n\022NODE_S"
-    "TATE_RUNNING\020\003\022\030\n\024NODE_STATE_SUCCEEDED\020\004"
-    "\022\025\n\021NODE_STATE_FAILED\020\007\022\027\n\023NODE_STATE_CA"
-    "NCELED\020\010\022\032\n\026NODE_STATE_DEAD_LETTER\020\t*N\n\n"
-    "RunOutcome\022\027\n\023OUTCOME_UNSPECIFIED\020\000\022\r\n\tS"
-    "UCCEEDED\020\001\022\n\n\006FAILED\020\002\022\014\n\010CANCELED\020\003*U\n\r"
-    "ResourceClass\022\030\n\024RESOURCE_UNSPECIFIED\020\000\022"
-    "\014\n\010INTERNAL\020\001\022\013\n\007BROWSER\020\002\022\017\n\013EXTERNAL_I"
-    "O\020\003*}\n\tRunStatus\022\032\n\026RUN_STATUS_UNSPECIFI"
-    "ED\020\000\022\016\n\nRUN_QUEUED\020\001\022\017\n\013RUN_RUNNING\020\002\022\021\n"
-    "\rRUN_SUCCEEDED\020\003\022\016\n\nRUN_FAILED\020\004\022\020\n\014RUN_"
-    "CANCELED\020\0052\326\002\n\016ControlService\022T\n\tSubmitR"
-    "un\022\".evo.execution.v1.SubmitRunRequest\032#"
-    ".evo.execution.v1.SubmitRunResponse\022T\n\tC"
-    "ancelRun\022\".evo.execution.v1.CancelRunReq"
-    "uest\032#.evo.execution.v1.CancelRunRespons"
-    "e\022K\n\006GetRun\022\037.evo.execution.v1.GetRunReq"
-    "uest\032 .evo.execution.v1.GetRunResponse\022K"
-    "\n\006Health\022\037.evo.execution.v1.HealthReques"
-    "t\032 .evo.execution.v1.HealthResponseB\t\200\001\000"
-    "\210\001\000\220\001\000b\006proto3"
+    "protobuf.Timestamp\022\021\n\tabandoned\030\n \001(\010\0221\n"
+    "\013error_class\030\013 \001(\0162\034.evo.execution.v1.Er"
+    "rorClass\022\026\n\tretryable\030\014 \001(\010H\000\210\001\001\022\021\n\twork"
+    "er_id\030\r \001(\t\022.\n\nstarted_at\030\016 \001(\0132\032.google"
+    ".protobuf.Timestamp\"o\n\nStatusCode\022\026\n\022STA"
+    "TUS_UNSPECIFIED\020\000\022\006\n\002OK\020\001\022\017\n\013NODE_FAILED"
+    "\020\002\022\014\n\010CANCELED\020\003\022\013\n\007TIMEOUT\020\004\022\025\n\021DEADLIN"
+    "E_EXCEEDED\020\005B\014\n\n_retryable\"\253\002\n\020SubmitRun"
+    "Request\022\016\n\006org_id\030\001 \001(\t\022\033\n\023workflow_vers"
+    "ion_id\030\002 \001(\t\022\016\n\006run_id\030\003 \001(\t\022\020\n\010dag_json"
+    "\030\004 \001(\t\022N\n\017node_task_types\030\005 \003(\01325.evo.ex"
+    "ecution.v1.SubmitRunRequest.NodeTaskType"
+    "sEntry\0220\n\014requested_at\030\006 \001(\0132\032.google.pr"
+    "otobuf.Timestamp\022\020\n\010trace_id\030\007 \001(\t\0324\n\022No"
+    "deTaskTypesEntry\022\013\n\003key\030\001 \001(\t\022\r\n\005value\030\002"
+    " \001(\t:\0028\001\"F\n\021SubmitRunResponse\022\016\n\006run_id\030"
+    "\001 \001(\t\022\020\n\010accepted\030\002 \001(\010\022\017\n\007message\030\003 \001(\t"
+    "\"v\n\020CancelRunRequest\022\016\n\006run_id\030\001 \001(\t\022\016\n\006"
+    "reason\030\002 \001(\t\0220\n\014requested_at\030\003 \001(\0132\032.goo"
+    "gle.protobuf.Timestamp\022\020\n\010trace_id\030\004 \001(\t"
+    "\"N\n\021CancelRunResponse\022\n\n\002ok\030\001 \001(\010\022-\n\007out"
+    "come\030\002 \001(\0162\034.evo.execution.v1.RunOutcome"
+    "\"\037\n\rGetRunRequest\022\016\n\006run_id\030\001 \001(\t\"\255\002\n\nNo"
+    "deStatus\022\017\n\007node_id\030\001 \001(\t\022\021\n\tnode_type\030\002"
+    " \001(\t\022*\n\005state\030\003 \001(\0162\033.evo.execution.v1.N"
+    "odeState\022\026\n\016attempt_number\030\004 \001(\r\0227\n\016reso"
+    "urce_class\030\005 \001(\0162\037.evo.execution.v1.Reso"
+    "urceClass\022.\n\nstarted_at\030\006 \001(\0132\032.google.p"
+    "rotobuf.Timestamp\022/\n\013finished_at\030\007 \001(\0132\032"
+    ".google.protobuf.Timestamp\022\016\n\006output\030\010 \001"
+    "(\t\022\r\n\005error\030\t \001(\t\"\247\002\n\016GetRunResponse\022\016\n\006"
+    "run_id\030\001 \001(\t\022\033\n\023workflow_version_id\030\002 \001("
+    "\t\022+\n\006status\030\003 \001(\0162\033.evo.execution.v1.Run"
+    "Status\022-\n\007outcome\030\004 \001(\0162\034.evo.execution."
+    "v1.RunOutcome\022+\n\005nodes\030\005 \003(\0132\034.evo.execu"
+    "tion.v1.NodeStatus\022.\n\ncreated_at\030\006 \001(\0132\032"
+    ".google.protobuf.Timestamp\022/\n\013finished_a"
+    "t\030\007 \001(\0132\032.google.protobuf.Timestamp\"\017\n\rH"
+    "ealthRequest\",\n\016HealthResponse\022\n\n\002ok\030\001 \001"
+    "(\010\022\016\n\006detail\030\002 \001(\t*\205\001\n\nErrorClass\022\033\n\027ERR"
+    "OR_CLASS_UNSPECIFIED\020\000\022\023\n\017ERROR_TRANSIEN"
+    "T\020\001\022\023\n\017ERROR_PERMANENT\020\002\022\034\n\030ERROR_RESOUR"
+    "CE_EXHAUSTED\020\003\022\022\n\016ERROR_CANCELED\020\004*\323\001\n\tN"
+    "odeState\022\032\n\026NODE_STATE_UNSPECIFIED\020\000\022\026\n\022"
+    "NODE_STATE_BLOCKED\020\001\022\024\n\020NODE_STATE_READY"
+    "\020\002\022\026\n\022NODE_STATE_RUNNING\020\003\022\030\n\024NODE_STATE"
+    "_SUCCEEDED\020\004\022\025\n\021NODE_STATE_FAILED\020\007\022\027\n\023N"
+    "ODE_STATE_CANCELED\020\010\022\032\n\026NODE_STATE_DEAD_"
+    "LETTER\020\t*N\n\nRunOutcome\022\027\n\023OUTCOME_UNSPEC"
+    "IFIED\020\000\022\r\n\tSUCCEEDED\020\001\022\n\n\006FAILED\020\002\022\014\n\010CA"
+    "NCELED\020\003*U\n\rResourceClass\022\030\n\024RESOURCE_UN"
+    "SPECIFIED\020\000\022\014\n\010INTERNAL\020\001\022\013\n\007BROWSER\020\002\022\017"
+    "\n\013EXTERNAL_IO\020\003*}\n\tRunStatus\022\032\n\026RUN_STAT"
+    "US_UNSPECIFIED\020\000\022\016\n\nRUN_QUEUED\020\001\022\017\n\013RUN_"
+    "RUNNING\020\002\022\021\n\rRUN_SUCCEEDED\020\003\022\016\n\nRUN_FAIL"
+    "ED\020\004\022\020\n\014RUN_CANCELED\020\0052\326\002\n\016ControlServic"
+    "e\022T\n\tSubmitRun\022\".evo.execution.v1.Submit"
+    "RunRequest\032#.evo.execution.v1.SubmitRunR"
+    "esponse\022T\n\tCancelRun\022\".evo.execution.v1."
+    "CancelRunRequest\032#.evo.execution.v1.Canc"
+    "elRunResponse\022K\n\006GetRun\022\037.evo.execution."
+    "v1.GetRunRequest\032 .evo.execution.v1.GetR"
+    "unResponse\022K\n\006Health\022\037.evo.execution.v1."
+    "HealthRequest\032 .evo.execution.v1.HealthR"
+    "esponseB\t\200\001\000\210\001\000\220\001\000b\006proto3"
 };
 static const ::_pbi::DescriptorTable* PROTOBUF_NONNULL const
     descriptor_table_evo_2fexecution_2eproto_deps[1] = {
@@ -2531,7 +2578,7 @@ static ::absl::once_flag descriptor_table_evo_2fexecution_2eproto_once;
 PROTOBUF_CONSTINIT const ::_pbi::DescriptorTable descriptor_table_evo_2fexecution_2eproto = {
     false,
     false,
-    2934,
+    3226,
     descriptor_table_protodef_evo_2fexecution_2eproto,
     "evo/execution.proto",
     &descriptor_table_evo_2fexecution_2eproto_once,
@@ -2555,30 +2602,37 @@ ResultEnvelope_StatusCode_descriptor() {
 PROTOBUF_CONSTINIT const uint32_t ResultEnvelope_StatusCode_internal_data_[] = {
     393216u, 0u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
-NodeState_descriptor() {
+ErrorClass_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
   return file_level_enum_descriptors_evo_2fexecution_2eproto[1];
+}
+PROTOBUF_CONSTINIT const uint32_t ErrorClass_internal_data_[] = {
+    327680u, 0u, };
+[[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
+NodeState_descriptor() {
+  ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
+  return file_level_enum_descriptors_evo_2fexecution_2eproto[2];
 }
 PROTOBUF_CONSTINIT const uint32_t NodeState_internal_data_[] = {
     327680u, 32u, 28u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
 RunOutcome_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
-  return file_level_enum_descriptors_evo_2fexecution_2eproto[2];
+  return file_level_enum_descriptors_evo_2fexecution_2eproto[3];
 }
 PROTOBUF_CONSTINIT const uint32_t RunOutcome_internal_data_[] = {
     262144u, 0u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
 ResourceClass_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
-  return file_level_enum_descriptors_evo_2fexecution_2eproto[3];
+  return file_level_enum_descriptors_evo_2fexecution_2eproto[4];
 }
 PROTOBUF_CONSTINIT const uint32_t ResourceClass_internal_data_[] = {
     262144u, 0u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
 RunStatus_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);
-  return file_level_enum_descriptors_evo_2fexecution_2eproto[4];
+  return file_level_enum_descriptors_evo_2fexecution_2eproto[5];
 }
 PROTOBUF_CONSTINIT const uint32_t RunStatus_internal_data_[] = {
     393216u, 0u, };
@@ -3177,7 +3231,12 @@ void TaskEnvelope::InternalSwap(TaskEnvelope* PROTOBUF_RESTRICT PROTOBUF_NONNULL
 void ResultEnvelope::clear_finished_at() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   if (_impl_.finished_at_ != nullptr) _impl_.finished_at_->Clear();
-  ClearHasBit(_impl_._has_bits_[0], 0x00000020U);
+  ClearHasBit(_impl_._has_bits_[0], 0x00000040U);
+}
+void ResultEnvelope::clear_started_at() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  if (_impl_.started_at_ != nullptr) _impl_.started_at_->Clear();
+  ClearHasBit(_impl_._has_bits_[0], 0x00000080U);
 }
 ResultEnvelope::ResultEnvelope(::google::protobuf::Arena* PROTOBUF_NULLABLE arena)
 #if defined(PROTOBUF_CUSTOM_VTABLE)
@@ -3198,7 +3257,8 @@ PROTOBUF_NDEBUG_INLINE ResultEnvelope::Impl_::Impl_(
         node_id_(arena, from.node_id_),
         trace_id_(arena, from.trace_id_),
         output_(arena, from.output_),
-        error_(arena, from.error_) {}
+        error_(arena, from.error_),
+        worker_id_(arena, from.worker_id_) {}
 
 ResultEnvelope::ResultEnvelope(
     ::google::protobuf::Arena* PROTOBUF_NULLABLE arena,
@@ -3215,16 +3275,19 @@ ResultEnvelope::ResultEnvelope(
       from._internal_metadata_);
   new (&_impl_) Impl_(internal_visibility(), arena, from._impl_, from);
   ::uint32_t cached_has_bits = _impl_._has_bits_[0];
-  _impl_.finished_at_ = (CheckHasBit(cached_has_bits, 0x00000020U))
+  _impl_.finished_at_ = (CheckHasBit(cached_has_bits, 0x00000040U))
                 ? ::google::protobuf::Message::CopyConstruct(arena, *from._impl_.finished_at_)
+                : nullptr;
+  _impl_.started_at_ = (CheckHasBit(cached_has_bits, 0x00000080U))
+                ? ::google::protobuf::Message::CopyConstruct(arena, *from._impl_.started_at_)
                 : nullptr;
   ::memcpy(reinterpret_cast<char*>(&_impl_) +
                offsetof(Impl_, attempt_number_),
            reinterpret_cast<const char*>(&from._impl_) +
                offsetof(Impl_, attempt_number_),
-           offsetof(Impl_, status_) -
+           offsetof(Impl_, error_class_) -
                offsetof(Impl_, attempt_number_) +
-               sizeof(Impl_::status_));
+               sizeof(Impl_::error_class_));
 
   // @@protoc_insertion_point(copy_constructor:evo.execution.v1.ResultEnvelope)
 }
@@ -3236,16 +3299,17 @@ PROTOBUF_NDEBUG_INLINE ResultEnvelope::Impl_::Impl_(
         node_id_(arena),
         trace_id_(arena),
         output_(arena),
-        error_(arena) {}
+        error_(arena),
+        worker_id_(arena) {}
 
 inline void ResultEnvelope::SharedCtor(::_pb::Arena* PROTOBUF_NULLABLE arena) {
   new (&_impl_) Impl_(internal_visibility(), arena);
   ::memset(reinterpret_cast<char*>(&_impl_) +
                offsetof(Impl_, finished_at_),
            0,
-           offsetof(Impl_, status_) -
+           offsetof(Impl_, error_class_) -
                offsetof(Impl_, finished_at_) +
-               sizeof(Impl_::status_));
+               sizeof(Impl_::error_class_));
 }
 ResultEnvelope::~ResultEnvelope() {
   // @@protoc_insertion_point(destructor:evo.execution.v1.ResultEnvelope)
@@ -3263,7 +3327,9 @@ inline void ResultEnvelope::SharedDtor(MessageLite& self) {
   this_._impl_.trace_id_.Destroy();
   this_._impl_.output_.Destroy();
   this_._impl_.error_.Destroy();
+  this_._impl_.worker_id_.Destroy();
   delete this_._impl_.finished_at_;
+  delete this_._impl_.started_at_;
   this_._impl_.~Impl_();
 }
 
@@ -3301,7 +3367,7 @@ PROTOBUF_NOINLINE void ResultEnvelope::Clear() {
   (void) cached_has_bits;
 
   cached_has_bits = _impl_._has_bits_[0];
-  if (BatchCheckHasBit(cached_has_bits, 0x0000003fU)) {
+  if (BatchCheckHasBit(cached_has_bits, 0x000000ffU)) {
     if (CheckHasBit(cached_has_bits, 0x00000001U)) {
       _impl_.run_id_.ClearNonDefaultToEmpty();
     }
@@ -3318,19 +3384,21 @@ PROTOBUF_NOINLINE void ResultEnvelope::Clear() {
       _impl_.error_.ClearNonDefaultToEmpty();
     }
     if (CheckHasBit(cached_has_bits, 0x00000020U)) {
+      _impl_.worker_id_.ClearNonDefaultToEmpty();
+    }
+    if (CheckHasBit(cached_has_bits, 0x00000040U)) {
       ABSL_DCHECK(_impl_.finished_at_ != nullptr);
       _impl_.finished_at_->Clear();
     }
+    if (CheckHasBit(cached_has_bits, 0x00000080U)) {
+      ABSL_DCHECK(_impl_.started_at_ != nullptr);
+      _impl_.started_at_->Clear();
+    }
   }
-  if (BatchCheckHasBit(cached_has_bits, 0x000000c0U)) {
+  if (BatchCheckHasBit(cached_has_bits, 0x00003f00U)) {
     ::memset(&_impl_.attempt_number_, 0, static_cast<::size_t>(
-        reinterpret_cast<char*>(&_impl_.completed_) -
-        reinterpret_cast<char*>(&_impl_.attempt_number_)) + sizeof(_impl_.completed_));
-  }
-  if (BatchCheckHasBit(cached_has_bits, 0x00000300U)) {
-    ::memset(&_impl_.abandoned_, 0, static_cast<::size_t>(
-        reinterpret_cast<char*>(&_impl_.status_) -
-        reinterpret_cast<char*>(&_impl_.abandoned_)) + sizeof(_impl_.status_));
+        reinterpret_cast<char*>(&_impl_.error_class_) -
+        reinterpret_cast<char*>(&_impl_.attempt_number_)) + sizeof(_impl_.error_class_));
   }
   _impl_._has_bits_.Clear();
   _internal_metadata_.Clear<::google::protobuf::UnknownFieldSet>();
@@ -3376,7 +3444,7 @@ PROTOBUF_NOINLINE void ResultEnvelope::Clear() {
   }
 
   // uint32 attempt_number = 3;
-  if (CheckHasBit(cached_has_bits, 0x00000040U)) {
+  if (CheckHasBit(cached_has_bits, 0x00000100U)) {
     if (this_._internal_attempt_number() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteUInt32ToArray(
@@ -3395,7 +3463,7 @@ PROTOBUF_NOINLINE void ResultEnvelope::Clear() {
   }
 
   // bool completed = 5;
-  if (CheckHasBit(cached_has_bits, 0x00000080U)) {
+  if (CheckHasBit(cached_has_bits, 0x00000400U)) {
     if (this_._internal_completed() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteBoolToArray(
@@ -3433,19 +3501,52 @@ PROTOBUF_NOINLINE void ResultEnvelope::Clear() {
   }
 
   // .google.protobuf.Timestamp finished_at = 9;
-  if (CheckHasBit(cached_has_bits, 0x00000020U)) {
+  if (CheckHasBit(cached_has_bits, 0x00000040U)) {
     target = ::google::protobuf::internal::WireFormatLite::InternalWriteMessage(
         9, *this_._impl_.finished_at_, this_._impl_.finished_at_->GetCachedSize(), target,
         stream);
   }
 
   // bool abandoned = 10;
-  if (CheckHasBit(cached_has_bits, 0x00000100U)) {
+  if (CheckHasBit(cached_has_bits, 0x00000800U)) {
     if (this_._internal_abandoned() != 0) {
       target = stream->EnsureSpace(target);
       target = ::_pbi::WireFormatLite::WriteBoolToArray(
           10, this_._internal_abandoned(), target);
     }
+  }
+
+  // .evo.execution.v1.ErrorClass error_class = 11;
+  if (CheckHasBit(cached_has_bits, 0x00002000U)) {
+    if (this_._internal_error_class() != 0) {
+      target = stream->EnsureSpace(target);
+      target = ::_pbi::WireFormatLite::WriteEnumToArray(
+          11, this_._internal_error_class(), target);
+    }
+  }
+
+  // optional bool retryable = 12;
+  if (CheckHasBit(cached_has_bits, 0x00001000U)) {
+    target = stream->EnsureSpace(target);
+    target = ::_pbi::WireFormatLite::WriteBoolToArray(
+        12, this_._internal_retryable(), target);
+  }
+
+  // string worker_id = 13;
+  if (CheckHasBit(cached_has_bits, 0x00000020U)) {
+    if (!this_._internal_worker_id().empty()) {
+      const ::std::string& _s = this_._internal_worker_id();
+      ::google::protobuf::internal::WireFormatLite::VerifyUtf8String(
+          _s.data(), static_cast<int>(_s.length()), ::google::protobuf::internal::WireFormatLite::SERIALIZE, "evo.execution.v1.ResultEnvelope.worker_id");
+      target = stream->WriteStringMaybeAliased(13, _s, target);
+    }
+  }
+
+  // .google.protobuf.Timestamp started_at = 14;
+  if (CheckHasBit(cached_has_bits, 0x00000080U)) {
+    target = ::google::protobuf::internal::WireFormatLite::InternalWriteMessage(
+        14, *this_._impl_.started_at_, this_._impl_.started_at_->GetCachedSize(), target,
+        stream);
   }
 
   if (ABSL_PREDICT_FALSE(this_._internal_metadata_.have_unknown_fields())) {
@@ -3473,6 +3574,7 @@ PROTOBUF_NOINLINE void ResultEnvelope::Clear() {
 
   ::_pbi::Prefetch5LinesFrom7Lines(&this_);
   cached_has_bits = this_._impl_._has_bits_[0];
+  total_size += static_cast<bool>(0x00001000U & cached_has_bits) * 2;
   if (BatchCheckHasBit(cached_has_bits, 0x000000ffU)) {
     // string run_id = 1;
     if (CheckHasBit(cached_has_bits, 0x00000001U)) {
@@ -3509,30 +3611,30 @@ PROTOBUF_NOINLINE void ResultEnvelope::Clear() {
                                         this_._internal_error());
       }
     }
-    // .google.protobuf.Timestamp finished_at = 9;
+    // string worker_id = 13;
     if (CheckHasBit(cached_has_bits, 0x00000020U)) {
+      if (!this_._internal_worker_id().empty()) {
+        total_size += 1 + ::google::protobuf::internal::WireFormatLite::StringSize(
+                                        this_._internal_worker_id());
+      }
+    }
+    // .google.protobuf.Timestamp finished_at = 9;
+    if (CheckHasBit(cached_has_bits, 0x00000040U)) {
       total_size += 1 +
                     ::google::protobuf::internal::WireFormatLite::MessageSize(*this_._impl_.finished_at_);
     }
+    // .google.protobuf.Timestamp started_at = 14;
+    if (CheckHasBit(cached_has_bits, 0x00000080U)) {
+      total_size += 1 +
+                    ::google::protobuf::internal::WireFormatLite::MessageSize(*this_._impl_.started_at_);
+    }
+  }
+  if (BatchCheckHasBit(cached_has_bits, 0x00002f00U)) {
     // uint32 attempt_number = 3;
-    if (CheckHasBit(cached_has_bits, 0x00000040U)) {
+    if (CheckHasBit(cached_has_bits, 0x00000100U)) {
       if (this_._internal_attempt_number() != 0) {
         total_size += ::_pbi::WireFormatLite::UInt32SizePlusOne(
             this_._internal_attempt_number());
-      }
-    }
-    // bool completed = 5;
-    if (CheckHasBit(cached_has_bits, 0x00000080U)) {
-      if (this_._internal_completed() != 0) {
-        total_size += 2;
-      }
-    }
-  }
-  if (BatchCheckHasBit(cached_has_bits, 0x00000300U)) {
-    // bool abandoned = 10;
-    if (CheckHasBit(cached_has_bits, 0x00000100U)) {
-      if (this_._internal_abandoned() != 0) {
-        total_size += 2;
       }
     }
     // .evo.execution.v1.ResultEnvelope.StatusCode status = 8;
@@ -3540,6 +3642,25 @@ PROTOBUF_NOINLINE void ResultEnvelope::Clear() {
       if (this_._internal_status() != 0) {
         total_size += 1 +
                       ::_pbi::WireFormatLite::EnumSize(this_._internal_status());
+      }
+    }
+    // bool completed = 5;
+    if (CheckHasBit(cached_has_bits, 0x00000400U)) {
+      if (this_._internal_completed() != 0) {
+        total_size += 2;
+      }
+    }
+    // bool abandoned = 10;
+    if (CheckHasBit(cached_has_bits, 0x00000800U)) {
+      if (this_._internal_abandoned() != 0) {
+        total_size += 2;
+      }
+    }
+    // .evo.execution.v1.ErrorClass error_class = 11;
+    if (CheckHasBit(cached_has_bits, 0x00002000U)) {
+      if (this_._internal_error_class() != 0) {
+        total_size += 1 +
+                      ::_pbi::WireFormatLite::EnumSize(this_._internal_error_class());
       }
     }
   }
@@ -3608,6 +3729,15 @@ void ResultEnvelope::MergeImpl(::google::protobuf::MessageLite& to_msg,
       }
     }
     if (CheckHasBit(cached_has_bits, 0x00000020U)) {
+      if (!from._internal_worker_id().empty()) {
+        _this->_internal_set_worker_id(from._internal_worker_id());
+      } else {
+        if (_this->_impl_.worker_id_.IsDefault()) {
+          _this->_internal_set_worker_id("");
+        }
+      }
+    }
+    if (CheckHasBit(cached_has_bits, 0x00000040U)) {
       ABSL_DCHECK(from._impl_.finished_at_ != nullptr);
       if (_this->_impl_.finished_at_ == nullptr) {
         _this->_impl_.finished_at_ = ::google::protobuf::Message::CopyConstruct(arena, *from._impl_.finished_at_);
@@ -3615,26 +3745,42 @@ void ResultEnvelope::MergeImpl(::google::protobuf::MessageLite& to_msg,
         _this->_impl_.finished_at_->MergeFrom(*from._impl_.finished_at_);
       }
     }
-    if (CheckHasBit(cached_has_bits, 0x00000040U)) {
-      if (from._internal_attempt_number() != 0) {
-        _this->_impl_.attempt_number_ = from._impl_.attempt_number_;
-      }
-    }
     if (CheckHasBit(cached_has_bits, 0x00000080U)) {
-      if (from._internal_completed() != 0) {
-        _this->_impl_.completed_ = from._impl_.completed_;
+      ABSL_DCHECK(from._impl_.started_at_ != nullptr);
+      if (_this->_impl_.started_at_ == nullptr) {
+        _this->_impl_.started_at_ = ::google::protobuf::Message::CopyConstruct(arena, *from._impl_.started_at_);
+      } else {
+        _this->_impl_.started_at_->MergeFrom(*from._impl_.started_at_);
       }
     }
   }
-  if (BatchCheckHasBit(cached_has_bits, 0x00000300U)) {
+  if (BatchCheckHasBit(cached_has_bits, 0x00003f00U)) {
     if (CheckHasBit(cached_has_bits, 0x00000100U)) {
-      if (from._internal_abandoned() != 0) {
-        _this->_impl_.abandoned_ = from._impl_.abandoned_;
+      if (from._internal_attempt_number() != 0) {
+        _this->_impl_.attempt_number_ = from._impl_.attempt_number_;
       }
     }
     if (CheckHasBit(cached_has_bits, 0x00000200U)) {
       if (from._internal_status() != 0) {
         _this->_impl_.status_ = from._impl_.status_;
+      }
+    }
+    if (CheckHasBit(cached_has_bits, 0x00000400U)) {
+      if (from._internal_completed() != 0) {
+        _this->_impl_.completed_ = from._impl_.completed_;
+      }
+    }
+    if (CheckHasBit(cached_has_bits, 0x00000800U)) {
+      if (from._internal_abandoned() != 0) {
+        _this->_impl_.abandoned_ = from._impl_.abandoned_;
+      }
+    }
+    if (CheckHasBit(cached_has_bits, 0x00001000U)) {
+      _this->_impl_.retryable_ = from._impl_.retryable_;
+    }
+    if (CheckHasBit(cached_has_bits, 0x00002000U)) {
+      if (from._internal_error_class() != 0) {
+        _this->_impl_.error_class_ = from._impl_.error_class_;
       }
     }
   }
@@ -3662,9 +3808,10 @@ void ResultEnvelope::InternalSwap(ResultEnvelope* PROTOBUF_RESTRICT PROTOBUF_NON
   ::_pbi::ArenaStringPtr::InternalSwap(&_impl_.trace_id_, &other->_impl_.trace_id_, arena);
   ::_pbi::ArenaStringPtr::InternalSwap(&_impl_.output_, &other->_impl_.output_, arena);
   ::_pbi::ArenaStringPtr::InternalSwap(&_impl_.error_, &other->_impl_.error_, arena);
+  ::_pbi::ArenaStringPtr::InternalSwap(&_impl_.worker_id_, &other->_impl_.worker_id_, arena);
   ::google::protobuf::internal::memswap<
-      PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.status_)
-      + sizeof(ResultEnvelope::_impl_.status_)
+      PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.error_class_)
+      + sizeof(ResultEnvelope::_impl_.error_class_)
       - PROTOBUF_FIELD_OFFSET(ResultEnvelope, _impl_.finished_at_)>(
           reinterpret_cast<char*>(&_impl_.finished_at_),
           reinterpret_cast<char*>(&other->_impl_.finished_at_));

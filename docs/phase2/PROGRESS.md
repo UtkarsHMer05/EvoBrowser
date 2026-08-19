@@ -31,6 +31,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M19 | Add additive Phase-2 Drizzle schema and migrations | ✅ DONE | `f63d9b4` |
 | M20 | Implement immutable workflow versions and optimistic concurrency | ✅ DONE | `0ea1c1c` |
 | M21 | Implement Redis Streams transport in the C++ scheduler | ✅ DONE | `47e565e` |
+| M22 | Finalize task/result envelope semantics and event transport | ✅ DONE | `<M22_SHA>` |
 
 ---
 
@@ -1044,3 +1045,66 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none (hiredis built from source locally; no system changes).
 - **COMMIT:** `47e565e` — `phase2(m21): add redis streams task transport`
 - **NEXT:** M22 — Finalize task/result envelope semantics and event transport.
+
+---
+
+## M22 — Finalize task/result envelope semantics and event transport
+
+- **BASE_SHA:** `30f2809`
+- **What was inspected:** master prompt M22 spec, `engine/proto/evo/execution.proto`
+  (TaskEnvelope/ResultEnvelope field numbers), `engine/proto/generate.sh`,
+  `engine/tests/contract_test.cpp` + `features/workflows/lib/contract-roundtrip.test.ts`
+  (existing cross-language pattern), protobufjs enum decode behavior.
+- **What changed:**
+  - `engine/proto/evo/execution.proto` — ADDITIVE proto extension (no field
+    numbers reused):
+    - New `ErrorClass` enum (TRANSIENT/PERMANENT/RESOURCE_EXHAUSTED/CANCELED).
+    - `ResultEnvelope` gains `error_class`(11), `optional bool retryable`(12),
+      `worker_id`(13), `started_at`(14). `optional` gives explicit presence so
+      "hint unset" is distinguishable from explicit false.
+    - Documented identity semantics on TaskEnvelope: logical task id =
+      (run_id,node_id); attempt id = (run_id,node_id,attempt_number); transport
+      message ids are NOT identity. Payload rule: node_payload_json carries only
+      execution inputs, never UI state or secrets.
+    - Regenerated `engine/proto/evo_gen/evo/execution.pb.{cc,h}` (grpc.pb
+    unchanged — service surface untouched).
+  - `engine/core/include/evo/envelope.hpp` + `core/src/envelope.cpp` — new
+    `evo_envelope` target (links evo_proto, not transport):
+    - `kMaxEnvelopeBytes` = 256 KiB size limit.
+    - `validate_task_envelope` / `validate_result_envelope` — identity, attempt
+      numbering, completed/error consistency, size limit.
+    - `AttemptKey` + `ResultDedupe` — thread-safe dedupe by attempt id.
+    - `is_late_result` — late/stale results ignored (never overwrite newer state).
+    - `should_consider_retry` — combines error_class + worker retryable hint
+      with a policy floor (permanent/canceled never retry).
+  - `engine/tests/envelope_test.cpp` — 20 semantics assertions (validation,
+    size limits, malformed, dedupe, late-result, retry-hint).
+  - `engine/tests/envelope_fixture_gen.cpp` — deterministic golden fixture
+    generator; writes `engine/tests/fixtures/{task,result}_envelope.bin`
+    (committed) with a byte-stability self-check.
+  - `features/workflows/lib/envelope-crosslang.test.ts` — TS decodes the C++
+    golden bytes with protobufjs, asserts M22 fields preserved, and asserts
+    BYTE-IDENTICAL re-encode (C++ <-> TS wire compatibility). Plus malformed
+    (truncated/garbage) rejection and size-limit detection.
+  - `engine/CMakeLists.txt` — `evo_envelope` lib + `envelope` test +
+    `evo-envelope-fixture-gen` tool.
+  - `package.json` — wired the cross-language test into `npm test`.
+- **Concurrency/distributed correctness:** dedupe is a mutex-guarded set keyed
+  by attempt id (duplicate delivery → first applied, rest ignored). Late-result
+  rule guarantees a stale attempt can never overwrite newer logical state.
+  Validation runs before any durable mutation (trust boundary). Timestamps in
+  envelopes are wall-clock UTC; this module adds none.
+- **No-go compliance:** additive proto only (no field reuse); no secrets in
+  payloads; no invented perf numbers; Phase-1 untouched; scheduler-core still
+  uses the in-memory fake (envelope target does not need Redis).
+- **Validation:**
+  - `bash engine/proto/generate.sh` → ✅ regenerated (byte-stable)
+  - `./build/evo_envelope_test` → ✅ 20/20
+  - `./build/evo-envelope-fixture-gen` → ✅ fixtures written (byte-stable)
+  - `npx tsx features/workflows/lib/envelope-crosslang.test.ts` → ✅ 8/8
+  - `npm test` → ✅ 48/48 (28 Phase-1 + 4 contract + 8 M20 + 8 M22)
+  - `npm run typecheck` → ✅ exit 0; `npm run lint` → ✅ exit 0
+  - Release CTest → ✅ 15/15; ASan+UBSan → ✅ 15/15; TSan → ✅ 15/15
+- **Human action:** none.
+- **COMMIT:** `<M22_SHA>` — `phase2(m22): harden distributed task result protocol`
+- **NEXT:** M23 — Build the TypeScript distributed worker service.

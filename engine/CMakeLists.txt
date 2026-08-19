@@ -149,6 +149,18 @@ target_compile_options(evo_proto PUBLIC
 target_compile_features(evo_proto PUBLIC cxx_std_20)
 
 # ---------------------------------------------------------------------------
+# evo_envelope — task/result envelope semantics (Milestone 22). Depends on
+# evo_proto (ResultEnvelope/TaskEnvelope) but not on the transport, so the
+# dedupe/late-result/validation rules are testable without Redis.
+# ---------------------------------------------------------------------------
+add_library(evo_envelope STATIC core/src/envelope.cpp)
+target_include_directories(evo_envelope PUBLIC core/include)
+target_link_libraries(evo_envelope PUBLIC evo_proto)
+target_compile_options(evo_envelope PRIVATE
+  -Wall -Wextra -Wpedantic -Werror)
+target_compile_features(evo_envelope PUBLIC cxx_std_20)
+
+# ---------------------------------------------------------------------------
 # evo_redis_transport — Redis Streams task transport (Milestone 21).
 # Links the self-contained static hiredis built by
 # engine/third_party/build-hiredis.sh (gitignored; arm64). hiredis headers are
@@ -314,6 +326,28 @@ target_compile_options(evo_transport_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME transport COMMAND evo_transport_test)
+
+# ---------------------------------------------------------------------------
+# evo_envelope_test — M22 envelope semantics: validation, size limits,
+# malformed payloads, dedupe, late-result rules, retry-hint resolution.
+# ---------------------------------------------------------------------------
+add_executable(evo_envelope_test tests/envelope_test.cpp)
+target_link_libraries(evo_envelope_test PRIVATE evo_envelope)
+target_compile_options(evo_envelope_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME envelope COMMAND evo_envelope_test)
+
+# ---------------------------------------------------------------------------
+# evo-envelope-fixture-gen — M22 cross-language golden fixture generator.
+# Writes deterministic envelope bytes to engine/tests/fixtures/ for the TS
+# cross-language test. Run manually after proto changes; fixtures are committed.
+# ---------------------------------------------------------------------------
+add_executable(evo-envelope-fixture-gen tests/envelope_fixture_gen.cpp)
+target_link_libraries(evo-envelope-fixture-gen PRIVATE evo_envelope)
+target_compile_options(evo-envelope-fixture-gen PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
 
 # ---------------------------------------------------------------------------
 # evo_redis_transport — integration test against the LOCAL Phase-2 Redis
