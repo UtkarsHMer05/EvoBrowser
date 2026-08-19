@@ -245,17 +245,23 @@ void ConcurrentScheduler::worker_task(const NodeId& id,
 
   auto finished_at = std::chrono::steady_clock::now();
 
+  // Read became_ready_at under dispatch_mu_ to match the writers
+  // (dispatch_ready_nodes_locked / on_node_complete both record under
+  // dispatch_mu_). Acquiring dispatch_mu_ here does not deadlock because
+  // worker_task does not re-enter the dispatcher loop.
+  std::chrono::steady_clock::time_point became_ready;
+  {
+    std::lock_guard dlock(dispatch_mu_);
+    auto it = ready_times_.find(id);
+    became_ready = (it == ready_times_.end()) ? started_at : it->second;
+  }
+
   ConcurrentNodeRun rec;
   rec.id = id;
   rec.type = spec ? spec->type : std::string{};
   rec.sequence = sequence_counter_.fetch_add(1, std::memory_order_relaxed);
-  {
-    std::lock_guard lock(log_mu_);
-    auto it = ready_times_.find(id);
-    rec.became_ready_at =
-        it == ready_times_.end() ? started_at : it->second;
-    rec.ready_at = ready_at;
-  }
+  rec.became_ready_at = became_ready;
+  rec.ready_at = ready_at;
   rec.started_at = started_at;
   rec.finished_at = finished_at;
   rec.result = result;

@@ -203,7 +203,8 @@ class ConcurrentScheduler {
   std::vector<NodeId> resource_blocked_;        // ready but waiting for capacity
 
   // Per-node "became ready" timestamps (when deps were satisfied), guarded by
-  // log_mu_ (written from workers via on_node_complete, read in finalize).
+  // dispatch_mu_ (written from dispatch_ready_nodes_locked and
+  // on_node_complete, read from worker_task under the same lock).
   std::map<NodeId, std::chrono::steady_clock::time_point> ready_times_;
 
   std::mutex log_mu_;

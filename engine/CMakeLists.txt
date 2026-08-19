@@ -32,6 +32,37 @@ if(NOT EVO_BUILD_COMMIT)
 endif()
 
 # ---------------------------------------------------------------------------
+# Sanitizer build options (Milestone 14). ASan+UBSan are the standard C++
+# correctness gate; TSan is opt-in via -DEVO_ENABLE_TSAN=ON and is *not*
+# enabled together with ASan/UBSan (they are mutually incompatible on the same
+# binary). Platform/compiler limits are documented in docs/phase2/PROGRESS.md.
+# ---------------------------------------------------------------------------
+option(EVO_ENABLE_ASAN "Enable AddressSanitizer + UBSan" OFF)
+option(EVO_ENABLE_TSAN "Enable ThreadSanitizer (mutually exclusive with ASan)" OFF)
+
+if(EVO_ENABLE_ASAN AND EVO_ENABLE_TSAN)
+  message(FATAL_ERROR "EVO_ENABLE_ASAN and EVO_ENABLE_TSAN are mutually exclusive")
+endif()
+
+# Apply sanitizer flags globally so every project-owned target (library + tests)
+# is instrumented consistently. This is safer than per-target options because a
+# mismatch between sanitized library and unsanitized test produces ODR/double-
+# free diagnostics under ASan. We set the *interface* flags on the core library
+# and also the raw CXX_FLAGS so test executables link the runtime too.
+if(EVO_ENABLE_ASAN)
+  set(EVO_SANITIZE_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer)
+endif()
+if(EVO_ENABLE_TSAN)
+  set(EVO_SANITIZE_FLAGS -fsanitize=thread -fno-omit-frame-pointer)
+endif()
+if(EVO_SANITIZE_FLAGS)
+  add_compile_options(${EVO_SANITIZE_FLAGS})
+  add_link_options(${EVO_SANITIZE_FLAGS})
+  # Mark sanitizer builds as debuggable for meaningful stack traces.
+  set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
+endif()
+
+# ---------------------------------------------------------------------------
 # evo_scheduler_core — the engine library (Milestone 04: version metadata only)
 # ---------------------------------------------------------------------------
 add_library(evo_scheduler_core STATIC
@@ -129,3 +160,10 @@ target_compile_options(evo_metrics_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME metrics COMMAND evo_metrics_test)
+
+add_executable(evo_stress_test tests/stress_test.cpp)
+target_link_libraries(evo_stress_test PRIVATE evo_scheduler_core)
+target_compile_options(evo_stress_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME stress COMMAND evo_stress_test)

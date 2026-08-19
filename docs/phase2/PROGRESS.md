@@ -18,6 +18,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M11 | Add cooperative cancellation and graceful shutdown | ✅ DONE | `477497c` |
 | M12 | Add execution resource classes and browser affinity policy | ✅ DONE | `cc73f30` |
 | M13 | Instrument the scheduler core with evidence-grade timestamps and counters | ✅ DONE | `916ffc9` |
+| M14 | Harden C++ correctness with sanitizers and concurrency stress | ✅ DONE | `ce2e9d9` |
 
 ---
 
@@ -587,9 +588,13 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Concurrency correctness:** `dispatch_count_`/`completion_count_` are atomic
   (multi-writer, no lock contention on the metrics hot path); `max_in_flight`/
   `max_queue_depth`/`run_terminal_at_` are set on the dispatcher thread or at
-  run-terminal (single-threaded snapshot), so no data race. `ready_times_` is
-  written from `dispatch_ready_nodes_locked` and `on_node_complete` under `log_mu_`
-  (in the dispatch path) and read under `log_mu_` in `worker_task`.
+  run-terminal (single-threaded snapshot), so no data race. - **Concurrency correctness (M13 TSan fix):** the initial M13 implementation read
+  `ready_times_` under `log_mu_` in `worker_task` while writing it under `dispatch_mu_`
+  in `on_node_complete` — a real data race detected by ThreadSanitizer (T21 read / T22
+  write on the same `std::map` node). Fixed by guarding all `ready_times_`
+  read/write under `dispatch_mu_` consistently (the writer's lock); `worker_task`
+  briefly acquires `dispatch_mu_` to snapshot `became_ready_at` — no deadlock since
+  the worker does not re-enter the dispatcher.
 - **No-go compliance:** did not add CPU/memory metrics (no collector exists yet);
   did not use `system_clock` for durations; did not fabricate performance numbers;
   did not change Phase-1 behavior.
@@ -604,3 +609,60 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `916ffc9` — `phase2(m13): instrument scheduler metrics`
 - **NEXT:** M14 — deterministic test fixtures and property-based equivalence testing.
+---
+
+## M14 — Harden C++ correctness with sanitizers and concurrency stress
+
+- **BASE_SHA:** `916ffc9`
+- **What changed:**
+  - `engine/CMakeLists.txt` — added CMake options `EVO_ENABLE_ASAN` and
+    `EVO_ENABLE_TSAN` (mutually exclusive; documented). Sanitizer flags apply
+    globally via `add_compile_options`/`add_link_options` so the core library and
+    all test executables are instrumented consistently (avoids ASan ODR/double-
+    free false positives from mismatched library/test sanitization). ASan builds
+    force Debug mode for meaningful stack traces. Added the `evo_stress_test` CTest
+    target.
+  - `engine/tests/stress_test.cpp` (NEW) — stress suites: (1) 120 deterministic
+    random-DAG runs with seed logging, asserting concurrent succeeded-set + node
+    count == sequential reference each iteration; (2) 50× ThreadPool construction +
+    task-burst + drain cycles; (3) 50× full scheduler construction/run/drain cycles
+    (diamond graph); (4) 40× cancel-vs-completion contention with cooperative
+    2ms bench:sleep tasks on an 8-leaf fan-in graph (verifies clean terminal state
+    + no double-execution under cancellation race).
+  - `engine/core/src/concurrent_scheduler.cpp` / `concurrent_scheduler.hpp` —
+    **TSan race fix**: `ready_times_` (added in M13 for `became_ready_at`) was
+    read under `log_mu_` in `worker_task` but written under `dispatch_mu_` in
+    `on_node_complete`. ThreadSanitizer reported a data race (read/write on the
+    same `std::map` node from concurrent pool threads). Fixed by guarding all
+    `ready_times_` accesses under `dispatch_mu_` consistently; `worker_task`
+    briefly snapshots `became_ready_at` under `dispatch_mu_` (no deadlock since
+    the worker does not re-enter the dispatcher loop).
+  - `.gitignore` — added `/Testing` (CTest-generated artifact directory).
+- **Key decisions:**
+  - Used `add_compile_options` (global) over per-target flags so the whole binary is
+    instrumented consistently — a partially-sanitized build produces misleading
+    ODR diagnostics under ASan.
+  - The 120-iteration stress asserts *equivalence to the sequential reference*
+    (same succeeded node set, same node count, all succeeded), not just
+    concurrency overlap — catching subtle correctness regressions, not just races.
+  - Cancel-vs-completion uses 2ms cooperative tasks to maximize the chance of
+    cancellation racing completion, exercising the stop_token path under contention.
+- **Concurrency correctness:** TSan found and the fix above resolved a real
+  `ready_times_` race from M13. ASan+UBSan remains clean. All atomic counters
+  unchanged. No data race remains (verified by clean TSan run on 10/10 tests).
+- **No-go compliance:** did not enable ASan and TSan together (mutually exclusive
+    checked at configure time); no `-Werror` on third-party headers (none used);
+    no invented performance numbers; diagnostic timing in stress tests is labeled
+    `diag` and explicitly not a perf claim.
+- **Validation:**
+  - Release: `ctest --test-dir engine/build` → ✅ 10/10 (incl. stress, ~64s)
+  - ASan+UBSan (`-DEVO_ENABLE_ASAN=ON` Debug): `ctest --test-dir engine/build-asan` → ✅ 10/10, no errors
+  - TSan (`-DEVO_ENABLE_TSAN=ON` Debug): `ctest --test-dir engine/build-tsan` → ✅ 10/10, no warnings (after M13 race fix)
+  - `./build/evo_stress_test` → "all stress tests passed" (120 DAG + 50 pool + 50 sched + 40 cancel-race)
+  - `npm test` (Phase-1) → ✅ 28/28 (no TS/app code touched)
+- **Platform notes:** TSan runs successfully on macOS arm64 with Apple clang 21.
+  No suppressions file needed (no real project bugs suppressed).
+- **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched).
+- **Human action:** none.
+- **COMMIT:** `ce2e9d9` — `phase2(m14): harden concurrent core with sanitizers and stress`
+- **NEXT:** M15 — first local benchmark corpus and sequential-vs-concurrent evidence.
