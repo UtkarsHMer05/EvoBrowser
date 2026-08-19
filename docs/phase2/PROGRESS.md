@@ -19,7 +19,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M12 | Add execution resource classes and browser affinity policy | ✅ DONE | `cc73f30` |
 | M13 | Instrument the scheduler core with evidence-grade timestamps and counters | ✅ DONE | `916ffc9` |
 | M14 | Harden C++ correctness with sanitizers and concurrency stress | ✅ DONE | `b361a4e` |
-| M15 | Create the first local benchmark corpus and sequential-vs-concurrent evidence | ✅ DONE | `TBD` |
+| M15 | Create the first local benchmark corpus and sequential-vs-concurrent evidence | ✅ DONE | `bea4b06` |
 
 ---
 
@@ -721,5 +721,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - `npm test` (Phase-1) → ✅ 28/28 (no TS/app code touched)
 - **Phase-1 regression:** `npm test` → ✅ 28/28 (no TS/app code touched).
 - **Human action:** none.
-- **COMMIT:** `TBD` — `phase2(m15): benchmark local concurrent scheduler`
+- **COMMIT:** `bea4b06` — `phase2(m15): benchmark local concurrent scheduler`
 - **NEXT:** M16 — define shared Protobuf/gRPC execution contract.
