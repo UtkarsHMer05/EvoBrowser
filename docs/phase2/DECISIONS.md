@@ -219,3 +219,14 @@ prompt against the actual checked-out repository at the recorded SHAs.
 | 23.5 | Malformed envelopes are quarantined (logged + acked) rather than left pending forever. | A poison message must not block the consumer group. | Quarantine is observable via logs; result is never published. |
 | 23.6 | ioredis 6.0.0 as the TS Redis client; `RedisStreamsClient` mirrors the C++ RedisTransport command-for-command. | One wire protocol across C++ scheduler and TS workers. | Cross-language behavior parity is testable. |
 | 23.7 | Worker compose service is profile-gated (`--profile worker`); default stack unchanged. | M18 stack behavior must not regress; workers are opt-in. | `up.sh`/`down.sh`/`reset.sh` unaffected. |
+
+## M24 — Reuse existing node executors in distributed workers
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 24.1 | Worker-side adapter wraps the EXISTING `nodeExecutors` + `interpolate()`; no reimplementation. | Master prompt: do not duplicate executors; reuse Phase-1 logic. | One executor implementation across legacy and Evo paths. |
+| 24.2 | Version snapshot + predecessor outputs come from injectable loaders. | M24 tests use in-memory fakes; M26 plugs durable Postgres loaders. | Clean seam; adapter is testable without a DB. |
+| 24.3 | Email side effect mocked via `createEmailTestSink` (records calls, returns real `{id}` shape). | Automated distributed tests must never send real email (M24 step 7). | Interpolation parity holds because output shape matches. |
+| 24.4 | Output-compatibility test asserts byte-identical output between legacy and worker paths for deterministic nodes. | Proves the adapter preserves Phase-1 execution semantics (M24 step 9). | Regression guard for executor reuse. |
+| 24.5 | Secrets (RESEND_API_KEY, BROWSERBASE_API_KEY) read from worker env by executors; never carried in the envelope. | M22 payload rule; server/worker-only credentials. | Envelopes stay secret-free across the wire. |
+| 24.6 | Trigger nodes complete with `{skipped:true}` and no work (legacy parity). | run-workflow.ts marks trigger nodes done without an executor. | Consistent run semantics across engines. |

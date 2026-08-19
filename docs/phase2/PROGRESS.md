@@ -33,6 +33,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M21 | Implement Redis Streams transport in the C++ scheduler | ✅ DONE | `47e565e` |
 | M22 | Finalize task/result envelope semantics and event transport | ✅ DONE | `ad88fd0` |
 | M23 | Create the TypeScript distributed worker service | ✅ DONE | `dd01b19` |
+| M24 | Reuse existing interpolation and node executors inside distributed workers | ✅ DONE | `<M24_SHA>` |
 
 ---
 
@@ -1176,3 +1177,51 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `dd01b19` — `phase2(m23): add scalable typescript worker service`
 - **NEXT:** M24 — Reuse existing interpolation and node executors inside distributed workers.
+
+---
+
+## M24 — Reuse existing interpolation and node executors inside distributed workers
+
+- **BASE_SHA:** `dd01b19`
+- **What was inspected:** master prompt M24 spec, `features/workflows/nodes/
+  node-executors.ts` (NodeExecutor/NodeContext), `features/workflows/lib/
+  interpolate.ts`, `features/workflows/tasks/run-workflow.ts` (legacy per-node
+  loop), `features/workflows/nodes/{send-email,open-url,act,extract,observe,
+  agent}.ts`, `lib/resend.ts`, `features/workflows/nodes/node-registry.ts`
+  (NodeType/StepNodeType), worker M23 TaskExecutor interface.
+- **What changed:**
+  - `worker/src/node-executor-adapter.ts` — `createNodeExecutorAdapter()`:
+    worker-side execution adapter around the EXISTING node registry/executors.
+    Per-task flow mirrors run-workflow.ts for a single node: load immutable
+    version snapshot → locate node → load predecessor outputs → interpolate
+    (existing `interpolate()`) → call existing executor → return opaque JSON
+    output. Trigger nodes complete with no work (legacy parity). Version/
+    outputs come from injectable loaders (fakes in M24 tests; durable Postgres
+    loaders in M26). Browser session via optional `getStagehand` (wired M25).
+    `executorOverrides` enables test sinks. Secrets stay server/worker-only
+    (env vars read by executors; never in the envelope).
+  - `worker/src/email-test-sink.ts` — safe in-memory test sink for
+    side-effecting email (M24 step 7); records calls, returns the real
+    `sendEmail` output shape `{ id }` for interpolation parity. Test-only;
+    never registered in the product node registry.
+  - `worker/src/node-executor-adapter.test.ts` — output-compatibility test
+    (M24 step 9): for mocked deterministic nodes, the worker adapter produces
+    BYTE-IDENTICAL output to the legacy execution path (extract, interpolated
+    email body, trigger no-work, unknown-node permanent failure). Pure unit
+    test — no Redis/DB/network.
+  - `package.json` — wired the M24 test into `npm test`.
+- **Concurrency/distributed correctness:** the adapter is stateless per task;
+  all mutable state (version snapshots, node outputs) is owned by the loaders
+  (durable Postgres in M26). Interpolation is pure. A node requiring a browser
+  without one available fails cleanly (permanent) rather than hanging.
+  Cancellation is checked before execution (cooperative).
+- **No-go compliance:** no executor reimplementation (reuses nodeExecutors +
+  interpolate); no secrets in envelopes; email side effect mocked in tests;
+  Phase-1 untouched; adapter is opt-in Evo path only.
+- **Validation:**
+  - `npx tsx worker/src/node-executor-adapter.test.ts` → ✅ 4/4
+  - `npm test` → ✅ 57/57 (28 Phase-1 + 4 contract + 8 M20 + 8 M22 + 5 M23 + 4 M24)
+  - `npm run typecheck` → ✅ exit 0; `npm run lint` → ✅ exit 0
+- **Human action:** none.
+- **COMMIT:** `<M24_SHA>` — `phase2(m24): reuse existing node executors in worker`
+- **NEXT:** M25 — Implement distributed browser session ownership and live-view parity.
