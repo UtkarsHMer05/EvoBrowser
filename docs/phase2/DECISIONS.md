@@ -161,3 +161,14 @@ prompt against the actual checked-out repository at the recorded SHAs.
 | 18.3 | `reset.sh` destroys only volumes owned by the `evo-phase2` compose project. | Destructive operations must be scoped to local throwaway data. | Wipe is reproducible and safe; `down.sh` preserves volumes. |
 | 18.4 | Redis 7.4-alpine + Postgres 16-alpine pinned by tag. | Reproducible infra across machines; alpine keeps images small. | Version bumps are explicit compose edits. |
 | 18.5 | Phase-2 schema will be portable SQL (no local-only extensions) so the same additive Drizzle migrations apply to local Postgres now and Neon later. | M19+ must run against this local stack, then Neon after explicit human approval. | No divergence between local and remote schema. |
+
+## M19 — Additive Phase-2 Drizzle schema and migrations
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 19.1 | Five additive tables: `workflow_versions`, `workflow_runs`, `node_runs`, `task_attempts`, `idempotency_records`; Phase-1 tables untouched. | Durable engine-neutral audit state without breaking Phase 1 (M19 objective). | M20+ builds on these; Phase-1 app never reads them yet. |
+| 19.2 | `engine` discriminator on `workflow_runs` (`legacy` default, `evo` opt-in). | Legacy Trigger.dev and Evo runs must coexist in one audit table. | M27 engine abstraction filters by this column. |
+| 19.3 | Unique constraints as invariant guards: `(workflow_id, version_number)`, `(run_id, node_id)`, `(node_run_id, attempt_number)`, idempotency `key` PK. | Duplicate delivery must be rejected by the DB, not by application luck. | M33 idempotency resolves conflicts by reading the existing row. |
+| 19.4 | Committed `0000_phase1_baseline.sql` even though Phase-1 was push-only. | Migration history must be honest and replayable from scratch on the local stack. | Fresh local Postgres reproduces the full schema. |
+| 19.5 | Local migrations applied via `scripts/phase2/migrate-local.sh` (psql + `--single-transaction`), not drizzle-kit migrate. | drizzle-kit's migrator uses `@neondatabase/serverless`, which cannot open plain TCP to local Postgres. | Same committed SQL files are the source of truth for both local and (later, human-approved) Neon application. |
+| 19.6 | All Phase-2 timestamps are wall-clock UTC (`now()`); steady_clock stays in-process. | Consistent with M13/M16 clock policy. | Cross-process correlation uses one clock domain. |

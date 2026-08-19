@@ -28,6 +28,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M16 | Define the shared Protobuf/gRPC execution contract | ✅ DONE | `dbaecf8` |
 | M17 | Implement the C++ scheduler service over gRPC | ✅ DONE | `7cf04f6` |
 | M18 | Create isolated local Redis + PostgreSQL infrastructure | ✅ DONE | `813da0a` |
+| M19 | Add additive Phase-2 Drizzle schema and migrations | ✅ DONE | `<M19_SHA>` |
 
 ---
 
@@ -867,3 +868,55 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** Docker Desktop (ARM) installed and running — complete.
 - **COMMIT:** `813da0a` — `phase2(m18): add isolated redis postgres dev stack`
 - **NEXT:** M19 — Add additive Phase-2 Drizzle schema and migrations.
+
+---
+
+## M19 — Add additive Phase-2 Drizzle schema and migrations
+
+- **BASE_SHA:** `e2e1906`
+- **What was inspected:** master prompt M19 spec, `lib/db/schema.ts` (Phase-1:
+  3 tables), `lib/db/index.ts` (neon-http pooled client), `drizzle.config.ts`,
+  `lib/db/migrations/` (empty — Phase-1 was applied via `db:push`, no committed
+  history), drizzle-orm 0.45.2 / drizzle-kit 0.31.10 pg-core API surface.
+- **What changed:**
+  - `lib/db/schema.ts` — five ADDITIVE tables (Phase-1 tables untouched):
+    - `workflow_versions` — immutable graph snapshots; unique
+      `(workflow_id, version_number)`; org index.
+    - `workflow_runs` — engine-neutral runs with `engine` discriminator
+      (`legacy` default | `evo`), status/outcome, wall-clock UTC timestamps;
+      indexes on `(org_id, created_at)`, `workflow_id`, `status`.
+    - `node_runs` — unique `(run_id, node_id)` identity; FK → workflow_runs.
+    - `task_attempts` — unique `(node_run_id, attempt_number)`; FK → node_runs.
+    - `idempotency_records` — `key` primary key for duplicate-request dedup (M33).
+  - `lib/db/migrations/0000_phase1_baseline.sql` — honest baseline generated
+    from the Phase-1-only schema (Phase-1 was previously push-only).
+  - `lib/db/migrations/0001_phase2_run_schema.sql` — purely additive: 5 CREATE
+    TABLE + FKs + indexes; zero ALTERs on Phase-1 tables.
+  - `scripts/phase2/migrate-local.sh` — applies committed migrations to the
+    local container only (drizzle-kit's migrator uses the neon-serverless
+    driver which cannot open plain TCP to local Postgres); tracks applied files
+    in `phase2_migrations_applied`; idempotent re-runs.
+  - `scripts/phase2/schema-smoke.sh` — 16 assertions: tables exist, fixture
+    inserts, unique constraints reject duplicates (version number, node
+    identity, attempt number, idempotency key), legacy/evo coexistence, cleanup.
+- **Concurrency/distributed correctness:** Postgres owns all mutable state;
+  unique constraints are the invariant guards (duplicate delivery → constraint
+  violation, caller resolves by reading existing row). Crash between two
+  durable writes: each migration applies in one transaction
+  (`--single-transaction`); app-level two-write atomicity is M26's job.
+  Timestamps are wall-clock UTC (`now()`); steady_clock never persisted here.
+- **No-go compliance:** migration NOT applied to Neon (local Docker only);
+  no columns/tables removed; no secrets committed; Phase-1 behavior unchanged
+  (nothing in the app imports the new tables yet).
+- **Validation:**
+  - `npx drizzle-kit generate --name phase1_baseline` → ✅ 3 tables
+  - `npx drizzle-kit generate --name phase2_run_schema` → ✅ 8 tables, additive diff
+  - `scripts/phase2/migrate-local.sh` → ✅ 2 migrations applied to local Postgres
+  - `scripts/phase2/schema-smoke.sh` → ✅ 16/16 assertions pass
+  - `npm run typecheck` → ✅ exit 0
+  - `npm run lint` → ✅ exit 0
+  - Phase-1 regression: `npm test` → ✅ 32/32 (28 Phase-1 + 4 contract)
+- **Human action:** none (local Postgres only; Neon migration requires explicit
+  approval and is deferred).
+- **COMMIT:** `<M19_SHA>` — `phase2(m19): add durable phase2 run schema`
+- **NEXT:** M20 — Implement immutable workflow versions and optimistic concurrency.
