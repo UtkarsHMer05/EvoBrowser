@@ -119,11 +119,13 @@ void* run_with_retry(const RedisTransportConfig& config, redisContext*& ctx,
 }  // namespace
 
 bool RedisTransport::ensure_group(const std::string& stream_key,
-                                  const std::string& group) {
+                                  const std::string& group,
+                                  const std::string& start_id) {
   std::lock_guard lock(mu_);
   void* raw = run_with_retry(config_, ctx_, [&](redisContext* c) {
     return static_cast<void*>(redisCommand(
-        c, "XGROUP CREATE %s %s $ MKSTREAM", stream_key.c_str(), group.c_str()));
+        c, "XGROUP CREATE %s %s %s MKSTREAM", stream_key.c_str(),
+        group.c_str(), start_id.c_str()));
   });
   if (raw == nullptr) return false;
   auto* reply = static_cast<redisReply*>(raw);

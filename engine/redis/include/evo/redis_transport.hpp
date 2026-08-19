@@ -67,7 +67,8 @@ class RedisTransport final : public TaskTransport {
   bool connected() const;
 
   bool ensure_group(const std::string& stream_key,
-                    const std::string& group) override;
+                    const std::string& group,
+                    const std::string& start_id = "$") override;
 
   std::optional<std::string> publish(const std::string& stream_key,
                                      const std::string& payload) override;

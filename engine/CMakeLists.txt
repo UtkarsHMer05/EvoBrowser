@@ -77,6 +77,7 @@ add_library(evo_scheduler_core STATIC
   core/src/execution_policy.cpp
   core/src/concurrent_scheduler.cpp
   core/src/transport.cpp
+  core/src/run_store.cpp
 )
 target_include_directories(evo_scheduler_core PUBLIC core/include)
 target_compile_features(evo_scheduler_core PUBLIC cxx_std_20)
@@ -161,6 +162,20 @@ target_compile_options(evo_envelope PRIVATE
 target_compile_features(evo_envelope PUBLIC cxx_std_20)
 
 # ---------------------------------------------------------------------------
+# evo_distributed — the distributed run loop (Milestone 26): scheduler ->
+# worker -> result -> successor cycle over a durable transport + RunStore.
+# Depends on the scheduler core (state machine, DAG, transport abstraction)
+# and the envelope semantics (dedupe/late-result/validation). Not part of
+# evo_scheduler_core because it needs the protobuf contract.
+# ---------------------------------------------------------------------------
+add_library(evo_distributed STATIC core/src/distributed_run_loop.cpp)
+target_include_directories(evo_distributed PUBLIC core/include)
+target_link_libraries(evo_distributed PUBLIC evo_scheduler_core evo_envelope)
+target_compile_options(evo_distributed PRIVATE
+  -Wall -Wextra -Wpedantic -Werror)
+target_compile_features(evo_distributed PUBLIC cxx_std_20)
+
+# ---------------------------------------------------------------------------
 # evo_redis_transport — Redis Streams task transport (Milestone 21).
 # Links the self-contained static hiredis built by
 # engine/third_party/build-hiredis.sh (gitignored; arm64). hiredis headers are
@@ -189,6 +204,35 @@ else()
     "hiredis static lib not found at ${EVO_HIREDIS_LIB}; "
     "run engine/third_party/build-hiredis.sh to enable the Redis transport")
   set(EVO_HAVE_HIREDIS OFF)
+endif()
+
+# ---------------------------------------------------------------------------
+# evo_pg_run_store — Postgres RunStore over libpq (Milestone 26). Parameterized
+# SQL against the M19 schema; never owns migrations. libpq headers are SYSTEM
+# (third-party). If libpq is not found, the target is skipped and the
+# pg_run_store test is not registered (documented in PROGRESS.md).
+# ---------------------------------------------------------------------------
+set(_libpq_prefixes /opt/homebrew/opt/libpq /usr/local/opt/libpq)
+find_path(LIBPQ_INCLUDE_DIR libpq-fe.h
+  PATHS ${_libpq_prefixes}
+  PATH_SUFFIXES include)
+find_library(LIBPQ_LIBRARY NAMES pq libpq
+  PATHS ${_libpq_prefixes}
+  PATH_SUFFIXES lib)
+if(LIBPQ_INCLUDE_DIR AND LIBPQ_LIBRARY)
+  add_library(evo_pg_run_store STATIC pg/src/pg_run_store.cpp)
+  target_include_directories(evo_pg_run_store PUBLIC pg/include)
+  target_include_directories(evo_pg_run_store SYSTEM PUBLIC ${LIBPQ_INCLUDE_DIR})
+  target_link_libraries(evo_pg_run_store PUBLIC evo_scheduler_core
+    ${LIBPQ_LIBRARY})
+  target_compile_options(evo_pg_run_store PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+  target_compile_features(evo_pg_run_store PUBLIC cxx_std_20)
+  set(EVO_HAVE_LIBPQ ON)
+else()
+  message(STATUS
+    "libpq not found; run `brew install libpq` to enable the Postgres RunStore")
+  set(EVO_HAVE_LIBPQ OFF)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -339,6 +383,18 @@ target_compile_options(evo_envelope_test PRIVATE
 add_test(NAME envelope COMMAND evo_envelope_test)
 
 # ---------------------------------------------------------------------------
+# evo_distributed_run_loop_test — M26: scheduler -> worker -> result ->
+# successor cycle over the in-memory transport + store. Duplicate-result
+# injection, identity validation, failure/cancel/stop paths, audit asserts.
+# ---------------------------------------------------------------------------
+add_executable(evo_distributed_run_loop_test tests/distributed_run_loop_test.cpp)
+target_link_libraries(evo_distributed_run_loop_test PRIVATE evo_distributed)
+target_compile_options(evo_distributed_run_loop_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME distributed_run_loop COMMAND evo_distributed_run_loop_test)
+
+# ---------------------------------------------------------------------------
 # evo-envelope-fixture-gen — M22 cross-language golden fixture generator.
 # Writes deterministic envelope bytes to engine/tests/fixtures/ for the TS
 # cross-language test. Run manually after proto changes; fixtures are committed.
@@ -362,6 +418,41 @@ if(EVO_HAVE_HIREDIS)
     -Wall -Wextra -Wpedantic -Werror
   )
   add_test(NAME redis_transport COMMAND evo_redis_transport_test)
+endif()
+
+# ---------------------------------------------------------------------------
+# evo_pg_run_store_test — M26 integration test against the LOCAL Phase-2
+# Postgres (scripts/phase2). Skipped at runtime when unreachable/unmigrated.
+# Only registered when libpq was found.
+# ---------------------------------------------------------------------------
+if(EVO_HAVE_LIBPQ)
+  add_executable(evo_pg_run_store_test tests/pg_run_store_test.cpp)
+  target_link_libraries(evo_pg_run_store_test PRIVATE evo_pg_run_store)
+  target_compile_options(evo_pg_run_store_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  add_test(NAME pg_run_store COMMAND evo_pg_run_store_test)
+endif()
+
+# ---------------------------------------------------------------------------
+# evo_distributed_e2e_test — M26 step 8: C++ run loop + real Redis + multiple
+# TS worker processes + real Postgres, diamond DAG, duplicate-result storm,
+# audit assertions. Skips at runtime when Redis/Postgres/tsx are unavailable.
+# Requires both hiredis and libpq.
+# ---------------------------------------------------------------------------
+if(EVO_HAVE_HIREDIS AND EVO_HAVE_LIBPQ)
+  add_executable(evo_distributed_e2e_test tests/distributed_e2e_test.cpp)
+  target_link_libraries(evo_distributed_e2e_test PRIVATE
+    evo_distributed evo_redis_transport evo_pg_run_store)
+  target_compile_options(evo_distributed_e2e_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -Wno-c99-extensions  # hiredis headers (transitive)
+  )
+  target_compile_definitions(evo_distributed_e2e_test PRIVATE
+    EVO_REPO_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+  add_test(NAME distributed_e2e COMMAND evo_distributed_e2e_test)
+  set_tests_properties(distributed_e2e PROPERTIES TIMEOUT 180)
 endif()
 # Point the integration test at the real server binary so it runs instead of
 # skipping (the test also honors an EVO_SCHEDULER_SERVER_BIN env override).

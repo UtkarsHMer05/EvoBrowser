@@ -22,6 +22,9 @@ std::string result_stream_key(const std::string& env_prefix) {
 std::string control_stream_key(const std::string& env_prefix) {
   return env_prefix + ":control";
 }
+std::string event_stream_key(const std::string& env_prefix) {
+  return env_prefix + ":events";
+}
 
 InMemoryTransport::Stream& InMemoryTransport::stream_locked(
     const std::string& key) {
@@ -29,7 +32,9 @@ InMemoryTransport::Stream& InMemoryTransport::stream_locked(
 }
 
 bool InMemoryTransport::ensure_group(const std::string& stream_key,
-                                     const std::string& group) {
+                                     const std::string& group,
+                                     const std::string& start_id) {
+  (void)start_id;  // the fake always delivers from the beginning
   std::lock_guard lock(mu_);
   auto& s = stream_locked(stream_key);
   s.group_cursor.try_emplace(group, 0);

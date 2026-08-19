@@ -43,9 +43,12 @@ class TaskTransport {
   virtual ~TaskTransport() = default;
 
   // Idempotently create a consumer group for a stream. Returns true if the
-  // group exists (created now or already present) after the call.
+  // group exists (created now or already present) after the call. `start_id`
+  // selects the delivery cursor for a NEW group only: "$" delivers only new
+  // messages (default), "0" replays from the beginning.
   virtual bool ensure_group(const std::string& stream_key,
-                            const std::string& group) = 0;
+                            const std::string& group,
+                            const std::string& start_id = "$") = 0;
 
   // Append a payload to the stream. Returns the assigned message id, or
   // nullopt on failure (caller may retry with bounded backoff).
@@ -81,7 +84,8 @@ class TaskTransport {
 class InMemoryTransport final : public TaskTransport {
  public:
   bool ensure_group(const std::string& stream_key,
-                    const std::string& group) override;
+                    const std::string& group,
+                    const std::string& start_id = "$") override;
 
   std::optional<std::string> publish(const std::string& stream_key,
                                      const std::string& payload) override;
@@ -130,5 +134,7 @@ class InMemoryTransport final : public TaskTransport {
 std::string task_stream_key(const std::string& env_prefix);
 std::string result_stream_key(const std::string& env_prefix);
 std::string control_stream_key(const std::string& env_prefix);
+// Normalized run events for UI consumers (Milestone 26).
+std::string event_stream_key(const std::string& env_prefix);
 
 }  // namespace evo

@@ -35,6 +35,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M23 | Create the TypeScript distributed worker service | ✅ DONE | `dd01b19` |
 | M24 | Reuse existing interpolation and node executors inside distributed workers | ✅ DONE | `e581e67` |
 | M25 | Implement distributed browser session ownership and live-view parity | ✅ DONE | `3828448` |
+| M26 | Persist results and unlock dependencies through the distributed loop | ✅ DONE | `<M26_SHA>` |
 
 ---
 
@@ -1297,3 +1298,87 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `3828448` — `phase2(m25): preserve browser session semantics in workers`
 - **NEXT:** M26 — Persist results and unlock dependencies through the distributed loop.
+
+## M26 — Persist results and unlock dependencies through the distributed loop
+
+- **BASE_SHA:** `7be1d42` (phase2 branch, clean tree after M25 docs)
+- **What was inspected:** master prompt M26 spec (steps 1–8, no-go list,
+  validation), `docs/phase2/ARCHITECTURE.md` §4.4/§6/§7, `lib/db/schema.ts`
+  (workflow_runs/node_runs/task_attempts), `lib/db/migrations/
+  0001_phase2_run_schema.sql`, `engine/core/{state_machine,transport,
+  envelope,dag,execution_policy,scheduler}.{hpp,cpp}`, `engine/redis/
+  redis_transport.{hpp,cpp}`, `worker/src/{worker,redis-streams,envelope-codec,
+  synthetic-executor,main}.ts`, `engine/CMakeLists.txt`, `scripts/phase2/
+  {lib,migrate-local}.sh`, `infra/phase2/docker-compose.yml`.
+- **What changed:**
+  - `engine/core/include/evo/run_store.hpp` + `core/src/run_store.cpp` — NEW
+    `RunStore` interface: durable engine-neutral run state (run/node/attempt
+    rows) with schema-matching status strings, `now_wall_ms()` (wall-clock
+    UTC), and `InMemoryRunStore` for scheduler-core tests. Invariants: unique
+    (run,node) node runs, unique (node,attempt) attempts, at-most-once
+    terminal completion (`complete_node_run` returns false once terminal).
+  - `engine/core/include/evo/distributed_run_loop.hpp` + `core/src/
+    distributed_run_loop.cpp` — NEW `DistributedRunLoop` (M26 steps 1–7):
+    persists run + node rows, dispatches validated TaskEnvelopes (attempt row
+    durably recorded BEFORE publish), consumes ResultEnvelopes with identity
+    validation → applicability (node must be RUNNING) → attempt-id dedupe
+    (M22 ResultDedupe) → late-result rule, persists terminal node state
+    FIRST and unlocks successor dependency counters ONLY when the store
+    applied it (duplicate success can never double-unlock), persists failure
+    details + cancels downstream (retry policy is M32), publishes normalized
+    run events (JSON) on the event stream + in-process callback, finalizes
+    the run row. `cancel()`/`stop()` are cross-thread (atomics + stop_token);
+    blocking reads honor stop — no busy-spin. Resource capacity (M12) gates
+    dispatch; slots freed only on applied results.
+  - `engine/core/{include/evo,src}/transport.{hpp,cpp}` — `event_stream_key()`
+    helper; `ensure_group` gains a `start_id` param ("$" default, "0" replay).
+  - `engine/redis/{include/evo,src}/redis_transport.{hpp,cpp}` — `ensure_group`
+    start_id passthrough (XGROUP CREATE ... <start_id> MKSTREAM).
+  - `engine/pg/include/evo/pg_run_store.hpp` + `pg/src/pg_run_store.cpp` — NEW
+    `PgRunStore` over libpq: PARAMETERIZED SQL only (PQexecParams; no string
+    interpolation of values), INSERT ... ON CONFLICT DO NOTHING idempotency,
+    conditional UPDATEs (`WHERE status NOT IN (terminal)`) for at-most-once
+    completion, bounded reconnect/backoff mirroring RedisTransport. Never
+    owns migrations (M19 Drizzle SQL is the DDL authority).
+  - `engine/tests/distributed_run_loop_test.cpp` — 35 assertions over the
+    in-memory transport + store with a fake worker thread: diamond E2E +
+    audit, duplicate-result storm (no double unlock), identity validation,
+    failure path (downstream canceled, never unlocked), malformed payload
+    quarantine, cancel/stop terminal states, event ordering.
+  - `engine/tests/pg_run_store_test.cpp` — Postgres integration (skips when
+    local PG unreachable/unmigrated): idempotent creation, duplicate-attempt
+    rejection, at-most-once completion, late-failure rejection, audit
+    readers, SQL-injection probe (hostile node_id round-trips as data).
+  - `engine/tests/distributed_e2e_test.cpp` — M26 step 8: C++ run loop + real
+    Redis + 2 spawned TS worker processes (`npx tsx worker/src/main.ts`) +
+    real Postgres, diamond DAG, faithful duplicate-result storm, Postgres
+    audit assertions (worker attribution, one attempt per node), event-stream
+    replay, zero pending tasks. Skips cleanly without the stack.
+  - `engine/CMakeLists.txt` — `run_store.cpp` in core; new `evo_distributed`
+    + `evo_pg_run_store` targets (libpq via find_path/find_library, SYSTEM
+    headers); three new tests (E2E gated on hiredis+libpq, 180s timeout).
+  - `worker/src/redis-streams.ts` — **wire-format fix:** `readGroup` now uses
+    ioredis `xreadgroupBuffer` (binary-safe). The default string reply path
+    UTF-8-transcoded payload bytes ≥ 0x80, corrupting protobuf envelopes that
+    carry wall-clock Timestamps (multi-byte varints). M23's ASCII-only
+    envelopes had masked this; the M26 E2E exposed it.
+- **Concurrency/distributed correctness:** the loop is single-threaded (owns
+  all scheduling state); transport + store are thread-safe shared objects;
+  cancel/stop are the only cross-thread entry points. Duplicate delivery is
+  safe at three layers: attempt-id dedupe, RUNNING-state applicability, and
+  the store's at-most-once terminal UPDATE. A result can never be applied
+  before its dispatch (applicability check) and never after terminal state
+  (late-result rule). Crash after publish but before ack: task redelivers;
+  duplicate result is deduped. Crash after durable write but before unlock:
+  the loop re-derives readiness from persisted state on restart (M35).
+- **Validation:**
+  - `ctest --test-dir build` → ✅ 18/18 (incl. distributed_run_loop,
+    pg_run_store, distributed_e2e)
+  - `ctest --test-dir build-asan` → ✅ 18/18; `ctest --test-dir build-tsan`
+    → ✅ 18/18
+  - `npm run typecheck` → ✅; `npm run lint` → ✅; `npm test` → ✅ 65/65
+  - Distributed E2E (real Redis + 2 TS workers + Postgres) → ✅ all audit
+    assertions; duplicate storm contained.
+- **Human action:** none.
+- **COMMIT:** `<M26_SHA>` — `phase2(m26): close distributed scheduling result loop`
+- **NEXT:** M27 — Introduce the Next.js execution-engine abstraction and feature flag.

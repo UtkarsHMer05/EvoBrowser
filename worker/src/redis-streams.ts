@@ -103,6 +103,11 @@ export class RedisStreamsClient {
    * Blocking read of the next undelivered message for (group, consumer).
    * Returns null on timeout (no message) — the caller loops. At-least-once:
    * the message is pending until ack().
+   *
+   * Uses the binary-safe `xreadgroupBuffer` variant: envelope payloads are
+   * serialized protobuf, and the default string reply path would UTF-8
+   * transcode bytes >= 0x80 (e.g. multi-byte varints in wall-clock
+   * Timestamps), corrupting the wire format.
    */
   async readGroup(
     stream: string,
@@ -110,7 +115,7 @@ export class RedisStreamsClient {
     consumer: string,
     blockMs: number,
   ): Promise<StreamMessage | null> {
-    const reply = await this.redis.xreadgroup(
+    const reply = await this.redis.xreadgroupBuffer(
       "GROUP",
       group,
       consumer,
@@ -123,18 +128,17 @@ export class RedisStreamsClient {
       ">",
     );
     if (!reply) return null;
-    // reply: [ [stream, [ [id, [field, value, ...]] ] ] ]
-    const streams = reply as Array<[string, Array<[string, string[]]>]>;
+    // reply: [ [stream, [ [id, [field, value, ...]] ] ] ] (all Buffers)
+    const streams = reply as Array<[Buffer, Array<[Buffer, Buffer[]]>]>;
     const [, messages] = streams[0] ?? [];
     const first = messages?.[0];
     if (!first) return null;
-    const [id, fields] = first;
-    // fields: ["payload", <bytes>]
-    const valueIdx = fields.indexOf("payload");
+    const [idBuf, fields] = first;
+    // fields: [Buffer("payload"), <bytes>]
+    const valueIdx = fields.findIndex((f) => f.toString() === "payload");
     const raw = valueIdx >= 0 ? fields[valueIdx + 1] : undefined;
     if (raw === undefined) return null;
-    const payload = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
-    return { id, payload };
+    return { id: idBuf.toString(), payload: raw };
   }
 
   /** Acknowledge a delivered message. Late/duplicate ack is harmless. */
