@@ -33,7 +33,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M21 | Implement Redis Streams transport in the C++ scheduler | ✅ DONE | `47e565e` |
 | M22 | Finalize task/result envelope semantics and event transport | ✅ DONE | `ad88fd0` |
 | M23 | Create the TypeScript distributed worker service | ✅ DONE | `dd01b19` |
-| M24 | Reuse existing interpolation and node executors inside distributed workers | ✅ DONE | `<M24_SHA>` |
+| M24 | Reuse existing interpolation and node executors inside distributed workers | ✅ DONE | `e581e67` |
 
 ---
 
@@ -1223,5 +1223,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   - `npm test` → ✅ 57/57 (28 Phase-1 + 4 contract + 8 M20 + 8 M22 + 5 M23 + 4 M24)
   - `npm run typecheck` → ✅ exit 0; `npm run lint` → ✅ exit 0
 - **Human action:** none.
-- **COMMIT:** `<M24_SHA>` — `phase2(m24): reuse existing node executors in worker`
+- **COMMIT:** `e581e67` — `phase2(m24): reuse existing node executors in worker`
 - **NEXT:** M25 — Implement distributed browser session ownership and live-view parity.
