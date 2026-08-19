@@ -21,7 +21,8 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M14 | Harden C++ correctness with sanitizers and concurrency stress | ✅ DONE | `b361a4e` |
 | M15 | Create the first local benchmark corpus and sequential-vs-concurrent evidence | ✅ DONE | `bea4b06` |
 | M16 | Define the shared Protobuf/gRPC execution contract | ✅ DONE | `dbaecf8` |
-| M17 | Implement the C++ scheduler service over gRPC | ⏸ BLOCKED | requires `brew install grpc` |
+| M17 | Implement the C++ scheduler service over gRPC | ✅ DONE | `7cf04f6` |
+| M18 | Create isolated local Redis + PostgreSQL infrastructure | ⛔ BLOCKED | Docker not installed; requires `brew install --cask docker` then start Docker Desktop |
 
 ---
 
@@ -798,4 +799,19 @@ Commit subjects follow `phase2(mNN): <description>`.
   Phase-1 tests unchanged and green).
 - **Human action:** none.
 - **COMMIT:** `dbaecf8` — `phase2(m16): define versioned grpc protocol`
-- **NEXT:** M17 — implement the C++ scheduler service over gRPC.
+- **Human action:** `brew install grpc` (now complete) — installed grpc 1.83.0.
+- **Validation:**
+  - C++ compile (Release, arm64): `cmake --build build` → ✅ clean (system
+    grpc 1.83.0; pkg-config `grpc++` for complete absl link set).
+  - `./build/evo-scheduler-server` starts and serves `Health` → ✅ `ok: true`.
+  - Integration (`tests/grpc_integration_test.cpp`, spawns server subprocess):
+    Health ✅, SubmitRun(diamond DAG) accepted ✅, GetRun polled to terminal
+    RUN_SUCCEEDED with n0/n1/n2 all NODE_STATE_SUCCEEDED ✅, CancelRun ok ✅.
+  - `ctest --test-dir engine/build -R grpc_integration` → ✅ pass (1.5s).
+  - Release CTest → ✅ 12/12 (M10–M17, incl. stress + grpc_integration).
+  - ASan+UBSan → ✅ 11/11 (incl. grpc_integration + stress).
+  - TSan → ✅ 12/12 (no data races; incl. grpc_integration + stress).
+  - Phase-1 regression: `npm test` → ✅ 32/32 (28 Phase-1 + 4 contract).
+  - TS contract regression: `npx tsc --noEmit` + `npm run lint` → ✅ exit 0.
+- **COMMIT:** `7cf04f6` — `M17: gRPC ControlService (SubmitRun/CancelRun/GetRun/Health)`
+- **NEXT:** M18 — Create isolated local Redis + PostgreSQL infrastructure.
