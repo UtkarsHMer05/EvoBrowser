@@ -20,6 +20,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M13 | Instrument the scheduler core with evidence-grade timestamps and counters | ✅ DONE | `916ffc9` |
 | M14 | Harden C++ correctness with sanitizers and concurrency stress | ✅ DONE | `b361a4e` |
 | M15 | Create the first local benchmark corpus and sequential-vs-concurrent evidence | ✅ DONE | `bea4b06` |
+| M16 | Define the shared Protobuf/gRPC execution contract | ✅ DONE | `TBD-M16` |
 
 ---
 
@@ -723,3 +724,77 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `bea4b06` — `phase2(m15): benchmark local concurrent scheduler`
 - **NEXT:** M16 — define shared Protobuf/gRPC execution contract.
+---
+
+## M16 — Define the shared Protobuf/gRPC execution contract
+
+- **BASE_SHA:** `b361a4e`
+- **What changed:**
+  - `engine/proto/evo/execution.proto` (NEW) — versioned schema under package
+    `evo.execution.v1`. Defines the message envelope model and the service
+    surface:
+    - Enums: `NodeState`, `RunOutcome`, `ResourceClass` (matches ARCHITECTURE.md §5
+      and M12), `ResultEnvelope.StatusCode`, `RunStatus`.
+    - Messages: `TaskEnvelope` (run/workflow/org/node/attempt/resource class/
+      affinity key/trace/span/type/payload/became-ready timestamp),
+      `ResultEnvelope` (completed/output/error/status/finished timestamp/abandoned),
+      `SubmitRunRequest/Response`, `CancelRunRequest/Response`,
+      `GetRunRequest/Response` (with `NodeStatus`), `HealthRequest/Response`.
+    - `ControlService` with RPCs `SubmitRun`, `CancelRun`, `GetRun`, `Health`.
+    gRPC transport stubs are **not** generated (no `protoc-gen-grpc` plugin
+      installed — documented; wired in M17), but the service surface is defined.
+  - `engine/proto/evo_gen/evo/execution.pb.cc` + `.pb.h` (generated) — C++
+    protobuf bindings via `protoc` 33.2 (Homebrew). Committed as generated
+    artifacts with the exact compiler version noted for reproducibility.
+  - `engine/CMakeLists.txt` — `find_package(protobuf CONFIG)`, new `evo_proto`
+    STATIC target (SYSTEM protobuf includes, links `protobuf::libprotobuf`);
+    `EVO_BUILD_COMMIT` made PUBLIC so the bench runner reports provenance;
+    `evo_contract_test` target added (strict `-Werror`; proto code isolated in
+    `evo_proto` so generated warnings don't trip the core's `-Werror`).
+  - `engine/tests/contract_test.cpp` (NEW, C++) — golden round-trip tests: stable
+    field numbers (versioning axis), `SubmitRunRequest`/`TaskEnvelope`/
+    `ResultEnvelope` encode→decode→equal, wall-clock `google.protobuf.Timestamp`
+    round-trips (§7), and the `ControlService` RPC surface (4 RPCs).
+  - `features/workflows/lib/contract-roundtrip.test.ts` (NEW, TS) — golden
+    round-trip via the already-installed `protobufjs` 7.6.5 library (runtime load
+    of the `.proto` + well-known `timestamp.proto` from Homebrew include path):
+    assert field-value preservation for `SubmitRunRequest`, `TaskEnvelope`,
+    `ResultEnvelope`, and the 4-RPC `ControlService` surface.
+  - `package.json` — added the TS contract test to the `test` script.
+  - `docs/phase2/LOCAL_SCHEDULER_BENCHMARK.md` (NEW) — methodology + measured
+    evidence for M15 (M15 doc, included here as it's the evidence document).
+  - `engine/bench-results/manifest.csv` (NEW, committed) — raw samples for M15.
+- **Key decisions:**
+  - Field numbers are the versioning axis (additive-only); a golden test pins them.
+  - Timestamps crossing the process boundary are `google.protobuf.Timestamp` =
+    wall-clock UTC (§7, M16 rule 16); in-process scheduling latency stays
+    steady_clock (M13) and is NOT in this proto.
+  - `node_payload_json` is opaque to transport and carries no secrets by contract;
+    resource class/affinity key are first-class envelope fields (M12).
+  - TS bindings use the already-installed `protobufjs` runtime (no new dependency
+    added); typed codegen via `pbts`/`ts-proto` is deferred to M17.
+  - Protobuf headers are SYSTEM includes and generated code is in a separate
+    `evo_proto` target so `-Werror` on project code does not flag third-party
+    generated warnings (no-go: "No -Werror on third-party headers").
+- **Concurrency/distributed correctness:** the proto is static schema (no mutable
+  state). Ownership/lifetime of envelopes (M18+) and duplicate-delivery idempotency
+  (M33) are future work — marked as such, not implemented.
+- **No-go compliance:** did not put browser API keys or auth tokens in payloads;
+  did not expose React Flow coordinates to the protocol; did not generate gRPC
+  stubs (documented as M17); no invented perf numbers.
+- **Validation:**
+  - C++ proto gen: `protoc ... --cpp_out` → ✅ `execution.pb.cc/.pb.h`
+  - C++ compile: `cmake --build build` → ✅ clean
+  - `./build/evo_contract_test` → ✅ "all contract tests passed" (field numbers,
+    3 message round-trips incl. wall-clock timestamp, 4 RPC surface)
+  - ASan+UBSan: `ctest --test-dir engine/build-asan -R contract` → ✅ pass
+  - TS typecheck: `npx tsc --noEmit` → ✅ exit 0
+  - TS lint: `npm run lint` (contract-roundtrip.test.ts) → ✅ 0 errors
+  - TS golden: `npx tsx features/workflows/lib/contract-roundtrip.test.ts` → ✅ 4/4
+  - `npm test` (full) → ✅ 32/32 suites pass (28 Phase-1 + 4 contract)
+  - `ctest --test-dir engine/build` → ✅ 11/11 (incl. contract + stress)
+- **Phase-1 regression:** `npm test` → ✅ 32/32 (28 Phase-1 + 4 new contract suites;
+  Phase-1 tests unchanged and green).
+- **Human action:** none.
+- **COMMIT:** `TBD-M16` — `phase2(m16): define versioned grpc protocol`
+- **NEXT:** M17 — implement the C++ scheduler service over gRPC.

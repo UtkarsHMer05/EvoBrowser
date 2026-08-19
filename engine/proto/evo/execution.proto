@@ -1,0 +1,201 @@
+syntax = "proto3";
+
+package evo.execution.v1;
+
+option cc_generic_services = false;
+option java_generic_services = false;
+option py_generic_services = false;
+
+// ---------------------------------------------------------------------------
+// Milestone 16: versioned language-neutral control contract for the Evo
+// scheduler service.
+//
+// This file defines the *messages* and the *service surface* (ControlService).
+// gRPC transport + generated stubs are intentionally NOT part of this milestone
+// (no protoc-gen-grpc plugin is installed here); they are wired in M17. The
+// service and RPC names below are the contract; codegen is for the message
+// types only at this layer. The TaskEnvelope/ResultEnvelope messages carry
+// bench/Phase-1 node tasks and are transport-agnostic (Redis streams them in
+// M31, per ARCHITECTURE.md §4.3).
+//
+// Versioning: the package `evo.execution.v1` is the version axis. Field numbers
+// are reserved per protobuf convention; never reuse a field number, never
+// change a field's type. Additive schema evolution only.
+//
+// Timestamps: per ARCHITECTURE.md §7, durable/audit timestamps crossing the
+// process boundary are wall-clock UTC (google.protobuf.Timestamp). In-process
+// scheduling latency uses steady_clock (M13); those are NOT persisted here.
+// ---------------------------------------------------------------------------
+
+import "google/protobuf/timestamp.proto";
+
+// ---- Enumerations ----------------------------------------------------------
+
+// Lifecycle state of an individual node within a run.
+enum NodeState {
+  NODE_STATE_UNSPECIFIED = 0;
+  NODE_STATE_BLOCKED     = 1; // waiting on predecessor tasks
+  NODE_STATE_READY       = 2; // dependencies satisfied, eligible to dispatch
+  NODE_STATE_RUNNING     = 3; // dispatched to a worker / attempt in flight
+  NODE_STATE_SUCCEEDED   = 4; // terminal: completed successfully
+  NODE_STATE_FAILED      = 7; // terminal: non-retryable failure
+  NODE_STATE_CANCELED    = 8; // terminal: run was canceled (incl. upstream fail)
+  NODE_STATE_DEAD_LETTER = 9; // terminal: retries exhausted
+}
+
+// Outcome class for a node or run termination.
+enum RunOutcome {
+  OUTCOME_UNSPECIFIED = 0;
+  SUCCEEDED           = 1;
+  FAILED              = 2;
+  CANCELED            = 3;
+}
+
+// Resource class of a node (see ARCHITECTURE.md §5, M12).
+enum ResourceClass {
+  RESOURCE_UNSPECIFIED = 0;
+  INTERNAL             = 1; // CPU-bound / no browser session
+  BROWSER              = 2; // needs a Stagehand/Browserbase session (cap per key)
+  EXTERNAL_IO          = 3; // external service call (e.g. email), unbounded cap
+}
+
+// ---- Task / result envelopes (transport-agnostic) --------------------------
+
+// A task envelope handed to a worker for execution. Separated from control RPC
+// messages (ARCHITECTURE.md §4.3: Redis may transport these later).
+message TaskEnvelope {
+  // Globally unique identifiers scoped to the run and attempt.
+  string run_id            = 1;
+  string workflow_version_id = 2;
+  string org_id            = 3;
+  string node_id           = 4;
+  uint32 attempt_number    = 5; // 1-based; retries increment this
+
+  // Resource classification + browser affinity key (M12).
+  ResourceClass resource_class = 6;
+  string affinity_key        = 7; // e.g. "run:<runId>"; empty => no affinity group
+
+  // Observability correlation.
+  string trace_id            = 8;
+  string span_id            = 9;
+
+  // The node payload. This is intentionally opaque to the transport; the worker
+  // interprets node_type + payload using the *registered* node executor.
+  string node_type          = 10;           // e.g. "act", "send-email", "start"
+  string node_payload_json  = 11;          // node-spec as JSON (no secrets)
+
+  // Wall-clock (UTC) when the task became ready for dispatch.
+  google.protobuf.Timestamp became_ready_at = 12;
+}
+
+// Result of a single task attempt.
+message ResultEnvelope {
+  string run_id             = 1;
+  string node_id            = 2;
+  uint32 attempt_number     = 3;
+  string trace_id           = 4;
+
+  bool completed            = 5; // true => terminal success
+  string output            = 6; // node output (may be large; see docs)
+  string error             = 7; // empty on success
+
+  // Status code (application-level; complements gRPC status).
+  enum StatusCode {
+    STATUS_UNSPECIFIED = 0;
+    OK                 = 1;
+    NODE_FAILED        = 2;
+    CANCELED           = 3;
+    TIMEOUT            = 4;
+    DEADLINE_EXCEEDED  = 5;
+  }
+  StatusCode status = 8;
+
+  // Wall-clock (UTC) when the worker finished the attempt.
+  google.protobuf.Timestamp finished_at = 9;
+
+  // If true, the attempt was abandoned (e.g. canceled) and may be retried if
+  // the run is not terminal.
+  bool abandoned = 10;
+}
+
+// ---- Control RPCs (service surface) ----------------------------------------
+
+message SubmitRunRequest {
+  string org_id              = 1;
+  string workflow_version_id = 2;
+  string run_id              = 3;  // client-generated; idempotent submit
+  string dag_json            = 4;  // canonical DAG (evo JSON) as JSON text
+  map<string, string> node_task_types = 5; // nodeId -> executor type override (optional)
+  google.protobuf.Timestamp requested_at = 6;
+  string trace_id            = 7;
+}
+
+message SubmitRunResponse {
+  string run_id              = 1;
+  bool accepted              = 2;
+  string message             = 3; // human-readable, not machine-parsed
+}
+
+message CancelRunRequest {
+  string run_id              = 1;
+  string reason              = 2;
+  google.protobuf.Timestamp requested_at = 3;
+  string trace_id            = 4;
+}
+
+message CancelRunResponse {
+  bool ok                    = 1;
+  RunOutcome outcome         = 2; // terminal outcome after cancel
+}
+
+message GetRunRequest {
+  string run_id              = 1;
+}
+
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_QUEUED             = 1;
+  RUN_RUNNING            = 2;
+  RUN_SUCCEEDED          = 3;
+  RUN_FAILED             = 4;
+  RUN_CANCELED           = 5;
+}
+
+message NodeStatus {
+  string node_id            = 1;
+  string node_type          = 2;
+  NodeState state            = 3;
+  uint32 attempt_number      = 4;
+  ResourceClass resource_class = 5;
+  google.protobuf.Timestamp started_at   = 6;
+  google.protobuf.Timestamp finished_at  = 7;
+  string output             = 8;
+  string error              = 9;
+}
+
+message GetRunResponse {
+  string run_id              = 1;
+  string workflow_version_id = 2;
+  RunStatus status            = 3;
+  RunOutcome outcome          = 4;
+  repeated NodeStatus nodes   = 5;
+  google.protobuf.Timestamp created_at  = 6;
+  google.protobuf.Timestamp finished_at = 7;
+}
+
+// Health check.
+message HealthRequest {}
+message HealthResponse {
+  bool ok    = 1;
+  string detail = 2;
+}
+
+// Control service. gRPC stubs generated in M17 (proto-gen-grpc-plugin not
+// installed here). The message contracts above are usable independently of
+// transport.
+service ControlService {
+  rpc SubmitRun(SubmitRunRequest) returns (SubmitRunResponse);
+  rpc CancelRun(CancelRunRequest) returns (CancelRunResponse);
+  rpc GetRun(GetRunRequest) returns (GetRunResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}

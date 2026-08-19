@@ -88,6 +88,25 @@ target_compile_definitions(evo_scheduler_core PUBLIC
 )
 
 # ---------------------------------------------------------------------------
+# evo_proto — generated C++ protobuf bindings for the execution contract
+# (Milestone 16). Protobuf headers are SYSTEM (no -Werror on third-party code).
+# The generated _pb.cc files are compiled in a separate target so the strict
+# -Werror on evo_scheduler_core does not apply to them. Uses the protobuf CMake
+# config (protobuf::libprotobuf) which carries transitive absl deps on Homebrew.
+# ---------------------------------------------------------------------------
+find_package(protobuf CONFIG REQUIRED)
+add_library(evo_proto STATIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/proto/evo_gen/evo/execution.pb.cc
+)
+target_include_directories(evo_proto SYSTEM PUBLIC
+  ${Protobuf_INCLUDE_DIRS}
+  ${CMAKE_CURRENT_SOURCE_DIR}/proto
+  ${CMAKE_CURRENT_SOURCE_DIR}/proto/evo_gen
+)
+target_link_libraries(evo_proto PUBLIC protobuf::libprotobuf)
+target_compile_features(evo_proto PUBLIC cxx_std_20)
+
+# ---------------------------------------------------------------------------
 # evo-smoke — prints version/build metadata only (no scheduling yet)
 # ---------------------------------------------------------------------------
 add_executable(evo-smoke app/smoke_main.cpp)
@@ -175,3 +194,14 @@ target_compile_options(evo_stress_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME stress COMMAND evo_stress_test)
+
+# ---------------------------------------------------------------------------
+# evo-contract — golden round-trip tests for the protobuf (M16) contract.
+# Uses protobuf headers as SYSTEM; test code itself is strict (-Werror).
+# ---------------------------------------------------------------------------
+add_executable(evo_contract_test tests/contract_test.cpp)
+target_link_libraries(evo_contract_test PRIVATE evo_proto evo_scheduler_core)
+target_compile_options(evo_contract_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME contract COMMAND evo_contract_test)

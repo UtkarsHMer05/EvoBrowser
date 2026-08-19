@@ -8,7 +8,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx features/workflows/lib/convert-plan.test.ts && tsx features/workflows/lib/integration.test.ts && tsx features/workflows/lib/lifecycle.test.ts",
+    "test": "tsx features/workflows/lib/convert-plan.test.ts && tsx features/workflows/lib/integration.test.ts && tsx features/workflows/lib/lifecycle.test.ts && tsx features/workflows/lib/contract-roundtrip.test.ts",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
