@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { NodeIcon } from "@/features/workflows/components/node-icon";
 import { useProPlan } from "@/features/workflows/hooks/use-pro-plan";
 import {
+  consoleRunStatusLabel,
   useConsoleRuns,
   type ConsoleRun,
 } from "@/features/workflows/components/workflow-runs-provider";
@@ -58,7 +59,9 @@ function StepRow({
   // that has since ended should stop rather than hang forever.
   const isRunning = step.status === "running" && run.isLive;
   const isFailed = step.status === "failed";
-  const isInactive = step.status === "pending";
+  // Pending steps never ran; canceled steps (Evo, M29) were skipped when the run
+  // stopped. Both read dimmed.
+  const isInactive = step.status === "pending" || step.status === "canceled";
 
   return (
     <button
@@ -153,15 +156,9 @@ export function LogsPanel({
         const isSummarySelected =
           selected?.kind === "summary" && selected.runId === run.id;
 
-        const statusLabel = run.isLive
-          ? "Running…"
-          : run.status === "COMPLETED"
-            ? "Completed"
-            : run.status === "FAILED"
-              ? "Failed"
-              : run.status === "CANCELED"
-                ? "Stopped"
-                : run.status.toLowerCase();
+        // Engine-neutral status label (M29): identical wording for legacy and
+        // Evo runs.
+        const statusLabel = consoleRunStatusLabel(run);
 
         return (
           <div key={run.id} className="flex flex-col gap-0.5">

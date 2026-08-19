@@ -206,6 +206,12 @@ async function main() {
         status: "RUN_SUCCEEDED",
         outcome: "SUCCEEDED",
       }),
+      getRunDetail: async (runId) => ({
+        runId,
+        status: "RUN_SUCCEEDED",
+        outcome: "SUCCEEDED",
+        nodes: [],
+      }),
       health: async () => ({ ok: true, detail: "SERVING" }),
     };
 
@@ -261,6 +267,12 @@ async function main() {
         runId,
         status: "RUN_STATUS_UNSPECIFIED",
         outcome: "OUTCOME_UNSPECIFIED",
+      }),
+      getRunDetail: async (runId) => ({
+        runId,
+        status: "RUN_STATUS_UNSPECIFIED",
+        outcome: "OUTCOME_UNSPECIFIED",
+        nodes: [],
       }),
       health: async () => ({ ok: false, detail: "" }),
     };

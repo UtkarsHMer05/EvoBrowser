@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_runs" ADD COLUMN "browserbase_session_id" text;

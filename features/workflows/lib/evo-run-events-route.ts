@@ -19,7 +19,7 @@ import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import type { Redis } from "ioredis";
 
-import { getDb } from "@/lib/db";
+import { getPhase2Db } from "@/lib/db/phase2";
 import { workflowRuns } from "@/lib/db/schema";
 import {
   durableRunSnapshot,
@@ -68,7 +68,7 @@ export async function buildEvoRunEventsResponse({
   signal,
   redis = getEvoRedis(),
   streamKey = eventStreamKey(getEvoEnvPrefix()),
-  db = getDb(),
+  db = getPhase2Db(),
 }: BuildEvoRunEventsResponseArgs): Promise<Response> {
   // Ownership + engine check against the durable run row.
   const [run] = await db

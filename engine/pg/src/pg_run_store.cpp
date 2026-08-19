@@ -112,12 +112,20 @@ bool PgRunStore::ensure_workflow(const std::string& workflow_id,
 
 bool PgRunStore::create_run(const RunRecord& run,
                             std::int64_t started_wall_ms) {
+  // The app pre-creates the run row with status 'queued' (M27) before the
+  // engine starts. When the engine begins executing it must transition that
+  // row to 'running' and stamp started_at. ON CONFLICT DO UPDATE with a
+  // WHERE guard achieves both: a fresh insert lands as 'running'; a
+  // pre-existing 'queued' row is promoted; an already-running or terminal row
+  // is left untouched (idempotent, never regresses state).
   auto r = exec_params(
       "INSERT INTO workflow_runs (id, org_id, workflow_id, "
       "workflow_version_id, engine, status, started_at) "
       "VALUES ($1, $2, $3::uuid, NULLIF($4, '')::uuid, $5, $6, "
       "to_timestamp($7::bigint / 1000.0) AT TIME ZONE 'UTC') "
-      "ON CONFLICT (id) DO NOTHING",
+      "ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, "
+      "started_at = EXCLUDED.started_at "
+      "WHERE workflow_runs.status = 'queued'",
       {run.run_id, run.org_id, run.workflow_id, run.workflow_version_id,
        run.engine, run.status, std::to_string(started_wall_ms)});
   if (r.res) PQclear(r.res);

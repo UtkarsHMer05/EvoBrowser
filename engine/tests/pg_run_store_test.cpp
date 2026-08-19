@@ -76,6 +76,35 @@ int main() {
   check(store.create_run(run, evo::now_wall_ms()), "create_run inserts");
   check(store.create_run(run, evo::now_wall_ms()), "create_run idempotent");
 
+  // --- M29: app pre-creates the run row as 'queued'; the engine's create_run
+  // must promote it to 'running' (not leave it queued via DO NOTHING). -------
+  const std::string pre_run_id =
+      "m29-pre-" +
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  evo::RunRecord pre_run;
+  pre_run.run_id = pre_run_id;
+  pre_run.org_id = "org-pg";
+  pre_run.workflow_id = wf_id;
+  pre_run.engine = "evo";
+  pre_run.status = evo::run_status::kQueued;
+  check(store.create_run(pre_run, evo::now_wall_ms()),
+        "pre-created run row (queued)");
+  pre_run.status = evo::run_status::kRunning;
+  check(store.create_run(pre_run, evo::now_wall_ms()),
+        "create_run promotes queued -> running");
+  auto pre = store.get_run(pre_run_id);
+  check(pre.has_value() && pre->status == evo::run_status::kRunning,
+        "pre-created run is now running (M29 promotion)");
+  // A terminal run must never be regressed by a late create_run.
+  check(store.finish_run(pre_run_id, evo::run_status::kSucceeded, "succeeded",
+                         evo::now_wall_ms()),
+        "finish_run on promoted run");
+  check(store.create_run(pre_run, evo::now_wall_ms()),
+        "create_run after terminal is a no-op");
+  auto pre2 = store.get_run(pre_run_id);
+  check(pre2.has_value() && pre2->status == evo::run_status::kSucceeded,
+        "terminal run not regressed by create_run");
+
   // --- Node runs ------------------------------------------------------------
   check(store.create_node_run(run_id, "a", "bench:echo"), "create_node_run a");
   check(store.create_node_run(run_id, "a", "bench:echo"),

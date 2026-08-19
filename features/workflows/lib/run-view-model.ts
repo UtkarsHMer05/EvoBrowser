@@ -196,6 +196,119 @@ export function mapLegacyStatus(status: string): NormalizedRunStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Evo gRPC run-detail adapter (Milestone 29).
+// ---------------------------------------------------------------------------
+
+/** One node as reported by the C++ scheduler's GetRun RPC (M29). Mirrors
+ *  evo-engine-adapter's EvoNodeStatus structurally so this module stays free
+ *  of gRPC imports. */
+export interface EvoNodeStatusLike {
+  nodeId: string;
+  nodeType: string;
+  /** NodeState enum name, e.g. "NODE_STATE_RUNNING". */
+  state: string;
+  attemptNumber: number;
+  output: string; // opaque JSON owned by the node executor
+  error: string;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+}
+
+/** Full GetRun detail (run + per-node states) for the normalized model. */
+export interface EvoRunDetailLike {
+  runId: string;
+  /** RunStatus enum name, e.g. "RUN_RUNNING". */
+  status: string;
+  outcome: string;
+  createdAtMs?: number;
+  finishedAtMs?: number;
+  nodes: EvoNodeStatusLike[];
+}
+
+/** Map a C++ NodeState enum name to a normalized step status. */
+export function mapEvoNodeState(state: string): NormalizedRunStep["status"] {
+  switch (state) {
+    case "NODE_STATE_SUCCEEDED":
+      return "done";
+    case "NODE_STATE_FAILED":
+    case "NODE_STATE_DEAD_LETTER":
+      return "failed";
+    case "NODE_STATE_CANCELED":
+      return "canceled";
+    case "NODE_STATE_RUNNING":
+      return "running";
+    default:
+      return "pending"; // BLOCKED / READY / UNSPECIFIED
+  }
+}
+
+/** Map a C++ RunStatus enum name to a normalized run status. */
+export function mapEvoRunStatus(status: string): NormalizedRunStatus {
+  switch (status) {
+    case "RUN_QUEUED":
+      return "queued";
+    case "RUN_RUNNING":
+      return "running";
+    case "RUN_SUCCEEDED":
+      return "succeeded";
+    case "RUN_FAILED":
+      return "failed";
+    case "RUN_CANCELED":
+      return "canceled";
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * Map a C++ GetRun detail into the normalized view model (M29). This is the
+ * engine-neutral path the UI uses for app-submitted Evo runs: the scheduler's
+ * GetRun RPC is the authoritative source of per-node state for those runs.
+ * Node output is parsed from the opaque JSON string; a parse failure keeps the
+ * raw string so nothing is lost.
+ */
+export function evoRunDetailToViewModel(
+  detail: EvoRunDetailLike,
+): NormalizedRunViewModel {
+  const steps: NormalizedRunStep[] = detail.nodes.map((n) => {
+    let output: unknown;
+    if (n.output) {
+      try {
+        output = JSON.parse(n.output);
+      } catch {
+        output = n.output;
+      }
+    }
+    return {
+      nodeId: n.nodeId,
+      type: n.nodeType,
+      title: n.nodeId,
+      status: mapEvoNodeState(n.state),
+      output,
+      error: n.error || undefined,
+      durationMs:
+        n.startedAtMs !== undefined && n.finishedAtMs !== undefined
+          ? n.finishedAtMs - n.startedAtMs
+          : undefined,
+    };
+  });
+
+  const durationMs =
+    detail.createdAtMs !== undefined && detail.finishedAtMs !== undefined
+      ? detail.finishedAtMs - detail.createdAtMs
+      : undefined;
+
+  return finalizeViewModel({
+    id: detail.runId,
+    engine: "evo",
+    status: mapEvoRunStatus(detail.status),
+    createdAt: detail.createdAtMs !== undefined ? new Date(detail.createdAtMs) : undefined,
+    steps,
+    durationMs,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Evo event adapter (M28 step 3 consumer side).
 // ---------------------------------------------------------------------------
 
@@ -215,6 +328,7 @@ export interface EvoRunEvent {
     | "node_failed"
     | "node_canceled"
     | "run_finished"
+    | "browser_session_opened"
     | string;
   detail: string;
   wall_ms: number;
@@ -326,6 +440,15 @@ export function reduceEvoEvents(
               : "failed";
         if (ev.browserbase_session_id) browserbaseSessionId = ev.browserbase_session_id;
         if (ev.final_url) finalUrl = ev.final_url;
+        break;
+      case "browser_session_opened":
+        // The worker publishes the Browserbase session id as soon as it opens
+        // (M29 live-view parity). The id rides in detail or the rich field.
+        if (ev.browserbase_session_id) {
+          browserbaseSessionId = ev.browserbase_session_id;
+        } else if (ev.detail) {
+          browserbaseSessionId = ev.detail;
+        }
         break;
       default:
         // Unknown event kinds are ignored (forward compatibility).

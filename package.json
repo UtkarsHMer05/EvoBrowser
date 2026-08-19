@@ -8,7 +8,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx features/workflows/lib/convert-plan.test.ts && tsx features/workflows/lib/integration.test.ts && tsx features/workflows/lib/lifecycle.test.ts && tsx features/workflows/lib/contract-roundtrip.test.ts && tsx features/workflows/lib/workflow-versions.test.ts && tsx features/workflows/lib/envelope-crosslang.test.ts && tsx worker/src/worker.test.ts && tsx worker/src/node-executor-adapter.test.ts && tsx worker/src/browser-session-manager.test.ts && tsx features/workflows/lib/execution-engine.test.ts && tsx features/workflows/lib/evo-scheduler-client.test.ts && tsx features/workflows/lib/run-view-model.test.ts",
+    "test": "tsx features/workflows/lib/convert-plan.test.ts && tsx features/workflows/lib/integration.test.ts && tsx features/workflows/lib/lifecycle.test.ts && tsx features/workflows/lib/contract-roundtrip.test.ts && tsx features/workflows/lib/workflow-versions.test.ts && tsx features/workflows/lib/envelope-crosslang.test.ts && tsx worker/src/worker.test.ts && tsx worker/src/node-executor-adapter.test.ts && tsx worker/src/browser-session-manager.test.ts && tsx features/workflows/lib/execution-engine.test.ts && tsx features/workflows/lib/evo-scheduler-client.test.ts && tsx features/workflows/lib/run-view-model.test.ts && tsx features/workflows/lib/run-console-parity.test.ts",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",

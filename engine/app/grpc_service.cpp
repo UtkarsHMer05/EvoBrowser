@@ -1,24 +1,38 @@
 // Milestone 17: C++ scheduler service over gRPC.
+// Milestone 29: bridge product workflows to the distributed run loop.
 //
 // Wraps the scheduler core (M10–M13) behind the versioned ControlService
-// (engine/proto/evo/execution.proto, generated stubs). Submits runs
-// asynchronously, tracks them in an in-memory registry (local mode — durable
-// Redis/Postgres state is M21+/M31, not this milestone), and serves
-// GetRun/CancelRun/Health. Executes the DAG via the ConcurrentScheduler with a
-// synthetic bench-task registry (no real browser/Stagehand work here, per the
-// M16/M17 no-go; real node execution is delegated to TS workers in M23–M24).
+// (engine/proto/evo/execution.proto, generated stubs) and serves
+// SubmitRun/GetRun/CancelRun/Health.
+//
+// Two execution modes, selected per-run by the DAG's node types:
+//   - LOCAL (synthetic) mode: every node is a synthetic bench/start type. The
+//     DAG runs in-process via the ConcurrentScheduler with a synthetic
+//     bench-task registry (the M17 behavior; no external infra needed). This
+//     keeps the M17 integration test and benchmarks self-contained.
+//   - DISTRIBUTED mode (Milestone 29): the DAG contains at least one product
+//     node type (open-url/act/extract/observe/agent/send-email). Those only
+//     execute on TypeScript workers, so the run is driven by the
+//     DistributedRunLoop (M26) over Redis Streams + the Postgres RunStore.
+//     This is what lets a real workflow open a Browserbase session on a
+//     worker and publish normalized run events for the UI. Requires the Redis
+//     transport + Postgres store to be built (EVO_HAVE_DISTRIBUTED) and
+//     reachable; otherwise SubmitRun fails closed with UNAVAILABLE.
 //
 // Correctness notes:
 //  - Run entries are heap-stable (std::map of std::unique_ptr<ActiveRun>) so a
-//    runner thread holding a raw pointer is never invalidated by rehash/insert.
+//    runner thread holding a raw pointer is never invalidated.
 //  - The runner thread publishes its result under runs_mu_; GetRun/CancelRun
-//    read under the same lock, so there is no data race on log/outcome/done.
+//    read under the same lock, so there is no data race.
+//  - Distributed node state for GetRun is derived from the loop's normalized
+//    run events, collected under a per-run mutex by the on_event callback —
+//    the gRPC thread never touches the loop's internal scheduling state.
 //  - Graceful shutdown: a dedicated sigwait thread calls server->Shutdown() on
 //    SIGINT/SIGTERM (async-signal-safe; no busy-spin), then in-flight runs are
-//    canceled and their runner threads joined before exit.
-//  - Timestamps crossing the service boundary are wall-clock UTC (§7). The
-//    scheduler records steady_clock internally; we bridge steady->wall with a
-//    per-run (steady,wall) anchor pair captured at submit time.
+//    canceled/stopped and their runner threads joined before exit.
+//  - Timestamps crossing the service boundary are wall-clock UTC (§7). Local
+//    mode bridges steady->wall with a per-run anchor pair; distributed mode
+//    events already carry wall-clock milliseconds.
 //  - Structured logs carry run/org identifiers only; never secrets.
 
 #include <atomic>
@@ -32,6 +46,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
@@ -40,6 +56,14 @@
 #include "evo/dag.hpp"
 #include "evo/execution.grpc.pb.h"
 #include "evo/scheduler.hpp"
+
+#ifdef EVO_HAVE_DISTRIBUTED
+#include "evo/distributed_run_loop.hpp"
+#include "evo/pg_run_store.hpp"
+#include "evo/redis_transport.hpp"
+#include "evo/run_store.hpp"
+#include "evo/transport.hpp"
+#endif
 
 namespace evo::service {
 
@@ -52,6 +76,11 @@ void log_line(const std::string& event, const std::string& run_id,
                event.c_str(), run_id.empty() ? "-" : run_id.c_str(),
                org_id.empty() ? "-" : org_id.c_str(),
                detail.empty() ? "" : " detail=", detail.c_str());
+}
+
+std::string env_or(const char* name, const std::string& fallback) {
+  const char* v = std::getenv(name);
+  return (v && *v) ? std::string(v) : fallback;
 }
 
 // Synthetic local executor registry. Only bench tasks run here; unknown real
@@ -67,6 +96,22 @@ std::map<std::string, evo::ConcurrentTaskFn> local_tasks(
   return tasks;
 }
 
+// A node type the in-process synthetic registry can execute. Product node
+// types are NOT in this set — they require the distributed worker path.
+bool is_synthetic_type(const std::string& t) {
+  return t == "start" || t.rfind("bench:", 0) == 0;
+}
+
+// True when every node in the DAG is a synthetic type (=> local mode).
+bool is_synthetic_only(const evo::Dag& dag) {
+  for (const auto& id : dag.node_ids()) {
+    const evo::NodeSpec* spec = dag.node(id);
+    if (!spec) return false;
+    if (!is_synthetic_type(spec->type)) return false;
+  }
+  return true;
+}
+
 void set_timestamp(google::protobuf::Timestamp* ts,
                    std::chrono::system_clock::time_point tp) {
   // Manual conversion: protobuf 35 removed TimeUtil::TimePointToTimestamp.
@@ -79,17 +124,40 @@ void set_timestamp(google::protobuf::Timestamp* ts,
   ts->set_nanos(static_cast<std::int32_t>(nanos.count()));
 }
 
+void set_timestamp_ms(google::protobuf::Timestamp* ts, std::int64_t wall_ms) {
+  set_timestamp(ts, std::chrono::system_clock::time_point(
+                        std::chrono::milliseconds(wall_ms)));
+}
+
 }  // namespace
 
 struct ActiveRun {
+  // --- Local (synthetic) mode ---
   std::unique_ptr<evo::ConcurrentScheduler> scheduler;
+  evo::ConcurrentRunLog log;
+
+#ifdef EVO_HAVE_DISTRIBUTED
+  // --- Distributed mode (M29). transport/store must outlive loop; declared
+  // before it so destruction order (reverse) destroys loop first. ---
+  bool distributed = false;
+  std::unique_ptr<evo::RedisTransport> transport;
+  std::unique_ptr<evo::PgRunStore> store;
+  std::unique_ptr<evo::DistributedRunLoop> loop;
+  // Normalized events collected by the loop's on_event callback, guarded by
+  // events_mu. The gRPC thread derives GetRun node state from these only.
+  mutable std::mutex events_mu;
+  std::vector<evo::RunEvent> events;
+  // The DAG's (node_id, type) pairs, captured at submit so GetRun can report
+  // not-yet-dispatched nodes too.
+  std::vector<std::pair<std::string, std::string>> node_id_type;
+#endif
+
   std::thread runner;
   // Published under runs_mu_ exactly once at completion:
   bool done = false;
-  evo::ConcurrentRunLog log;
   evo::execution::v1::RunOutcome outcome =
       evo::execution::v1::RunOutcome::OUTCOME_UNSPECIFIED;
-  // steady->wall anchors captured at submit (for boundary timestamps).
+  // steady->wall anchors captured at submit (for local boundary timestamps).
   std::chrono::steady_clock::time_point steady_anchor;
   std::chrono::system_clock::time_point wall_anchor;
   std::string org_id;
@@ -131,6 +199,96 @@ class ControlServiceImpl final
     }
     evo::Dag dag = std::move(*parse.dag);
 
+    if (is_synthetic_only(dag)) {
+      return submit_local(rid, req, std::move(dag), resp);
+    }
+    return submit_distributed(rid, req, std::move(dag), resp);
+  }
+
+  grpc::Status CancelRun(grpc::ServerContext*,
+                         const evo::execution::v1::CancelRunRequest* req,
+                         evo::execution::v1::CancelRunResponse* resp) override {
+    std::lock_guard lock(runs_mu_);
+    auto it = runs_.find(req->run_id());
+    if (it == runs_.end()) {
+      resp->set_ok(false);
+      resp->set_outcome(evo::execution::v1::RunOutcome::OUTCOME_UNSPECIFIED);
+      return grpc::Status(grpc::NOT_FOUND, "run not found");
+    }
+    ActiveRun& e = *it->second;
+#ifdef EVO_HAVE_DISTRIBUTED
+    if (e.distributed && e.loop) {
+      e.loop->cancel(req->reason());
+    } else
+#endif
+        if (e.scheduler) {
+      e.scheduler->cancel();
+    }
+    resp->set_ok(true);
+    resp->set_outcome(evo::execution::v1::RunOutcome::CANCELED);
+    log_line("cancel_requested", req->run_id(), e.org_id, req->reason());
+    return grpc::Status::OK;
+  }
+
+  grpc::Status GetRun(grpc::ServerContext*,
+                      const evo::execution::v1::GetRunRequest* req,
+                      evo::execution::v1::GetRunResponse* resp) override {
+    std::lock_guard lock(runs_mu_);
+    auto it = runs_.find(req->run_id());
+    if (it == runs_.end()) {
+      return grpc::Status(grpc::NOT_FOUND, "run not found");
+    }
+    const ActiveRun& e = *it->second;
+    resp->set_run_id(req->run_id());
+    resp->set_workflow_version_id(e.workflow_version_id);
+    set_timestamp(resp->mutable_created_at(), e.wall_anchor);
+
+#ifdef EVO_HAVE_DISTRIBUTED
+    if (e.distributed) {
+      return fill_run_distributed(e, resp);
+    }
+#endif
+    return fill_run_local(e, resp);
+  }
+
+  grpc::Status Health(grpc::ServerContext*,
+                      const evo::execution::v1::HealthRequest*,
+                      evo::execution::v1::HealthResponse* resp) override {
+    resp->set_ok(true);
+    resp->set_detail("SERVING");
+    return grpc::Status::OK;
+  }
+
+  // Graceful drain: cancel/stop every run, then join all runner threads.
+  // Called after the gRPC server has stopped accepting new RPCs.
+  void shutdown() {
+    std::map<std::string, ActiveRun*> to_join;
+    {
+      std::lock_guard lock(runs_mu_);
+      for (auto& [rid, e] : runs_) {
+#ifdef EVO_HAVE_DISTRIBUTED
+        if (e->distributed && e->loop) {
+          e->loop->stop();
+        } else
+#endif
+            if (e->scheduler) {
+          e->scheduler->cancel();
+        }
+        to_join.emplace(rid, e.get());
+      }
+    }
+    for (auto& [rid, e] : to_join) {
+      if (e->runner.joinable()) e->runner.join();
+    }
+    log_line("shutdown_complete", "", "");
+  }
+
+ private:
+  // --- Local (synthetic) submission: the M17 in-process path. ---
+  grpc::Status submit_local(const std::string& rid,
+                            const evo::execution::v1::SubmitRunRequest* req,
+                            evo::Dag dag,
+                            evo::execution::v1::SubmitRunResponse* resp) {
     // Default small sleep per node for the local synthetic executor.
     std::map<evo::NodeId, int> sleep_ms;
     for (const auto& id : dag.node_ids()) sleep_ms[id] = 3;
@@ -177,41 +335,226 @@ class ControlServiceImpl final
     resp->set_run_id(rid);
     resp->set_accepted(true);
     resp->set_message("run accepted");
-    log_line("submit_accepted", rid, req->org_id());
+    log_line("submit_accepted", rid, req->org_id(), "mode=local");
     return grpc::Status::OK;
   }
 
-  grpc::Status CancelRun(grpc::ServerContext*,
-                         const evo::execution::v1::CancelRunRequest* req,
-                         evo::execution::v1::CancelRunResponse* resp) override {
-    std::lock_guard lock(runs_mu_);
-    auto it = runs_.find(req->run_id());
-    if (it == runs_.end()) {
-      resp->set_ok(false);
+#ifndef EVO_HAVE_DISTRIBUTED
+  // Product DAGs need the distributed run loop (Redis + Postgres + TS
+  // workers). This build lacks it — fail closed rather than silently
+  // mis-executing product nodes on the synthetic registry.
+  grpc::Status submit_distributed(const std::string& rid,
+                                  const evo::execution::v1::SubmitRunRequest* req,
+                                  evo::Dag,
+                                  evo::execution::v1::SubmitRunResponse*) {
+    log_line("submit_rejected", rid, req->org_id(),
+             "product DAG but distributed mode not built");
+    return grpc::Status(grpc::UNAVAILABLE,
+                        "distributed mode not available in this build");
+  }
+#endif  // !EVO_HAVE_DISTRIBUTED
+
+#ifdef EVO_HAVE_DISTRIBUTED
+  // --- Distributed submission (M29): drive the M26 run loop over Redis + PG.
+  // Product node types execute on TypeScript workers; the loop persists
+  // run/node state to Postgres and publishes normalized events for the UI. ---
+  grpc::Status submit_distributed(const std::string& rid,
+                                  const evo::execution::v1::SubmitRunRequest* req,
+                                  evo::Dag dag,
+                                  evo::execution::v1::SubmitRunResponse* resp) {
+    auto entry = std::make_unique<ActiveRun>();
+    entry->distributed = true;
+    entry->org_id = req->org_id();
+    entry->workflow_version_id = req->workflow_version_id();
+    entry->steady_anchor = std::chrono::steady_clock::now();
+    entry->wall_anchor = std::chrono::system_clock::now();
+
+    // Capture the DAG's (node_id, type) pairs before moving it into the loop,
+    // so GetRun can report not-yet-dispatched nodes.
+    for (const auto& id : dag.node_ids()) {
+      const evo::NodeSpec* spec = dag.node(id);
+      entry->node_id_type.emplace_back(id.value, spec ? spec->type : "");
+    }
+
+    evo::RedisTransportConfig rcfg;
+    rcfg.host = env_or("EVO_PHASE2_REDIS_HOST", "127.0.0.1");
+    rcfg.port = std::atoi(env_or("EVO_PHASE2_REDIS_PORT", "6390").c_str());
+    entry->transport = std::make_unique<evo::RedisTransport>(rcfg);
+    if (!entry->transport->connect()) {
+      log_line("submit_rejected", rid, req->org_id(),
+               "distributed Redis unreachable");
+      return grpc::Status(grpc::UNAVAILABLE,
+                          "distributed infra (Redis) unreachable");
+    }
+
+    evo::PgRunStoreConfig pcfg;
+    pcfg.host = env_or("EVO_PHASE2_PG_HOST", "127.0.0.1");
+    pcfg.port = std::atoi(env_or("EVO_PHASE2_PG_PORT", "5433").c_str());
+    pcfg.user = env_or("EVO_PHASE2_PG_USER", "evo");
+    pcfg.password = env_or("EVO_PHASE2_PG_PASSWORD", "evo_dev_password");
+    pcfg.dbname = env_or("EVO_PHASE2_PG_DB", "evo_phase2");
+    entry->store = std::make_unique<evo::PgRunStore>(pcfg);
+    if (!entry->store->connect()) {
+      log_line("submit_rejected", rid, req->org_id(),
+               "distributed Postgres unreachable");
+      return grpc::Status(grpc::UNAVAILABLE,
+                          "distributed infra (Postgres) unreachable");
+    }
+
+    evo::DistributedRunConfig dcfg;
+    dcfg.run_id = rid;
+    dcfg.org_id = req->org_id();
+    dcfg.workflow_id =
+        req->workflow_id().empty() ? std::string("wf-") + rid : req->workflow_id();
+    dcfg.workflow_version_id = req->workflow_version_id();
+    dcfg.env_prefix = env_or("EVO_WORKER_ENV_PREFIX", "evo:dev");
+    dcfg.result_group = "scheduler";
+    dcfg.consumer_id = "scheduler-grpc";
+    dcfg.read_block_ms = std::chrono::milliseconds(100);
+
+    // Pre-create the workers' task-stream group (mirrors the M26 E2E) so no
+    // task is lost to a late "$" cursor. Idempotent (BUSYGROUP => ok).
+    const std::string worker_group = env_or("EVO_WORKER_GROUP", "workers");
+    entry->transport->ensure_group(evo::task_stream_key(dcfg.env_prefix),
+                                   worker_group, "$");
+
+    ActiveRun* raw = entry.get();  // heap-stable (map of unique_ptr)
+    raw->loop = std::make_unique<evo::DistributedRunLoop>(
+        std::move(dag), *raw->transport, *raw->store, dcfg,
+        [raw](const evo::RunEvent& ev) {
+          std::lock_guard lock(raw->events_mu);
+          raw->events.push_back(ev);
+        });
+
+    {
+      std::lock_guard lock(runs_mu_);
+      runs_.emplace(rid, std::move(entry));
+    }
+
+    raw->runner = std::thread([this, raw, rid]() {
+      const std::string status = raw->loop->run();  // blocks
+      evo::execution::v1::RunOutcome outcome =
+          evo::execution::v1::RunOutcome::FAILED;
+      if (status == evo::run_status::kSucceeded) {
+        outcome = evo::execution::v1::RunOutcome::SUCCEEDED;
+      } else if (status == evo::run_status::kCanceled) {
+        outcome = evo::execution::v1::RunOutcome::CANCELED;
+      }
+      {
+        std::lock_guard lock(runs_mu_);
+        raw->outcome = outcome;
+        raw->done = true;
+      }
+      log_line("run_terminal", rid, raw->org_id,
+               std::string("outcome=") +
+                   evo::execution::v1::RunOutcome_Name(outcome));
+    });
+
+    resp->set_run_id(rid);
+    resp->set_accepted(true);
+    resp->set_message("run accepted (distributed)");
+    log_line("submit_accepted", rid, req->org_id(), "mode=distributed");
+    return grpc::Status::OK;
+  }
+
+  // Fill GetRun from the loop's normalized events (thread-safe: events_mu).
+  grpc::Status fill_run_distributed(
+      const ActiveRun& e, evo::execution::v1::GetRunResponse* resp) {
+    using evo::execution::v1::NodeState;
+    using evo::execution::v1::RunStatus;
+
+    struct NodeView {
+      std::string type;
+      std::string output;
+      std::string error;
+      NodeState state = NodeState::NODE_STATE_BLOCKED;
+      bool started = false;
+      bool finished = false;
+      std::int64_t started_ms = 0;
+      std::int64_t finished_ms = 0;
+    };
+    std::map<std::string, NodeView> views;
+    {
+      std::lock_guard lock(e.events_mu);
+      for (const auto& ev : e.events) {
+        if (ev.node_id.empty()) continue;  // run-level event
+        NodeView& v = views[ev.node_id];
+        if (ev.kind == "node_dispatched") {
+          v.type = ev.detail;
+          v.state = NodeState::NODE_STATE_RUNNING;
+          v.started = true;
+          v.started_ms = ev.wall_ms;
+        } else if (ev.kind == "node_succeeded") {
+          v.state = NodeState::NODE_STATE_SUCCEEDED;
+          v.output = ev.detail;
+          v.finished = true;
+          v.finished_ms = ev.wall_ms;
+        } else if (ev.kind == "node_failed") {
+          v.state = NodeState::NODE_STATE_FAILED;
+          v.error = ev.detail;
+          v.finished = true;
+          v.finished_ms = ev.wall_ms;
+        } else if (ev.kind == "node_canceled") {
+          if (v.state != NodeState::NODE_STATE_SUCCEEDED &&
+              v.state != NodeState::NODE_STATE_FAILED) {
+            v.state = NodeState::NODE_STATE_CANCELED;
+          }
+          v.finished = true;
+          v.finished_ms = ev.wall_ms;
+        }
+      }
+    }
+
+    // Report every DAG node (default BLOCKED for not-yet-dispatched).
+    for (const auto& [nid, ntype] : e.node_id_type) {
+      auto* ns = resp->add_nodes();
+      ns->set_node_id(nid);
+      ns->set_attempt_number(1);
+      auto it = views.find(nid);
+      if (it == views.end()) {
+        ns->set_node_type(ntype);
+        ns->set_state(NodeState::NODE_STATE_BLOCKED);
+        continue;
+      }
+      const NodeView& v = it->second;
+      ns->set_node_type(v.type.empty() ? ntype : v.type);
+      ns->set_state(v.state);
+      ns->set_output(v.output);
+      ns->set_error(v.error);
+      if (v.started) set_timestamp_ms(ns->mutable_started_at(), v.started_ms);
+      if (v.finished) {
+        set_timestamp_ms(ns->mutable_finished_at(), v.finished_ms);
+      }
+    }
+
+    if (!e.done) {
+      resp->set_status(RunStatus::RUN_RUNNING);
       resp->set_outcome(evo::execution::v1::RunOutcome::OUTCOME_UNSPECIFIED);
-      return grpc::Status(grpc::NOT_FOUND, "run not found");
+      return grpc::Status::OK;
     }
-    it->second->scheduler->cancel();
-    resp->set_ok(true);
-    resp->set_outcome(evo::execution::v1::RunOutcome::CANCELED);
-    log_line("cancel_requested", req->run_id(), it->second->org_id,
-             req->reason());
+    resp->set_outcome(e.outcome);
+    set_timestamp(resp->mutable_finished_at(), e.wall_anchor);
+    switch (e.outcome) {
+      case evo::execution::v1::RunOutcome::SUCCEEDED:
+        resp->set_status(RunStatus::RUN_SUCCEEDED);
+        break;
+      case evo::execution::v1::RunOutcome::CANCELED:
+        resp->set_status(RunStatus::RUN_CANCELED);
+        break;
+      case evo::execution::v1::RunOutcome::FAILED:
+        resp->set_status(RunStatus::RUN_FAILED);
+        break;
+      default:
+        resp->set_status(RunStatus::RUN_RUNNING);
+        break;
+    }
     return grpc::Status::OK;
   }
+#endif  // EVO_HAVE_DISTRIBUTED
 
-  grpc::Status GetRun(grpc::ServerContext*,
-                      const evo::execution::v1::GetRunRequest* req,
-                      evo::execution::v1::GetRunResponse* resp) override {
-    std::lock_guard lock(runs_mu_);
-    auto it = runs_.find(req->run_id());
-    if (it == runs_.end()) {
-      return grpc::Status(grpc::NOT_FOUND, "run not found");
-    }
-    const ActiveRun& e = *it->second;
-    resp->set_run_id(req->run_id());
-    resp->set_workflow_version_id(e.workflow_version_id);
-    set_timestamp(resp->mutable_created_at(), e.wall_anchor);
-
+  // Fill GetRun from the local ConcurrentScheduler's run log (the M17 path).
+  grpc::Status fill_run_local(const ActiveRun& e,
+                              evo::execution::v1::GetRunResponse* resp) {
     using evo::execution::v1::NodeState;
     using evo::execution::v1::RunStatus;
 
@@ -251,7 +594,7 @@ class ControlServiceImpl final
       return grpc::Status::OK;
     }
     resp->set_outcome(e.outcome);
-    set_timestamp(resp->mutable_finished_at(), e.wall_anchor);  // refined below
+    set_timestamp(resp->mutable_finished_at(), e.wall_anchor);
     switch (e.outcome) {
       case evo::execution::v1::RunOutcome::SUCCEEDED:
         resp->set_status(RunStatus::RUN_SUCCEEDED);
@@ -269,32 +612,6 @@ class ControlServiceImpl final
     return grpc::Status::OK;
   }
 
-  grpc::Status Health(grpc::ServerContext*,
-                      const evo::execution::v1::HealthRequest*,
-                      evo::execution::v1::HealthResponse* resp) override {
-    resp->set_ok(true);
-    resp->set_detail("SERVING");
-    return grpc::Status::OK;
-  }
-
-  // Graceful drain: cancel every run, then join all runner threads. Called
-  // after the gRPC server has stopped accepting new RPCs.
-  void shutdown() {
-    std::map<std::string, ActiveRun*> to_join;
-    {
-      std::lock_guard lock(runs_mu_);
-      for (auto& [rid, e] : runs_) {
-        e->scheduler->cancel();
-        to_join.emplace(rid, e.get());
-      }
-    }
-    for (auto& [rid, e] : to_join) {
-      if (e->runner.joinable()) e->runner.join();
-    }
-    log_line("shutdown_complete", "", "");
-  }
-
- private:
   std::mutex runs_mu_;
   std::map<std::string, std::unique_ptr<ActiveRun>> runs_;  // stable addresses
 };

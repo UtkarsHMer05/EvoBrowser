@@ -40,6 +40,9 @@ export function resultStreamKey(envPrefix: string): string {
 export function controlStreamKey(envPrefix: string): string {
   return `${envPrefix}:control`;
 }
+export function eventStreamKey(envPrefix: string): string {
+  return `${envPrefix}:events`;
+}
 
 export class RedisStreamsClient {
   private redis: Redis;

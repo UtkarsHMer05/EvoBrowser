@@ -113,6 +113,17 @@ export class BrowserSessionManager {
   }
 
   /**
+   * Return the live Stagehand for an affinity key WITHOUT opening one.
+   * Undefined when no session is open (or it was closed). Used to capture a
+   * screenshot after a task without forcing a session open.
+   */
+  peek(affinityKey: string): Stagehand | undefined {
+    const session = this.sessions.get(affinityKey);
+    if (!session || session.closed) return undefined;
+    return session.handle.stagehand;
+  }
+
+  /**
    * Get (or open) the Stagehand session for a task's affinity key. Waits for
    * the live-view handshake once per session before the first browser action.
    */

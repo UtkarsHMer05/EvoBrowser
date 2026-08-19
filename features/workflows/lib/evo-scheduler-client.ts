@@ -16,7 +16,11 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 
-import type { EvoSchedulerClient } from "./evo-engine-adapter";
+import type {
+  EvoNodeStatus,
+  EvoRunDetail,
+  EvoSchedulerClient,
+} from "./evo-engine-adapter";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
@@ -93,6 +97,18 @@ function unary<T>(
   });
 }
 
+// proto-loader returns google.protobuf.Timestamp as { seconds, nanos } (longs
+// as strings). Convert to wall-clock UTC milliseconds; undefined when unset
+// (seconds 0 + nanos 0 is the proto default for "not set").
+function timestampToMs(ts: unknown): number | undefined {
+  if (!ts || typeof ts !== "object") return undefined;
+  const { seconds, nanos } = ts as { seconds?: unknown; nanos?: unknown };
+  const secs = Number(seconds ?? 0);
+  const ns = Number(nanos ?? 0);
+  if (secs === 0 && ns === 0) return undefined;
+  return secs * 1000 + Math.floor(ns / 1_000_000);
+}
+
 /**
  * Create a gRPC-backed EvoSchedulerClient for the scheduler at `addr`.
  * The channel is created lazily on first RPC and cached per address.
@@ -141,6 +157,34 @@ export function createGrpcEvoSchedulerClient(addr: string): EvoSchedulerClient {
         runId: String(resp.runId ?? runId),
         status: String(resp.status ?? "RUN_STATUS_UNSPECIFIED"),
         outcome: String(resp.outcome ?? "OUTCOME_UNSPECIFIED"),
+      };
+    },
+
+    async getRunDetail(runId): Promise<EvoRunDetail> {
+      const resp = await unary<Record<string, unknown>>(
+        (req, cb) => getClient().GetRun(req, cb),
+        { runId },
+      );
+      const rawNodes = Array.isArray(resp.nodes)
+        ? (resp.nodes as Record<string, unknown>[])
+        : [];
+      const nodes: EvoNodeStatus[] = rawNodes.map((n) => ({
+        nodeId: String(n.nodeId ?? ""),
+        nodeType: String(n.nodeType ?? ""),
+        state: String(n.state ?? "NODE_STATE_UNSPECIFIED"),
+        attemptNumber: Number(n.attemptNumber ?? 1),
+        output: String(n.output ?? ""),
+        error: String(n.error ?? ""),
+        startedAtMs: timestampToMs(n.startedAt),
+        finishedAtMs: timestampToMs(n.finishedAt),
+      }));
+      return {
+        runId: String(resp.runId ?? runId),
+        status: String(resp.status ?? "RUN_STATUS_UNSPECIFIED"),
+        outcome: String(resp.outcome ?? "OUTCOME_UNSPECIFIED"),
+        createdAtMs: timestampToMs(resp.createdAt),
+        finishedAtMs: timestampToMs(resp.finishedAt),
+        nodes,
       };
     },
 

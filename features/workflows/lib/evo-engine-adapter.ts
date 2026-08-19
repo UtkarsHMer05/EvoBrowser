@@ -54,6 +54,32 @@ export function graphToCanonicalDagJson(graph: WorkflowGraph): string {
   return JSON.stringify({ nodes, edges });
 }
 
+/** One node's state as reported by the C++ scheduler's GetRun RPC. */
+export interface EvoNodeStatus {
+  nodeId: string;
+  nodeType: string;
+  /** NodeState enum name, e.g. "NODE_STATE_RUNNING". */
+  state: string;
+  attemptNumber: number;
+  output: string; // opaque JSON owned by the node executor
+  error: string;
+  /** Wall-clock UTC ms; undefined when the node has not started/finished. */
+  startedAtMs?: number;
+  finishedAtMs?: number;
+}
+
+/** Full GetRun detail (run + per-node states) for the normalized view model. */
+export interface EvoRunDetail {
+  runId: string;
+  /** RunStatus enum name, e.g. "RUN_RUNNING". */
+  status: string;
+  /** RunOutcome enum name. */
+  outcome: string;
+  createdAtMs?: number;
+  finishedAtMs?: number;
+  nodes: EvoNodeStatus[];
+}
+
 /** Minimal view of the C++ ControlService the adapter needs. */
 export interface EvoSchedulerClient {
   submitRun(args: {
@@ -73,6 +99,8 @@ export interface EvoSchedulerClient {
     status: string; // RunStatus enum name, e.g. "RUN_RUNNING"
     outcome: string; // RunOutcome enum name
   }>;
+  /** Full run detail incl. per-node states (M29 UI parity). */
+  getRunDetail(runId: string): Promise<EvoRunDetail>;
   health(): Promise<{ ok: boolean; detail: string }>;
 }
 

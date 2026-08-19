@@ -54,9 +54,9 @@ export function RunResultsDialog({
 
   if (!run) return null;
 
-  const isCompleted = run.status === "COMPLETED" && !run.isLive;
-  const isFailed = run.status === "FAILED";
-  const isCanceled = run.status === "CANCELED";
+  const isCompleted = run.isCompleted;
+  const isFailed = run.isFailed;
+  const isCanceled = run.isCanceled;
 
   const handleRunAgain = () => {
     const graph = { nodes: getNodes(), edges: getEdges() };
@@ -227,7 +227,9 @@ export function RunResultsDialog({
                     <p className="text-xs text-muted-foreground">
                       {step.status === "pending"
                         ? "Didn't run."
-                        : "Still running…"}
+                        : step.status === "canceled"
+                          ? "Canceled before it ran."
+                          : "Still running…"}
                     </p>
                   )}
                 </div>

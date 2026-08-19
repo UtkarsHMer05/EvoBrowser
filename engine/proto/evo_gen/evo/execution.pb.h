@@ -2065,6 +2065,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED SubmitRunRequest final : public ::g
     kRunIdFieldNumber = 3,
     kDagJsonFieldNumber = 4,
     kTraceIdFieldNumber = 7,
+    kWorkflowIdFieldNumber = 8,
     kRequestedAtFieldNumber = 6,
     kNodeTaskTypesFieldNumber = 5,
   };
@@ -2143,6 +2144,21 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED SubmitRunRequest final : public ::g
   ::std::string* PROTOBUF_NONNULL _internal_mutable_trace_id();
 
   public:
+  // string workflow_id = 8;
+  void clear_workflow_id() ;
+  [[nodiscard]] const ::std::string& workflow_id() const;
+  template <typename Arg_ = const ::std::string&, typename... Args_>
+  void set_workflow_id(Arg_&& arg, Args_... args);
+  ::std::string* PROTOBUF_NONNULL mutable_workflow_id();
+  [[nodiscard]] ::std::string* PROTOBUF_NULLABLE release_workflow_id();
+  void set_allocated_workflow_id(::std::string* PROTOBUF_NULLABLE value);
+
+  private:
+  const ::std::string& _internal_workflow_id() const;
+  PROTOBUF_ALWAYS_INLINE void _internal_set_workflow_id(const ::std::string& value);
+  ::std::string* PROTOBUF_NONNULL _internal_mutable_workflow_id();
+
+  public:
   // .google.protobuf.Timestamp requested_at = 6;
   [[nodiscard]] bool has_requested_at()
       const;
@@ -2179,8 +2195,8 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED SubmitRunRequest final : public ::g
  private:
   class _Internal;
   using ParseTableT_ =
-      ::google::protobuf::internal::TcParseTable<3, 7,
-                          2, 104,
+      ::google::protobuf::internal::TcParseTable<3, 8,
+                          2, 123,
                           2>;
   static constexpr ParseTableT_ InternalGenerateParseTable_(
       const ::google::protobuf::internal::ClassData* PROTOBUF_NONNULL class_data);
@@ -2213,6 +2229,7 @@ class  PROTOBUF_FUTURE_ADD_EARLY_WARN_UNUSED SubmitRunRequest final : public ::g
     ::google::protobuf::internal::ArenaStringPtr run_id_;
     ::google::protobuf::internal::ArenaStringPtr dag_json_;
     ::google::protobuf::internal::ArenaStringPtr trace_id_;
+    ::google::protobuf::internal::ArenaStringPtr workflow_id_;
     ::google::protobuf::Timestamp* PROTOBUF_NULLABLE requested_at_;
     ::google::protobuf::internal::MapField<SubmitRunRequest_NodeTaskTypesEntry_DoNotUse, ::std::string, ::std::string> node_task_types_;
     PROTOBUF_TSAN_DECLARE_MEMBER
@@ -5266,7 +5283,7 @@ inline int SubmitRunRequest::node_task_types_size() const {
 inline void SubmitRunRequest::clear_node_task_types() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
   _impl_.node_task_types_.Clear();
-  ClearHasBit(_impl_._has_bits_[0], 0x00000040U);
+  ClearHasBit(_impl_._has_bits_[0], 0x00000080U);
 }
 inline const ::google::protobuf::Map<::std::string, ::std::string>& SubmitRunRequest::_internal_node_task_types() const {
   ::google::protobuf::internal::TSanRead(&_impl_);
@@ -5282,14 +5299,14 @@ inline ::google::protobuf::Map<::std::string, ::std::string>* PROTOBUF_NONNULL S
 }
 inline ::google::protobuf::Map<::std::string, ::std::string>* PROTOBUF_NONNULL SubmitRunRequest::mutable_node_task_types()
     ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  SetHasBit(_impl_._has_bits_[0], 0x00000040U);
+  SetHasBit(_impl_._has_bits_[0], 0x00000080U);
   // @@protoc_insertion_point(field_mutable_map:evo.execution.v1.SubmitRunRequest.node_task_types)
   return _internal_mutable_node_task_types();
 }
 
 // .google.protobuf.Timestamp requested_at = 6;
 inline bool SubmitRunRequest::has_requested_at() const {
-  bool value = CheckHasBit(_impl_._has_bits_[0], 0x00000020U);
+  bool value = CheckHasBit(_impl_._has_bits_[0], 0x00000040U);
   PROTOBUF_ASSUME(!value || _impl_.requested_at_ != nullptr);
   return value;
 }
@@ -5310,16 +5327,16 @@ inline void SubmitRunRequest::unsafe_arena_set_allocated_requested_at(
   }
   _impl_.requested_at_ = reinterpret_cast<::google::protobuf::Timestamp*>(value);
   if (value != nullptr) {
-    SetHasBit(_impl_._has_bits_[0], 0x00000020U);
+    SetHasBit(_impl_._has_bits_[0], 0x00000040U);
   } else {
-    ClearHasBit(_impl_._has_bits_[0], 0x00000020U);
+    ClearHasBit(_impl_._has_bits_[0], 0x00000040U);
   }
   // @@protoc_insertion_point(field_unsafe_arena_set_allocated:evo.execution.v1.SubmitRunRequest.requested_at)
 }
 inline ::google::protobuf::Timestamp* PROTOBUF_NULLABLE SubmitRunRequest::release_requested_at() {
   ::google::protobuf::internal::TSanWrite(&_impl_);
 
-  ClearHasBit(_impl_._has_bits_[0], 0x00000020U);
+  ClearHasBit(_impl_._has_bits_[0], 0x00000040U);
   ::google::protobuf::Timestamp* released = _impl_.requested_at_;
   _impl_.requested_at_ = nullptr;
   if (::google::protobuf::internal::DebugHardenForceCopyInRelease()) {
@@ -5339,7 +5356,7 @@ inline ::google::protobuf::Timestamp* PROTOBUF_NULLABLE SubmitRunRequest::unsafe
   ::google::protobuf::internal::TSanWrite(&_impl_);
   // @@protoc_insertion_point(field_release:evo.execution.v1.SubmitRunRequest.requested_at)
 
-  ClearHasBit(_impl_._has_bits_[0], 0x00000020U);
+  ClearHasBit(_impl_._has_bits_[0], 0x00000040U);
   ::google::protobuf::Timestamp* temp = _impl_.requested_at_;
   _impl_.requested_at_ = nullptr;
   return temp;
@@ -5354,7 +5371,7 @@ inline ::google::protobuf::Timestamp* PROTOBUF_NONNULL SubmitRunRequest::_intern
 }
 inline ::google::protobuf::Timestamp* PROTOBUF_NONNULL SubmitRunRequest::mutable_requested_at()
     ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  SetHasBit(_impl_._has_bits_[0], 0x00000020U);
+  SetHasBit(_impl_._has_bits_[0], 0x00000040U);
   ::google::protobuf::Timestamp* _msg = _internal_mutable_requested_at();
   // @@protoc_insertion_point(field_mutable:evo.execution.v1.SubmitRunRequest.requested_at)
   return _msg;
@@ -5371,9 +5388,9 @@ inline void SubmitRunRequest::set_allocated_requested_at(::google::protobuf::Tim
     if (message_arena != submessage_arena) {
       value = ::google::protobuf::internal::GetOwnedMessage(message_arena, value, submessage_arena);
     }
-    SetHasBit(_impl_._has_bits_[0], 0x00000020U);
+    SetHasBit(_impl_._has_bits_[0], 0x00000040U);
   } else {
-    ClearHasBit(_impl_._has_bits_[0], 0x00000020U);
+    ClearHasBit(_impl_._has_bits_[0], 0x00000040U);
   }
 
   _impl_.requested_at_ = reinterpret_cast<::google::protobuf::Timestamp*>(value);
@@ -5442,6 +5459,70 @@ inline void SubmitRunRequest::set_allocated_trace_id(::std::string* PROTOBUF_NUL
     _impl_.trace_id_.Set("", GetArena());
   }
   // @@protoc_insertion_point(field_set_allocated:evo.execution.v1.SubmitRunRequest.trace_id)
+}
+
+// string workflow_id = 8;
+inline void SubmitRunRequest::clear_workflow_id() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.workflow_id_.ClearToEmpty();
+  ClearHasBit(_impl_._has_bits_[0], 0x00000020U);
+}
+inline const ::std::string& SubmitRunRequest::workflow_id() const
+    ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  // @@protoc_insertion_point(field_get:evo.execution.v1.SubmitRunRequest.workflow_id)
+  return _internal_workflow_id();
+}
+template <typename Arg_, typename... Args_>
+PROTOBUF_ALWAYS_INLINE void SubmitRunRequest::set_workflow_id(Arg_&& arg, Args_... args) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  SetHasBit(_impl_._has_bits_[0], 0x00000020U);
+  _impl_.workflow_id_.Set(static_cast<Arg_&&>(arg), args..., GetArena());
+  // @@protoc_insertion_point(field_set:evo.execution.v1.SubmitRunRequest.workflow_id)
+}
+inline ::std::string* PROTOBUF_NONNULL SubmitRunRequest::mutable_workflow_id()
+    ABSL_ATTRIBUTE_LIFETIME_BOUND {
+  SetHasBit(_impl_._has_bits_[0], 0x00000020U);
+  ::std::string* _s = _internal_mutable_workflow_id();
+  // @@protoc_insertion_point(field_mutable:evo.execution.v1.SubmitRunRequest.workflow_id)
+  return _s;
+}
+inline const ::std::string& SubmitRunRequest::_internal_workflow_id() const {
+  ::google::protobuf::internal::TSanRead(&_impl_);
+  return _impl_.workflow_id_.Get();
+}
+inline void SubmitRunRequest::_internal_set_workflow_id(const ::std::string& value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  _impl_.workflow_id_.Set(value, GetArena());
+}
+inline ::std::string* PROTOBUF_NONNULL SubmitRunRequest::_internal_mutable_workflow_id() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  return _impl_.workflow_id_.Mutable( GetArena());
+}
+inline ::std::string* PROTOBUF_NULLABLE SubmitRunRequest::release_workflow_id() {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  // @@protoc_insertion_point(field_release:evo.execution.v1.SubmitRunRequest.workflow_id)
+  if (!CheckHasBit(_impl_._has_bits_[0], 0x00000020U)) {
+    return nullptr;
+  }
+  ClearHasBit(_impl_._has_bits_[0], 0x00000020U);
+  auto* released = _impl_.workflow_id_.Release();
+  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString()) {
+    _impl_.workflow_id_.Set("", GetArena());
+  }
+  return released;
+}
+inline void SubmitRunRequest::set_allocated_workflow_id(::std::string* PROTOBUF_NULLABLE value) {
+  ::google::protobuf::internal::TSanWrite(&_impl_);
+  if (value != nullptr) {
+    SetHasBit(_impl_._has_bits_[0], 0x00000020U);
+  } else {
+    ClearHasBit(_impl_._has_bits_[0], 0x00000020U);
+  }
+  _impl_.workflow_id_.SetAllocated(value, GetArena());
+  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.workflow_id_.IsDefault()) {
+    _impl_.workflow_id_.Set("", GetArena());
+  }
+  // @@protoc_insertion_point(field_set_allocated:evo.execution.v1.SubmitRunRequest.workflow_id)
 }
 
 // -------------------------------------------------------------------

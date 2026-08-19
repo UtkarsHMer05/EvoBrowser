@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/lib/db";
+import type { Phase2Db } from "@/lib/db/phase2";
 import {
   WorkflowGraph,
   workflowVersions,
@@ -35,9 +36,11 @@ import { saveWorkflowGraph } from "@/features/workflows/data";
 // Timestamps are wall-clock UTC (database now()), consistent with M19.
 // ---------------------------------------------------------------------------
 
-// The drizzle instance type. Tests pass a node-postgres-backed instance
-// (structurally compatible query builder) cast to this type.
-export type VersioningDb = ReturnType<typeof getDb>;
+// The drizzle instance type. Production uses the neon-http client (getDb());
+// integration tests and the Phase-2 local store pass a node-postgres-backed
+// instance. Both expose the same query-builder surface (select/insert/update/
+// delete), so a union keeps callers driver-agnostic.
+export type VersioningDb = ReturnType<typeof getDb> | Phase2Db;
 
 export class WorkflowVersionConflictError extends Error {
   constructor(message: string) {

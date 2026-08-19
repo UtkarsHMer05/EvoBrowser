@@ -32,7 +32,16 @@ bool InMemoryRunStore::create_run(const RunRecord& run,
   (void)started_wall_ms;
   std::lock_guard lock(mu_);
   if (run.run_id.empty()) return false;
-  if (runs_.contains(run.run_id)) return true;  // idempotent
+  auto it = runs_.find(run.run_id);
+  if (it != runs_.end()) {
+    // Idempotent, mirroring PgRunStore: a pre-existing 'queued' row (the app
+    // pre-creates it) is promoted to the engine's status; anything else is
+    // left untouched so state never regresses.
+    if (it->second.status == run_status::kQueued) {
+      it->second.status = run.status;
+    }
+    return true;
+  }
   runs_[run.run_id] = run;
   return true;
 }

@@ -181,6 +181,12 @@ message SubmitRunRequest {
   map<string, string> node_task_types = 5; // nodeId -> executor type override (optional)
   google.protobuf.Timestamp requested_at = 6;
   string trace_id            = 7;
+
+  // Milestone 29 (additive): the workflow the run belongs to. The distributed
+  // run loop persists run/node state keyed by this workflow id (FK to the
+  // workflows row the app ensures before submission). Empty => the scheduler
+  // derives a placeholder (local/synthetic mode only).
+  string workflow_id         = 8;
 }
 
 message SubmitRunResponse {

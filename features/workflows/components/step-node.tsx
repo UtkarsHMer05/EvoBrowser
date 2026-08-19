@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { Check, AlertCircle } from "lucide-react";
+import { Check, AlertCircle, Ban } from "lucide-react";
 
 import {
   nodeRegistry,
@@ -25,6 +25,8 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
   const isRunning = status === "running" && isLive;
   const isDone = status === "done";
   const isFailed = status === "failed";
+  // Evo (M29) marks nodes that never ran when a run is stopped as "canceled".
+  const isCanceled = status === "canceled";
   const isPending = status === "pending" && isLive;
 
   // A trigger starts the flow and takes no input, so it has no target handle.
@@ -39,6 +41,7 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
         isDone && "border-emerald-500/50",
         isFailed &&
           "border-destructive shadow-md shadow-destructive/20 ring-2 ring-destructive/30",
+        isCanceled && "border-amber-500/50 opacity-70",
         isPending && "opacity-60",
         selected && "ring-2 ring-ring ring-offset-2 ring-offset-background",
       )}
@@ -84,6 +87,9 @@ function StepNodeComponent({ id, data, selected }: NodeProps<StepNodeType>) {
         )}
         {isFailed && (
           <AlertCircle className="size-3.5 shrink-0 text-destructive" />
+        )}
+        {isCanceled && (
+          <Ban className="size-3.5 shrink-0 text-amber-500" />
         )}
       </div>
 

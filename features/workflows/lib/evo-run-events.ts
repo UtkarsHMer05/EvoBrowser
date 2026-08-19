@@ -25,7 +25,7 @@
 import { sql } from "drizzle-orm";
 import type { Redis } from "ioredis";
 
-import { getDb } from "@/lib/db";
+import { getPhase2Db } from "@/lib/db/phase2";
 import { nodeRuns, workflowRuns } from "@/lib/db/schema";
 
 import {
@@ -201,7 +201,7 @@ function mapRunStatus(status: string): NormalizedRunStatus {
  */
 export async function durableRunSnapshot(
   runId: string,
-  db: VersioningDb = getDb(),
+  db: VersioningDb = getPhase2Db(),
 ): Promise<NormalizedRunViewModel | undefined> {
   const [run] = await db
     .select()
@@ -238,6 +238,11 @@ export async function durableRunSnapshot(
     status: mapRunStatus(run.status),
     createdAt: run.createdAt,
     steps,
+    // M29: the worker stamps the Browserbase session id on the run row as soon
+    // as the session opens; the snapshot carries it so replay/live-view work
+    // even when the event stream is unavailable.
+    browserbaseSessionId: run.browserbaseSessionId ?? undefined,
+    liveBrowserbaseSessionId: run.browserbaseSessionId ?? undefined,
     durationMs,
   });
 }

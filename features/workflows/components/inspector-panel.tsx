@@ -49,9 +49,9 @@ function RunSummary({
   onSelect?: (selection: ConsoleSelection) => void;
   onShowResults?: (runId: string) => void;
 }) {
-  const isCompleted = run.status === "COMPLETED" && !run.isLive;
-  const isFailed = run.status === "FAILED";
-  const isCanceled = run.status === "CANCELED";
+  const isCompleted = run.isCompleted;
+  const isFailed = run.isFailed;
+  const isCanceled = run.isCanceled;
 
   // Run Again re-runs the graph as it exists on the canvas right now — any
   // edits made since the summarized run are what gets executed. Same
@@ -306,6 +306,8 @@ export function InspectorPanel({
         <Note>This step hasn&apos;t run yet.</Note>
       ) : step.status === "running" ? (
         <Note>Waiting for this step to finish…</Note>
+      ) : step.status === "canceled" ? (
+        <Note>This step was canceled before it ran.</Note>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           <StepOutputView step={step} />

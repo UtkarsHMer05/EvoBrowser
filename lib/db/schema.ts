@@ -112,6 +112,12 @@ export const workflowRuns = pgTable(
     status: text("status").notNull().default("queued"),
     outcome: text("outcome"),
     cancelReason: text("cancel_reason"),
+    // Phase 2 (M29): the Browserbase session an Evo run drove. The distributed
+    // worker stamps it as soon as the session opens, so replay / live-view /
+    // screenshot can resolve the session from durable state (the event stream
+    // is best-effort and not authoritative). Legacy runs carry their session id
+    // in Trigger.dev run output instead and leave this null.
+    browserbaseSessionId: text("browserbase_session_id"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     startedAt: timestamp("started_at"),
     finishedAt: timestamp("finished_at"),

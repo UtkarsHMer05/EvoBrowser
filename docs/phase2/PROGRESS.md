@@ -38,6 +38,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M26 | Persist results and unlock dependencies through the distributed loop | ✅ DONE | `2db7bb9` |
 | M27 | Introduce the Next.js execution-engine abstraction and feature flag | ✅ DONE | `799a4f6` |
 | M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `c3723bc` |
+| M29 | Achieve UI parity for Evo runs | ✅ DONE | `<M29_SHA>` |
 
 ---
 
@@ -1554,3 +1555,107 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `c3723bc` — `phase2(m28): add engine-neutral realtime run model`
 - **NEXT:** M29 — Achieve UI parity for Evo runs.
+
+---
+
+## M29 — Achieve UI parity for Evo runs
+
+- **START_SHA:** `abe3eb6` (M28 recorded; branch `phase2`, clean claim).
+- **Objective:** make Evo execution preserve the Phase-1 user experience —
+  pending/running/done/failed node states, live Browserbase view, readable
+  completion results, org-checked screenshot, correct replay session, editable
+  canvas after terminal, rerun with fresh run id + session — before any
+  reliability features land.
+- **DB topology (the core M29 problem):** the app's `getDb()` talks to Neon
+  (Phase-1 tables only); the C++ engine + workers talk to the LOCAL Phase-2
+  Postgres (:5433) + Redis (:6390). M29 makes every Evo UI path read the
+  Phase-2 store:
+  - `lib/db/phase2.ts` — `getPhase2Db()` (lazy pg.Pool + drizzle snake_case),
+    `EVO_PHASE2_PG_*` env, defaults 127.0.0.1:5433/evo/evo_phase2.
+  - Evo version snapshot + run record + run listing + SSE route all pointed at
+    the Phase-2 store; legacy path untouched (still Neon, fail-open).
+- **gRPC → distributed bridge:** `engine/app/grpc_service.cpp` now runs product
+  DAGs through `DistributedRunLoop` (Redis transport + PgRunStore) instead of
+  the local synthetic scheduler, so app-submitted Evo runs execute on real
+  workers. Synthetic `bench:*` runs keep the M17 local path. Links
+  `evo_distributed`/`evo_redis_transport`/`evo_pg_run_store` behind
+  `EVO_HAVE_DISTRIBUTED`.
+- **Worker real executors (M29b):** `worker/src/main.ts` composite executor —
+  `start`/`bench:*` → synthetic; everything else → the M24 node-executor
+  adapter with durable loaders (`worker/src/durable-loaders.ts`: version +
+  predecessor outputs from Phase-2 PG) and worker-local browser sessions.
+  Per-browser-task screenshot capture + `run_artifacts` upsert.
+- **Durable Browserbase session id (M29c1):** new additive column
+  `workflow_runs.browserbase_session_id` (migration
+  `0002_phase2_run_browserbase_session.sql`, applied to LOCAL PG only — Neon
+  untouched, needs explicit human approval). The worker stamps it the moment a
+  session opens (`saveRunBrowserbaseSession`, write-once), so replay /
+  live-view / screenshot resolve the session from durable state even after the
+  event stream is gone. `listEvoRunsForWorkflow` + `durableRunSnapshot` carry
+  it into the view model.
+- **C++ queued→running fix (found during M29):** the app pre-creates the run
+  row as `queued`, but `PgRunStore::create_run` used `ON CONFLICT DO NOTHING`,
+  so the run never became `running` and `started_at` stayed null (breaking live
+  status + duration). Now `ON CONFLICT DO UPDATE ... WHERE status='queued'`
+  promotes it; terminal rows are never regressed. Mirrored in
+  `InMemoryRunStore`. Regression-tested in `pg_run_store_test` (ran live, 6 new
+  checks green).
+- **Unified engine-neutral provider (M29c2):** extracted the console mapping
+  into pure `features/workflows/lib/run-console.ts`
+  (`toConsoleRunFromLegacy` = verbatim Phase-1 logic, `toConsoleRunFromEvo`,
+  `consoleRunStatusLabel`, `mergeConsoleRuns`). `workflow-runs-provider.tsx`
+  now merges legacy realtime runs + a single durable Evo poll (2s) into one
+  newest-first de-duplicated `ConsoleRun[]`; every exported hook
+  (`useConsoleRuns`/`useLatestRun`/`useLatestRunSteps`/`useLiveRun`/
+  `useLiveBrowserbaseSessionId`) keeps its name/signature, so all consumers
+  work for both engines unchanged.
+- **Consumer parity (M29c3):** logs/inspector/results now use the derived
+  booleans (`isCompleted`/`isFailed`/`isCanceled`) + shared status label;
+  `RunStep.status` gained Evo-only `"canceled"` (renders inactive, never
+  spinning); `step-node` paints a canceled state; `NodeIcon` falls back
+  gracefully for unknown node types.
+- **Org-checked routes for Evo (M29d):** screenshot + live-view GET/connected
+  routes are engine-aware — legacy resolves via Trigger.dev (unchanged), Evo
+  resolves ownership + session id from the Phase-2 run row
+  (`features/workflows/lib/evo-run-data.ts`, all reads org-scoped + fail-open).
+  The connected handshake writes to the Phase-2 store for Evo, and the worker
+  now waits for it (`isEvoLiveViewConnected`, 60s/1s, fail-open) — same
+  "hold the first browser step until the view connects" behavior as Phase-1.
+- **Rerun:** `runWorkflowAction` mints a fresh `evo_<uuid>` run id + fresh
+  version snapshot per submission; the worker opens a new session per run
+  affinity key, so rerun gets a new engine-neutral run id AND a new browser
+  session (parity asserted in the lifecycle suite).
+- **Parity regression suite (M29e):** `run-console-parity.test.ts` (9
+  scenarios) drives the exact console-mapping code with a legacy run and an Evo
+  run in each lifecycle state and asserts identical derived semantics, status
+  label, step-status vocabulary, session-id resolution, queued→running
+  promotion, and merged-history ordering/dedup. Wired into `npm test`.
+- **Timestamps:** all durable + event timestamps wall-clock UTC; steady_clock
+  never crosses the process boundary.
+- **Phase-1 preservation:** legacy Trigger.dev engine remains the default
+  (flag fail-closed); Run/Stop/results/replay/rerun behavior unchanged for
+  legacy runs (mapping preserved verbatim); Clerk auth + Pro gate stay
+  server-side and fail-closed; browser credentials stay server/worker-only; no
+  test removed; canvas stays editable after terminal (no change needed — the
+  provider never blocks editing).
+- **No-go compliance:** no performance comparison or numbers (parity only);
+  Evo NOT made the default; no future component marked implemented; no secret
+  or credential value committed; Phase-1 default behavior untouched.
+- **Validation:**
+  - `npm test` → ✅ exit 0 across 13 suites (incl. new M29 parity: 9/9)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅ (0 errors, 0 warnings)
+  - CMake build → ✅ clean; `ctest` → ✅ 18/18 (incl. pg_run_store promotion
+    regression against live local PG)
+  - `npm run build` (production) → ✅ (all routes present incl.
+    `/api/runs/[runId]/events`, `/api/runs/[runId]/screenshot`, live-view)
+  - Manual live E2E with configured keys: NOT run this session (requires live
+    Browserbase/keys + running scheduler/worker); durable-path parity is
+    covered by the regression suites. Marked as the one open item for the
+    final evidence campaign (M39/M40).
+- **Known limitations:** Evo console liveness comes from a 2s durable poll
+  (not push) — acceptable for parity; push fan-out is a later optimization.
+  Live E2E with real keys deferred to the final campaign.
+- **Human action:** none (local PG migration only; Neon migration still
+  requires explicit approval).
+- **COMMIT:** `<M29_SHA>` — `phase2(m29): reach evo engine ui parity`
+- **NEXT:** M30 — Implement end-to-end cancellation across app, scheduler, queue, worker, and browser.

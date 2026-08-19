@@ -251,11 +251,18 @@ target_link_libraries(evo-bench PRIVATE evo_scheduler_core)
 
 # ---------------------------------------------------------------------------
 # evo-scheduler-server — gRPC ControlService over the scheduler core (M17).
-# Not wired into the Next.js app yet (M16/M17 no-go: do not integrate Next.js
-# in this milestone). Listens on $EVO_SCHEDULER_ADDR (default 0.0.0.0:50051).
+# Milestone 29: when the Redis transport + Postgres RunStore are available,
+# product DAGs are driven by the DistributedRunLoop (EVO_HAVE_DISTRIBUTED);
+# synthetic DAGs always run in-process. Listens on $EVO_SCHEDULER_ADDR
+# (default 127.0.0.1:50051).
 # ---------------------------------------------------------------------------
 add_executable(evo-scheduler-server app/grpc_service.cpp)
 target_link_libraries(evo-scheduler-server PRIVATE evo_proto evo_scheduler_core)
+if(EVO_HAVE_HIREDIS AND EVO_HAVE_LIBPQ)
+  target_link_libraries(evo-scheduler-server PRIVATE
+    evo_distributed evo_redis_transport evo_pg_run_store)
+  target_compile_definitions(evo-scheduler-server PRIVATE EVO_HAVE_DISTRIBUTED)
+endif()
 
 # ---------------------------------------------------------------------------
 # Tests (CTest)

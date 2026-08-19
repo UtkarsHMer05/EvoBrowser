@@ -15,7 +15,8 @@
 import { sql } from "drizzle-orm";
 
 import { getDb } from "@/lib/db";
-import { workflowRuns, type WorkflowRun } from "@/lib/db/schema";
+import { getPhase2Db } from "@/lib/db/phase2";
+import { workflowRuns, workflows, type WorkflowRun } from "@/lib/db/schema";
 
 import type { ExecutionEngine } from "./execution-engine";
 import type { VersioningDb } from "./workflow-versions";
@@ -75,6 +76,27 @@ function isPrimaryKeyViolation(error: unknown): boolean {
 }
 
 /**
+ * Ensure the workflow FK row exists in the Phase-2 (local) database before an
+ * Evo run row references it. workflow_runs.workflow_id references workflows.id,
+ * and the Phase-2 workflows table is separate from the app's Neon copy — the
+ * C++ engine's `ensure_workflow` does the same idempotent insert. Mirrors it so
+ * an Evo run row can be created without a FK violation. Idempotent on the PK.
+ */
+export async function ensurePhase2Workflow(
+  db: VersioningDb,
+  args: { id: string; orgId: string; name: string },
+): Promise<void> {
+  try {
+    await db
+      .insert(workflows)
+      .values({ id: args.id, orgId: args.orgId, name: args.name })
+      .onConflictDoNothing();
+  } catch (error) {
+    if (!isPrimaryKeyViolation(error)) throw error;
+  }
+}
+
+/**
  * Resolve which engine owns a run by its engine-neutral id. Returns the
  * `engine` discriminator from workflow_runs, or undefined when no row exists
  * (legacy Trigger.dev runs predate the run table and have no row). Callers
@@ -90,4 +112,40 @@ export async function getRunEngine(
     .where(sql`${workflowRuns.id} = ${runId}`);
   if (!row) return undefined;
   return row.engine === "evo" ? "evo" : "legacy";
+}
+
+/**
+ * Resolve the owning engine across BOTH run stores (Milestone 29). Evo run
+ * rows live in the local Phase-2 Postgres; legacy run rows (best-effort) live
+ * in Neon. Checks the Phase-2 store first (Evo runs are the ones that need
+ * routing), then Neon. Returns undefined when neither store knows the run —
+ * callers treat that as legacy (pre-table Trigger.dev runs).
+ *
+ * Each lookup is fail-open: if a store is unreachable it is skipped rather
+ * than failing the cancel, so a Phase-2 outage never breaks legacy Stop.
+ */
+export async function resolveRunEngine(
+  runId: string,
+  args: {
+    phase2Db?: VersioningDb;
+    legacyDb?: VersioningDb;
+  } = {},
+): Promise<ExecutionEngine | undefined> {
+  const stores: VersioningDb[] = [];
+  try {
+    stores.push(args.phase2Db ?? getPhase2Db());
+  } catch {
+    // Phase-2 store unavailable — fall through to legacy.
+  }
+  stores.push(args.legacyDb ?? getDb());
+
+  for (const db of stores) {
+    try {
+      const engine = await getRunEngine(runId, db);
+      if (engine) return engine;
+    } catch {
+      // Store unreachable or table missing — try the next store.
+    }
+  }
+  return undefined;
 }
