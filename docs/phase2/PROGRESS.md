@@ -34,6 +34,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M22 | Finalize task/result envelope semantics and event transport | ✅ DONE | `ad88fd0` |
 | M23 | Create the TypeScript distributed worker service | ✅ DONE | `dd01b19` |
 | M24 | Reuse existing interpolation and node executors inside distributed workers | ✅ DONE | `e581e67` |
+| M25 | Implement distributed browser session ownership and live-view parity | ✅ DONE | `<M25_SHA>` |
 
 ---
 
@@ -1225,3 +1226,74 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `e581e67` — `phase2(m24): reuse existing node executors in worker`
 - **NEXT:** M25 — Implement distributed browser session ownership and live-view parity.
+
+## M25 — Implement distributed browser session ownership and live-view parity
+
+- **BASE_SHA:** `8883037` (phase2 branch, clean tree after M24 docs)
+- **What was inspected:** master prompt M25 spec (steps 1–9, no-go list,
+  validation), `features/workflows/tasks/run-workflow.ts` (legacy Stagehand
+  construction, live-view handshake, final screenshot, close semantics),
+  `features/workflows/data.ts` (`isLiveViewConnected`), `features/workflows/
+  lib/highlight-element.ts` (DOM-injection highlight helpers — reused by the
+  executors themselves, unchanged), `worker/src/{worker,node-executor-adapter,
+  envelope-codec}.ts`, M24 tests.
+- **What changed:**
+  - `worker/src/browser-session-manager.ts` — NEW worker-local
+    `BrowserSessionManager` keyed by run/affinity key (default `run:<runId>`).
+    One Stagehand session per affinity key, opened lazily on the first browser
+    task and reused by every later same-key task (single-flight open; the
+    affinity key is pinned to the owning worker while the session is live).
+    Publishes the Browserbase session id via `onSessionOpened` as soon as it
+    exists (M25 step 3; durable engine-neutral event wiring lands in M26/M27).
+    Reuses the Phase-1 live-view handshake: polls `isLiveViewConnected`
+    (injectable) up to `liveViewWaitMs` before the first browser action, once
+    per session, then proceeds anyway so an unwatched run never hangs. Reuses
+    the Phase-1 final-screenshot pattern (jpeg q70 → base64) before close,
+    surfaced via `onFinalScreenshot`. `closeForRun` (success/failure/
+    cancellation) and `closeAll` (graceful shutdown) are idempotent. DOM
+    highlight helpers need no change — the executors already call them on the
+    session's pages. WORKER-CRASH SEMANTICS documented explicitly: a crashed
+    worker does NOT recover/reattach its Browserbase session (leaks until
+    Browserbase idle timeout); crash recovery is M34.
+  - `worker/src/node-executor-adapter.ts` — `getStagehand` option now takes
+    the `TaskEnvelopeView` so the manager can key by the task's affinity key;
+    a browser node with no session provider fails with a clear permanent
+    error instead of hanging.
+  - `worker/src/worker.ts` — new optional `onShutdown` hook, invoked during
+    graceful shutdown after the in-flight drain; errors are logged, never
+    fatal (Browserbase idle timeout is the backstop).
+  - `worker/src/main.ts` — wires the manager with a production Stagehand
+    factory mirroring run-workflow.ts (Browserbase env, Model Gateway model,
+    `disablePino`); `BROWSERBASE_API_KEY` read from worker env only, never in
+    an envelope; missing key fails browser tasks cleanly. `onShutdown` closes
+    all live sessions.
+  - `worker/src/browser-session-manager.test.ts` — 8 tests with a FAKE
+    Stagehand (no Browserbase/network): one-session-per-key + reuse + id
+    publish; live-view handshake polled once before first action; timeout
+    proceeds; concurrent single-flight open; closeForRun screenshot→publish→
+    close idempotent; closeAll on shutdown; default affinity key; adapter
+    integration (browser node session owned/reused/closed via the manager).
+  - `package.json` — wired the M25 test into `npm test`.
+- **Concurrency/distributed correctness:** mutable state (the session map) is
+  owned solely by the BrowserSessionManager inside one worker process; a
+  single-flight promise prevents concurrent same-key opens. Cross-worker
+  pinning is enforced by the scheduler's capacity-1 affinity policy (M12)
+  routing same-key tasks to one worker; the manager enforces one-session-per-
+  key locally. Close is idempotent (double closeForRun is a no-op). Shutdown
+  races completion safely: drain first, then closeAll. Live-view polling
+  errors are swallowed so they cannot fail a run.
+- **Phase-1 preservation:** legacy run-workflow.ts untouched; live-view
+  handshake, screenshot, and close semantics are mirrored, not forked;
+  highlight helpers reused as-is; no Phase-1 default behavior changed.
+- **Validation:**
+  - `npx tsx worker/src/browser-session-manager.test.ts` → ✅ 8/8
+  - `npm test` → ✅ 65/65 (28 Phase-1 + 4 contract + 8 M20 + 8 M22 + 5 M23 +
+    4 M24 + 8 M25)
+  - `npm run typecheck` → ✅ exit 0; `npm run lint` → ✅ exit 0
+  - Live-key manual E2E: N/A — BROWSERBASE_API_KEY not configured in this
+    environment (paid external test; not authorized for autonomous spend).
+    Mock session-manager tests cover the semantics; live E2E deferred to a
+    key-configured environment.
+- **Human action:** none.
+- **COMMIT:** `<M25_SHA>` — `phase2(m25): preserve browser session semantics in workers`
+- **NEXT:** M26 — Persist results and unlock dependencies through the distributed loop.

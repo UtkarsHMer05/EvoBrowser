@@ -61,9 +61,10 @@ export type PredecessorOutputsLoader = (args: {
 export interface NodeExecutorAdapterOptions {
   loadVersion: WorkflowVersionLoader;
   loadPredecessorOutputs: PredecessorOutputsLoader;
-  /** Provides the run's owned Stagehand session (wired in M25). Optional so
-   *  non-browser nodes run without a browser. */
-  getStagehand?: () => Promise<Stagehand>;
+  /** Provides the run's owned Stagehand session for a given task (wired in
+   *  M25 via the BrowserSessionManager, keyed by the task's affinity key).
+   *  Optional so non-browser nodes run without a browser. */
+  getStagehand?: (task: TaskEnvelopeView) => Promise<Stagehand>;
   /** Test sink / override map. When set for a node type, it replaces the
    *  registered executor (used to mock side-effecting email in tests). */
   executorOverrides?: Partial<Record<NodeType, NodeExecutor>>;
@@ -124,12 +125,13 @@ export function createNodeExecutorAdapter(
 
     // 5. Call the existing executor.
     const getStagehand =
-      options.getStagehand ??
-      (async () => {
-        throw new Error(
-          `node ${task.nodeId} (${nodeType}) requires a browser session, but none is available on this worker`,
-        );
-      });
+      options.getStagehand !== undefined
+        ? () => options.getStagehand!(task)
+        : async () => {
+            throw new Error(
+              `node ${task.nodeId} (${nodeType}) requires a browser session, but none is available on this worker`,
+            );
+          };
 
     try {
       const output = await executor({ values, getStagehand });

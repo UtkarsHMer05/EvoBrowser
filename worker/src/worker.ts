@@ -69,6 +69,12 @@ export interface WorkerConfig {
   /** Max time to wait for in-flight tasks during shutdown. */
   drainTimeoutMs?: number;
   executor: TaskExecutor;
+  /**
+   * Called during graceful shutdown after in-flight tasks drain (M25): the
+   * BrowserSessionManager closes every live browser session here. Errors are
+   * logged, never fatal — shutdown must complete.
+   */
+  onShutdown?: () => Promise<void>;
   /** Optional logger; defaults to console. */
   log?: (msg: string) => void;
 }
@@ -85,6 +91,7 @@ interface ResolvedWorkerConfig {
   readBlockMs: number;
   drainTimeoutMs: number;
   executor: TaskExecutor;
+  onShutdown?: () => Promise<void>;
   log: (msg: string) => void;
 }
 
@@ -105,6 +112,7 @@ export class Worker {
       readBlockMs: config.readBlockMs ?? 500,
       drainTimeoutMs: config.drainTimeoutMs ?? 10_000,
       executor: config.executor,
+      onShutdown: config.onShutdown,
       log: config.log ?? ((m: string) => console.log(m)),
     };
     this.client = new RedisStreamsClient(config.redis);
@@ -251,6 +259,15 @@ export class Worker {
       this.cfg.log(
         `[${this.workerId}] shutdown with ${abandoned} task(s) still in flight; left pending for redelivery`,
       );
+    }
+    // M25: close every live browser session after the drain. Errors must not
+    // block shutdown — the Browserbase idle timeout is the backstop.
+    if (this.cfg.onShutdown) {
+      try {
+        await this.cfg.onShutdown();
+      } catch (err) {
+        this.cfg.log(`[${this.workerId}] onShutdown error: ${String(err)}`);
+      }
     }
     await this.client.disconnect();
     this.cfg.log(`[${this.workerId}] stopped`);
