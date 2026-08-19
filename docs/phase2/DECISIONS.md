@@ -207,3 +207,15 @@ prompt against the actual checked-out repository at the recorded SHAs.
 | 22.5 | `kMaxEnvelopeBytes` = 256 KiB; oversized/malformed envelopes rejected before durable mutation. | Bounds stream/worker memory; validates at the trust boundary. | Callers quarantine/log rejected payloads. |
 | 22.6 | Cross-language compatibility proven via committed golden byte fixtures: C++ generator + TS protobufjs decode + byte-identical re-encode. | Proves C++ <-> TS encoders agree on the wire format, not just field names. | Fixtures regenerated on proto change; byte-stability self-checked. |
 | 22.7 | `evo_envelope` is a separate target linking evo_proto (not transport). | Semantics are testable without Redis; keeps scheduler-core dependency-free. | Clean layering: transport (M21) carries, envelope (M22) enforces. |
+
+## M23 — TypeScript distributed worker service
+
+| # | Decision | Rationale | Consequences |
+|---|----------|-----------|--------------|
+| 23.1 | Standalone worker process in `worker/`, separate from Next.js and Trigger.dev. | M23 step 1; workers must scale independently of the web app. | Compose `--scale worker=N` scales workers without touching the app. |
+| 23.2 | Durable-handoff rule: publish ResultEnvelope BEFORE acking the task; if publish fails, leave the task unacked for redelivery. | M23 step 7; prevents losing a completed result by acking too early. | Duplicate results possible; deduped scheduler-side by attempt id (M22). |
+| 23.3 | Graceful shutdown drains in-flight tasks up to `drainTimeoutMs`; unfinished tasks stay pending (unacked) for redelivery. | M23 step 4 lease semantics; a slow worker is not silently abandoned. | M31 adds explicit lease tracking on top. |
+| 23.4 | Pluggable `TaskExecutor` interface; M23 ships a synthetic executor, M24 wires real node executors behind the same interface. | Smallest interface that satisfies M23 and leaves room for M24. | Synthetic types never enter the product node registry. |
+| 23.5 | Malformed envelopes are quarantined (logged + acked) rather than left pending forever. | A poison message must not block the consumer group. | Quarantine is observable via logs; result is never published. |
+| 23.6 | ioredis 6.0.0 as the TS Redis client; `RedisStreamsClient` mirrors the C++ RedisTransport command-for-command. | One wire protocol across C++ scheduler and TS workers. | Cross-language behavior parity is testable. |
+| 23.7 | Worker compose service is profile-gated (`--profile worker`); default stack unchanged. | M18 stack behavior must not regress; workers are opt-in. | `up.sh`/`down.sh`/`reset.sh` unaffected. |

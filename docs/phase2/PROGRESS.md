@@ -32,6 +32,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M20 | Implement immutable workflow versions and optimistic concurrency | ✅ DONE | `0ea1c1c` |
 | M21 | Implement Redis Streams transport in the C++ scheduler | ✅ DONE | `47e565e` |
 | M22 | Finalize task/result envelope semantics and event transport | ✅ DONE | `ad88fd0` |
+| M23 | Create the TypeScript distributed worker service | ✅ DONE | `<M23_SHA>` |
 
 ---
 
@@ -1108,3 +1109,70 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none.
 - **COMMIT:** `ad88fd0` — `phase2(m22): harden distributed task result protocol`
 - **NEXT:** M23 — Build the TypeScript distributed worker service.
+
+---
+
+## M23 — Create the TypeScript distributed worker service
+
+- **BASE_SHA:** `d7a2118`
+- **What was inspected:** master prompt M23 spec, `worker/` (new dir),
+  `engine/proto/evo/execution.proto` (envelope contract), M21 RedisTransport
+  semantics (to mirror in TS), M22 envelope semantics (dedupe/late-result),
+  ioredis 6.0.0 API, tsconfig include scope (`**/*.ts`), package.json
+  `"type": "module"` (ESM).
+- **What changed:**
+  - `worker/src/redis-streams.ts` — `RedisStreamsClient` (ioredis): mirrors the
+    C++ RedisTransport — ensureGroup (idempotent, BUSYGROUP=ok, startId `$`/`0`),
+    publish (XADD), readGroup (XREADGROUP at-least-once), ack (XACK, late/dup
+    harmless), pendingCount (XPENDING), streamLength (XLEN). Namespaced key
+    helpers matching the C++ `task/result/control_stream_key`.
+  - `worker/src/envelope-codec.ts` — protobufjs codec loading the shared proto;
+    `decodeTaskEnvelope`, `encodeTaskEnvelope`, `encodeResultEnvelope`;
+    ResultStatus/ErrorClass numeric constants; wall-clock UTC timestamps.
+    Self-contained Timestamp fallback if Homebrew headers absent.
+  - `worker/src/worker.ts` — `Worker` class: joins the task-stream consumer
+    group, claims TaskEnvelopes, executes via a pluggable `TaskExecutor`,
+    publishes ResultEnvelope, and acks ONLY after the result is durably
+    published (M23 "durable handoff" rule). Malformed envelopes are quarantined
+    (logged + acked). Graceful `stop()`: stops claiming, drains in-flight up to
+    `drainTimeoutMs`, leaves unfinished tasks pending for redelivery (never
+    silently abandoned). Stable `workerId` (generated or configured).
+  - `worker/src/synthetic-executor.ts` — deterministic synthetic executor
+    (`bench:sleep`/`bench:burn`/`bench:fail`/`bench:echo`), explicitly
+    NOT a production executor; real executors wired in M24 behind the same
+    `TaskExecutor` interface.
+  - `worker/src/main.ts` — standalone entry point (separate from Next.js and
+    Trigger.dev) with SIGTERM/SIGINT graceful shutdown; env-var config, no
+    secrets required for the local stack.
+  - `worker/src/worker.test.ts` — integration test vs local Redis: 1 worker
+    (5 tasks), 2 workers (8 tasks), 4 workers (20 tasks, exactly 20 results —
+    no loss/dup), graceful shutdown drains in-flight work, result stream
+    carries decodable envelopes. Skips cleanly when Redis is down.
+  - `worker/Dockerfile` — worker image (node:20-alpine), loads the shared
+    proto at runtime; no secrets baked in.
+  - `infra/phase2/docker-compose.yml` — opt-in `worker` service behind the
+    `worker` profile (`--profile worker up --scale worker=4`); default
+    redis+postgres stack unchanged.
+  - `package.json` — added `ioredis` 6.0.0; wired worker test into `npm test`.
+  - `features/workflows/lib/workflow-versions.test.ts` — fixed a race-dependent
+    assumption (concurrent version creation assigns numbers nondeterministically;
+    the rerun-dedupe step now uses whichever graph actually became the latest).
+- **Concurrency/distributed correctness:** Redis owns stream state; the worker
+  owns one connection. At-least-once delivery; duplicate results are deduped
+  scheduler-side by attempt id (M22). Durable-handoff rule: result published
+  BEFORE ack; if publish fails the task stays pending for redelivery. Graceful
+  shutdown leaves unfinished tasks pending (a slow worker is not confused with
+  a dead one at the ack layer). Malformed envelopes quarantined at the trust
+  boundary. Result timestamps are wall-clock UTC.
+- **No-go compliance:** worker does not ack before durable handoff; synthetic
+  executor is clearly non-production; no secrets committed; Phase-1 untouched;
+  default compose stack unchanged (worker is profile-gated).
+- **Validation:**
+  - `npx tsx worker/src/worker.test.ts` → ✅ 5/5 (1/2/4 workers + shutdown + result decode)
+  - `npm test` → ✅ 53/53 (28 Phase-1 + 4 contract + 8 M20 + 8 M22 + 5 M23)
+  - `npm run typecheck` → ✅ exit 0; `npm run lint` → ✅ exit 0
+  - `docker compose -f infra/phase2/docker-compose.yml config` → ✅ valid
+    (default: redis+postgres; `--profile worker`: +worker)
+- **Human action:** none.
+- **COMMIT:** `<M23_SHA>` — `phase2(m23): add scalable typescript worker service`
+- **NEXT:** M24 — Reuse existing interpolation and node executors inside distributed workers.

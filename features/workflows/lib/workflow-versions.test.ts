@@ -104,10 +104,15 @@ async function main() {
     ok("concurrent creation -> distinct monotonic versions 1,2,3");
 
     // --- 2. Run snapshot immutability (dedupe + new-on-edit) ----------
+    // Concurrent creation assigns version numbers in nondeterministic order,
+    // so find which graph actually became the latest (version 3) and rerun
+    // with THAT graph to exercise dedupe deterministically.
+    const latestIndex = versions.findIndex((v) => v.versionNumber === 3);
+    const latestGraph = graphs[latestIndex];
     const rerunSame = await createWorkflowVersion({
       orgId,
       workflowId,
-      graph: graphs[2], // identical to the latest (version 3)
+      graph: latestGraph, // identical to the latest (version 3)
       db,
     });
     assert.equal(
@@ -115,6 +120,7 @@ async function main() {
       3,
       "rerun with unchanged graph reuses version 3",
     );
+    assert.equal(rerunSame.id, versions[latestIndex].id, "reused same row");
     ok("unchanged rerun reuses the same immutable snapshot");
 
     const edited = graphOf(["C", "D"]);

@@ -52,6 +52,27 @@ services:
       start_period: 3s
     restart: unless-stopped
 
+  # Phase-2 distributed worker (Milestone 23). Opt-in via the "worker"
+  # profile so the default infra stack (redis+postgres) is unchanged:
+  #   docker compose -f infra/phase2/docker-compose.yml \
+  #     --profile worker up -d --scale worker=4
+  # Connects to the redis service over the compose network. No secrets;
+  # identity is generated per container unless EVO_WORKER_ID is set.
+  worker:
+    profiles: ["worker"]
+    build:
+      context: ../..
+      dockerfile: worker/Dockerfile
+    environment:
+      EVO_PHASE2_REDIS_HOST: redis
+      EVO_PHASE2_REDIS_PORT: "6379"
+      EVO_WORKER_ENV_PREFIX: ${EVO_WORKER_ENV_PREFIX:-evo:dev}
+      EVO_WORKER_GROUP: ${EVO_WORKER_GROUP:-workers}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   redis-data:
   postgres-data:
