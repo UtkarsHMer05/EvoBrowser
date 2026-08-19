@@ -34,7 +34,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M22 | Finalize task/result envelope semantics and event transport | ✅ DONE | `ad88fd0` |
 | M23 | Create the TypeScript distributed worker service | ✅ DONE | `dd01b19` |
 | M24 | Reuse existing interpolation and node executors inside distributed workers | ✅ DONE | `e581e67` |
-| M25 | Implement distributed browser session ownership and live-view parity | ✅ DONE | `<M25_SHA>` |
+| M25 | Implement distributed browser session ownership and live-view parity | ✅ DONE | `3828448` |
 
 ---
 
@@ -1295,5 +1295,5 @@ Commit subjects follow `phase2(mNN): <description>`.
     Mock session-manager tests cover the semantics; live E2E deferred to a
     key-configured environment.
 - **Human action:** none.
-- **COMMIT:** `<M25_SHA>` — `phase2(m25): preserve browser session semantics in workers`
+- **COMMIT:** `3828448` — `phase2(m25): preserve browser session semantics in workers`
 - **NEXT:** M26 — Persist results and unlock dependencies through the distributed loop.
