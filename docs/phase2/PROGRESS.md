@@ -42,6 +42,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `200386a` |
 | M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `4543443` |
 | M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `dcad613` |
+| M33 | Implement idempotency and duplicate suppression | 🚧 IN PROGRESS (claimed by session B) | — |
 
 ---
 
