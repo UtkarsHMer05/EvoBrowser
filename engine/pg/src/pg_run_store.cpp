@@ -262,6 +262,205 @@ bool PgRunStore::mark_cancel_requested(const std::string& run_id,
   return found;
 }
 
+// --- Milestone 31: worker registry + task leases ----------------------------
+
+bool PgRunStore::worker_heartbeat(const std::string& worker_id,
+                                  const std::string& env_prefix,
+                                  std::int64_t now_wall_ms) {
+  auto r = exec_params(
+      "INSERT INTO workers (worker_id, env_prefix, status, last_heartbeat_at) "
+      "VALUES ($1, $2, 'alive', "
+      "to_timestamp($3::bigint / 1000.0) AT TIME ZONE 'UTC') "
+      "ON CONFLICT (worker_id) DO UPDATE SET env_prefix = EXCLUDED.env_prefix, "
+      "status = 'alive', last_heartbeat_at = EXCLUDED.last_heartbeat_at",
+      {worker_id, env_prefix, std::to_string(now_wall_ms)});
+  if (r.res) PQclear(r.res);
+  return r.ok;
+}
+
+bool PgRunStore::init_attempt_lease(const std::string& run_id,
+                                    const std::string& node_id,
+                                    unsigned attempt_number,
+                                    std::int64_t expires_wall_ms) {
+  // Scheduler-side lease init at dispatch: stamp the queue-wait deadline.
+  // Idempotent: only stamps when no lease expiry exists yet (a worker that
+  // already acquired/renewed owns the expiry).
+  auto r = exec_params(
+      "UPDATE task_attempts ta SET "
+      "lease_expires_at = to_timestamp($4::bigint / 1000.0) AT TIME ZONE 'UTC' "
+      "FROM node_runs nr "
+      "WHERE ta.node_run_id = nr.id AND nr.run_id = $1 AND nr.node_id = $2 "
+      "AND ta.attempt_number = $3::int AND ta.lease_expires_at IS NULL",
+      {run_id, node_id, std::to_string(attempt_number),
+       std::to_string(expires_wall_ms)});
+  if (r.res) PQclear(r.res);
+  // 0 rows is fine: the lease was already initialized/acquired.
+  return r.ok;
+}
+
+bool PgRunStore::acquire_attempt_lease(const std::string& run_id,
+                                       const std::string& node_id,
+                                       unsigned attempt_number,
+                                       const std::string& worker_id,
+                                       std::int64_t acquired_wall_ms,
+                                       std::int64_t expires_wall_ms) {
+  // Acquire (or idempotently re-acquire) the lease for a running attempt.
+  // Steal guard: a DIFFERENT worker may only take over once the current lease
+  // has expired (or no lease/worker is recorded yet).
+  auto r = exec_params(
+      "UPDATE task_attempts ta SET worker_id = $4, "
+      "lease_acquired_at = to_timestamp($5::bigint / 1000.0) AT TIME ZONE "
+      "'UTC', "
+      "lease_renewed_at = to_timestamp($5::bigint / 1000.0) AT TIME ZONE "
+      "'UTC', "
+      "lease_expires_at = to_timestamp($6::bigint / 1000.0) AT TIME ZONE 'UTC' "
+      "FROM node_runs nr "
+      "WHERE ta.node_run_id = nr.id AND nr.run_id = $1 AND nr.node_id = $2 "
+      "AND ta.attempt_number = $3::int AND ta.status = 'running' "
+      "AND (ta.worker_id IS NULL OR ta.worker_id = $4 "
+      "OR ta.lease_expires_at IS NULL "
+      "OR ta.lease_expires_at <= to_timestamp($5::bigint / 1000.0) AT TIME "
+      "ZONE 'UTC')",
+      {run_id, node_id, std::to_string(attempt_number), worker_id,
+       std::to_string(acquired_wall_ms), std::to_string(expires_wall_ms)});
+  if (r.res) PQclear(r.res);
+  return r.ok && r.rows_affected == 1;
+}
+
+bool PgRunStore::renew_attempt_lease(const std::string& run_id,
+                                     const std::string& node_id,
+                                     unsigned attempt_number,
+                                     const std::string& worker_id,
+                                     std::int64_t renewed_wall_ms,
+                                     std::int64_t expires_wall_ms) {
+  // Only the lease holder may renew, and only while the attempt is running.
+  auto r = exec_params(
+      "UPDATE task_attempts ta SET "
+      "lease_renewed_at = to_timestamp($5::bigint / 1000.0) AT TIME ZONE "
+      "'UTC', "
+      "lease_expires_at = to_timestamp($6::bigint / 1000.0) AT TIME ZONE 'UTC' "
+      "FROM node_runs nr "
+      "WHERE ta.node_run_id = nr.id AND nr.run_id = $1 AND nr.node_id = $2 "
+      "AND ta.attempt_number = $3::int AND ta.worker_id = $4 "
+      "AND ta.status = 'running'",
+      {run_id, node_id, std::to_string(attempt_number), worker_id,
+       std::to_string(renewed_wall_ms), std::to_string(expires_wall_ms)});
+  if (r.res) PQclear(r.res);
+  return r.ok && r.rows_affected == 1;
+}
+
+std::vector<AttemptLeaseRecord> PgRunStore::scan_expired_attempt_leases(
+    const std::string& run_id, std::int64_t now_wall_ms) {
+  auto r = exec_params(
+      "SELECT nr.node_id, ta.attempt_number, COALESCE(ta.worker_id, ''), "
+      "ta.status, "
+      "COALESCE(extract(epoch FROM ta.lease_acquired_at) * 1000, 0)::bigint, "
+      "COALESCE(extract(epoch FROM ta.lease_renewed_at) * 1000, 0)::bigint, "
+      "COALESCE(extract(epoch FROM ta.lease_expires_at) * 1000, 0)::bigint, "
+      "COALESCE(extract(epoch FROM ta.lease_expired_at) * 1000, 0)::bigint "
+      "FROM task_attempts ta JOIN node_runs nr ON ta.node_run_id = nr.id "
+      "WHERE nr.run_id = $1 AND ta.status = 'running' "
+      "AND ta.lease_expires_at IS NOT NULL "
+      "AND ta.lease_expires_at <= to_timestamp($2::bigint / 1000.0) AT TIME "
+      "ZONE 'UTC'",
+      {run_id, std::to_string(now_wall_ms)});
+  std::vector<AttemptLeaseRecord> out;
+  if (r.ok && r.res) {
+    const int rows = PQntuples(r.res);
+    for (int i = 0; i < rows; ++i) {
+      AttemptLeaseRecord rec;
+      rec.node_id = PQgetvalue(r.res, i, 0);
+      rec.attempt_number =
+          static_cast<unsigned>(std::atoi(PQgetvalue(r.res, i, 1)));
+      rec.worker_id = PQgetvalue(r.res, i, 2);
+      rec.status = PQgetvalue(r.res, i, 3);
+      rec.acquired_ms = std::atoll(PQgetvalue(r.res, i, 4));
+      rec.renewed_ms = std::atoll(PQgetvalue(r.res, i, 5));
+      rec.expires_ms = std::atoll(PQgetvalue(r.res, i, 6));
+      rec.expired_ms = std::atoll(PQgetvalue(r.res, i, 7));
+      out.push_back(std::move(rec));
+    }
+  }
+  if (r.res) PQclear(r.res);
+  return out;
+}
+
+bool PgRunStore::mark_attempt_lease_expired(const std::string& run_id,
+                                            const std::string& node_id,
+                                            unsigned attempt_number,
+                                            const std::string& worker_id,
+                                            std::int64_t expired_wall_ms) {
+  // At-most-once reap: only a still-running attempt held by this worker can
+  // transition to lease_expired. A racing completion already moved the status
+  // out of 'running', so it can never be double-completed (M31 no-go).
+  // worker_id is NULL for a never-claimed attempt (queue-wait lease); an
+  // empty `worker_id` argument matches that case (NULL = '' is never true in
+  // SQL, so it must be handled explicitly).
+  auto r = exec_params(
+      "UPDATE task_attempts ta SET status = 'lease_expired', "
+      "lease_expired_at = to_timestamp($5::bigint / 1000.0) AT TIME ZONE "
+      "'UTC' "
+      "FROM node_runs nr "
+      "WHERE ta.node_run_id = nr.id AND nr.run_id = $1 AND nr.node_id = $2 "
+      "AND ta.attempt_number = $3::int "
+      "AND (ta.worker_id = $4 OR ($4 = '' AND ta.worker_id IS NULL)) "
+      "AND ta.status = 'running'",
+      {run_id, node_id, std::to_string(attempt_number), worker_id,
+       std::to_string(expired_wall_ms)});
+  if (r.res) PQclear(r.res);
+  return r.ok && r.rows_affected == 1;
+}
+
+std::optional<AttemptLeaseRecord> PgRunStore::get_attempt_lease(
+    const std::string& run_id, const std::string& node_id,
+    unsigned attempt_number) {
+  auto r = exec_params(
+      "SELECT nr.node_id, ta.attempt_number, COALESCE(ta.worker_id, ''), "
+      "ta.status, "
+      "COALESCE(extract(epoch FROM ta.lease_acquired_at) * 1000, 0)::bigint, "
+      "COALESCE(extract(epoch FROM ta.lease_renewed_at) * 1000, 0)::bigint, "
+      "COALESCE(extract(epoch FROM ta.lease_expires_at) * 1000, 0)::bigint, "
+      "COALESCE(extract(epoch FROM ta.lease_expired_at) * 1000, 0)::bigint "
+      "FROM task_attempts ta JOIN node_runs nr ON ta.node_run_id = nr.id "
+      "WHERE nr.run_id = $1 AND nr.node_id = $2 AND ta.attempt_number = $3::int",
+      {run_id, node_id, std::to_string(attempt_number)});
+  std::optional<AttemptLeaseRecord> out;
+  if (r.ok && r.res && PQntuples(r.res) == 1) {
+    AttemptLeaseRecord rec;
+    rec.node_id = PQgetvalue(r.res, 0, 0);
+    rec.attempt_number =
+        static_cast<unsigned>(std::atoi(PQgetvalue(r.res, 0, 1)));
+    rec.worker_id = PQgetvalue(r.res, 0, 2);
+    rec.status = PQgetvalue(r.res, 0, 3);
+    rec.acquired_ms = std::atoll(PQgetvalue(r.res, 0, 4));
+    rec.renewed_ms = std::atoll(PQgetvalue(r.res, 0, 5));
+    rec.expires_ms = std::atoll(PQgetvalue(r.res, 0, 6));
+    rec.expired_ms = std::atoll(PQgetvalue(r.res, 0, 7));
+    out = rec;
+  }
+  if (r.res) PQclear(r.res);
+  return out;
+}
+
+std::optional<WorkerRecord> PgRunStore::get_worker(const std::string& worker_id) {
+  auto r = exec_params(
+      "SELECT worker_id, env_prefix, status, "
+      "COALESCE(extract(epoch FROM last_heartbeat_at) * 1000, 0)::bigint "
+      "FROM workers WHERE worker_id = $1",
+      {worker_id});
+  std::optional<WorkerRecord> out;
+  if (r.ok && r.res && PQntuples(r.res) == 1) {
+    WorkerRecord rec;
+    rec.worker_id = PQgetvalue(r.res, 0, 0);
+    rec.env_prefix = PQgetvalue(r.res, 0, 1);
+    rec.status = PQgetvalue(r.res, 0, 2);
+    rec.last_heartbeat_ms = std::atoll(PQgetvalue(r.res, 0, 3));
+    out = rec;
+  }
+  if (r.res) PQclear(r.res);
+  return out;
+}
+
 std::optional<RunRecord> PgRunStore::get_run(const std::string& run_id) {
   auto r = exec_params(
       "SELECT id, org_id, workflow_id::text, "

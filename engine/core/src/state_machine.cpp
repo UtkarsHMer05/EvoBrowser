@@ -158,6 +158,20 @@ std::vector<NodeId> SchedulerState::fail_node(const NodeId& id,
   return canceled;
 }
 
+bool SchedulerState::abandon_node(const NodeId& id) {
+  std::lock_guard lock(mu_);
+  auto it = node_states_.find(id);
+  if (it == node_states_.end()) return false;
+  // Only an in-flight node can be abandoned; a terminal or not-yet-dispatched
+  // node is untouched. Recovery, not failure: no successor propagation, no
+  // dependency-counter change, no completion recorded.
+  if (it->second != NodeState::Running && it->second != NodeState::Dispatched) {
+    return false;
+  }
+  it->second = NodeState::Ready;
+  return true;
+}
+
 void SchedulerState::mark_canceled_transitive(const NodeId& id,
                                               std::vector<NodeId>& canceled) {
   // Caller holds mu_.

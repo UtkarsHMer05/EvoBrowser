@@ -59,6 +59,42 @@ export type TaskExecutor = (
   signal: AbortSignal,
 ) => Promise<ExecutorResult>;
 
+// Milestone 31 — durable worker-registry + task-lease store. The worker
+// registers/heartbeats itself and acquires/renews a lease per attempt. The
+// scheduler (C++ DistributedRunLoop) scans for expired leases and reaps them.
+//
+// Semantics (mirror the C++ RunStore):
+//   - A heartbeat proves the PROCESS is alive (registry row). Its cadence and
+//     expiry are defined SEPARATELY from the per-task lease duration.
+//   - A lease proves a specific ATTEMPT is being worked. The worker acquires
+//     it on claim and renews it while work legitimately runs. If the worker
+//     dies, renewals stop and the lease expires -> the scheduler reaps the
+//     attempt and re-dispatches the node (recovery, not failure).
+// All timestamps are wall-clock UTC milliseconds.
+export interface TaskLeaseStore {
+  workerHeartbeat(
+    workerId: string,
+    envPrefix: string,
+    nowWallMs: number,
+  ): Promise<boolean>;
+  acquireAttemptLease(
+    runId: string,
+    nodeId: string,
+    attemptNumber: number,
+    workerId: string,
+    acquiredWallMs: number,
+    expiresWallMs: number,
+  ): Promise<boolean>;
+  renewAttemptLease(
+    runId: string,
+    nodeId: string,
+    attemptNumber: number,
+    workerId: string,
+    renewedWallMs: number,
+    expiresWallMs: number,
+  ): Promise<boolean>;
+}
+
 export interface WorkerConfig {
   redis: RedisStreamsConfig;
   /** Stream namespace prefix, e.g. "evo:dev". */
@@ -85,6 +121,21 @@ export interface WorkerConfig {
    * resources stop promptly. Errors are logged, never fatal.
    */
   onCancelRun?: (runId: string, reason: string) => Promise<void> | void;
+  /**
+   * Milestone 31: durable worker-registry + task-lease store. When provided,
+   * the worker registers/heartbeats itself and acquires/renews a lease per
+   * attempt. When omitted, lease monitoring is disabled (the scheduler's scan
+   * finds nothing to reap for this worker's attempts).
+   */
+  leaseStore?: TaskLeaseStore;
+  /** Lease duration stamped on acquire/renew (default 30s). */
+  leaseDurationMs?: number;
+  /** How often an in-flight attempt's lease is renewed (default 10s). Must be
+   * well under leaseDurationMs so a renewing worker is never reaped. */
+  leaseRenewIntervalMs?: number;
+  /** How often the worker heartbeats its registry row (default 5s). Separate
+   * cadence from the lease (M31 step 1). */
+  heartbeatIntervalMs?: number;
   /** Optional logger; defaults to console. */
   log?: (msg: string) => void;
 }
@@ -103,6 +154,10 @@ interface ResolvedWorkerConfig {
   executor: TaskExecutor;
   onShutdown?: () => Promise<void>;
   onCancelRun?: (runId: string, reason: string) => Promise<void> | void;
+  leaseStore?: TaskLeaseStore;
+  leaseDurationMs: number;
+  leaseRenewIntervalMs: number;
+  heartbeatIntervalMs: number;
   log: (msg: string) => void;
 }
 
@@ -128,6 +183,10 @@ export class Worker {
   private canceledRuns = new Set<string>();
   private runAbortControllers = new Map<string, AbortController>();
 
+  // Milestone 31 — worker-registry heartbeat timer (process liveness). Runs
+  // on its own cadence, separate from per-task lease renewal.
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(config: WorkerConfig) {
     this.cfg = {
       redis: config.redis,
@@ -139,6 +198,10 @@ export class Worker {
       executor: config.executor,
       onShutdown: config.onShutdown,
       onCancelRun: config.onCancelRun,
+      leaseStore: config.leaseStore,
+      leaseDurationMs: config.leaseDurationMs ?? 30_000,
+      leaseRenewIntervalMs: config.leaseRenewIntervalMs ?? 10_000,
+      heartbeatIntervalMs: config.heartbeatIntervalMs ?? 5_000,
       log: config.log ?? ((m: string) => console.log(m)),
     };
     this.client = new RedisStreamsClient(config.redis);
@@ -186,6 +249,34 @@ export class Worker {
     this.cfg.log(`[${this.workerId}] started; tasks=${this.taskStream} group=${this.cfg.group}`);
     this.loopPromise = this.readLoop();
     this.controlLoopPromise = this.controlLoop();
+
+    // M31: register + heartbeat the worker registry row. The first heartbeat
+    // registers (upsert); subsequent ones refresh last_heartbeat_at. Runs on
+    // its own cadence, separate from per-task lease renewal.
+    if (this.cfg.leaseStore) {
+      await this.heartbeat().catch(() => undefined);
+      this.heartbeatTimer = setInterval(() => {
+        void this.heartbeat();
+      }, this.cfg.heartbeatIntervalMs);
+      // Don't keep the event loop alive just for the heartbeat.
+      this.heartbeatTimer.unref?.();
+    }
+  }
+
+  // M31: upsert this worker's liveness row. Best-effort — a missed heartbeat
+  // is retried on the next tick; the registry expiry is generous enough to
+  // tolerate a few misses.
+  private async heartbeat(): Promise<void> {
+    if (!this.cfg.leaseStore) return;
+    try {
+      await this.cfg.leaseStore.workerHeartbeat(
+        this.cfg.workerId,
+        this.cfg.envPrefix,
+        Date.now(),
+      );
+    } catch (err) {
+      this.cfg.log(`[${this.workerId}] heartbeat failed: ${String(err)}`);
+    }
   }
 
   /** Per-worker control consumer group (fan-out; see start()). */
@@ -341,6 +432,61 @@ export class Worker {
       runController.signal,
     ]);
 
+    // M31: acquire the attempt lease before executing. This stamps worker_id
+    // + lease_acquired/renewed/expires on the durable attempt row, taking over
+    // the queue-wait lease the scheduler initialized at dispatch. If the
+    // acquire fails (another worker holds an unexpired lease), skip execution
+    // and ack — the rightful owner will hand off the result.
+    let leaseHeld = false;
+    if (this.cfg.leaseStore) {
+      try {
+        leaseHeld = await this.cfg.leaseStore.acquireAttemptLease(
+          task.runId,
+          task.nodeId,
+          task.attemptNumber,
+          this.workerId,
+          Date.now(),
+          Date.now() + this.cfg.leaseDurationMs,
+        );
+      } catch (err) {
+        this.cfg.log(
+          `[${this.workerId}] lease acquire failed run=${task.runId} node=${task.nodeId}: ${String(err)}`,
+        );
+      }
+      if (!leaseHeld) {
+        this.cfg.log(
+          `[${this.workerId}] lease not acquired (held by another worker); skipping run=${task.runId} node=${task.nodeId}`,
+        );
+        await this.client.ack(this.taskStream, this.cfg.group, messageId);
+        return;
+      }
+    }
+
+    // M31: renew the lease periodically while work legitimately runs. A
+    // renewing worker is never reaped (its expiry keeps moving forward). If
+    // the worker dies, renewals stop and the scheduler's scan reaps the
+    // attempt after leaseDurationMs.
+    let renewTimer: ReturnType<typeof setInterval> | null = null;
+    if (leaseHeld && this.cfg.leaseStore) {
+      renewTimer = setInterval(() => {
+        void this.cfg.leaseStore
+          ?.renewAttemptLease(
+            task.runId,
+            task.nodeId,
+            task.attemptNumber,
+            this.workerId,
+            Date.now(),
+            Date.now() + this.cfg.leaseDurationMs,
+          )
+          .catch((err) => {
+            this.cfg.log(
+              `[${this.workerId}] lease renew failed run=${task.runId} node=${task.nodeId}: ${String(err)}`,
+            );
+          });
+      }, this.cfg.leaseRenewIntervalMs);
+      renewTimer.unref?.();
+    }
+
     let result: ExecutorResult;
     try {
       result = await this.cfg.executor(task, signal);
@@ -364,6 +510,10 @@ export class Worker {
           retryable: true,
         };
       }
+    } finally {
+      // Stop renewing once the attempt has finished (success or failure); the
+      // result handoff below makes the lease moot.
+      if (renewTimer) clearInterval(renewTimer);
     }
 
     // Durable handoff rule (M23 step 7): publish the result FIRST; ack the
@@ -456,6 +606,11 @@ export class Worker {
    */
   async stop(): Promise<void> {
     this.stopping = true;
+    // M31: stop heartbeating; the registry row will age out on its own.
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     this.abortController.abort();
     if (this.loopPromise) await this.loopPromise;
     if (this.controlLoopPromise) await this.controlLoopPromise;

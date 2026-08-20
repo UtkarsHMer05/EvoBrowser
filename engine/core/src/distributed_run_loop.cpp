@@ -103,6 +103,54 @@ void DistributedRunLoop::publish_cancel_control() {
                      env.SerializeAsString());
 }
 
+void DistributedRunLoop::scan_expired_leases() {
+  // Milestone 31 step 4: periodically scan for attempts whose lease expired
+  // (worker lost / never claimed). Gated by lease_scan_interval; disabled when
+  // lease_duration is 0. Uses wall-clock UTC for the durable comparison (the
+  // store compares lease_expires_at against now_wall_ms), and steady_clock
+  // only to pace the scan cadence.
+  if (config_.lease_duration.count() <= 0) return;
+  if (config_.lease_scan_interval.count() <= 0) return;
+
+  const auto now_steady = std::chrono::steady_clock::now();
+  if (last_lease_scan_.time_since_epoch().count() != 0 &&
+      now_steady - last_lease_scan_ < config_.lease_scan_interval) {
+    return;
+  }
+  last_lease_scan_ = now_steady;
+
+  const auto expired =
+      store_.scan_expired_attempt_leases(config_.run_id, now_wall_ms());
+  for (const auto& lease : expired) {
+    const NodeId node_id{lease.node_id};
+    // At-most-once reap: only applied if the attempt is still running and held
+    // by the recorded worker. A racing completion is never double-completed.
+    const bool reaped = store_.mark_attempt_lease_expired(
+        config_.run_id, lease.node_id, lease.attempt_number, lease.worker_id,
+        now_wall_ms());
+    if (!reaped) continue;
+
+    // Recovery, NOT failure (M31 step 5): abandon the in-flight node back to
+    // READY so dispatch_ready() re-dispatches it as a NEW attempt. No
+    // successor is canceled and no dependency counter changes.
+    const bool abandoned = state_.abandon_node(node_id);
+    if (abandoned) {
+      store_.set_node_status(config_.run_id, lease.node_id,
+                             node_status::kReady);
+      // Release the resource slot the abandoned attempt held (no result will
+      // arrive to free it; otherwise the affinity capacity would leak).
+      const ResourcePolicy pol = policy_for_node(node_id);
+      if (!pol.affinity_key.empty()) {
+        auto it = resource_usage_.find(pol.affinity_key);
+        if (it != resource_usage_.end() && it->second > 0) it->second--;
+      }
+    }
+    emit("node_lease_expired", &node_id,
+         "worker=" + lease.worker_id + " attempt=" +
+             std::to_string(lease.attempt_number));
+  }
+}
+
 std::vector<RunEvent> DistributedRunLoop::events() const {
   std::lock_guard lock(events_mu_);
   return events_;
@@ -172,6 +220,18 @@ void DistributedRunLoop::dispatch_ready() {
     store_.record_attempt(config_.run_id, id.value, attempt,
                           /*worker_id=*/"", now_wall_ms());
     store_.set_node_status(config_.run_id, id.value, node_status::kRunning);
+    // M31: stamp the initial lease deadline (covers queue-wait before a
+    // worker claims). The worker takes over the lease via acquire/renew.
+    // lease_initial_duration (deliberately generous) bounds the
+    // dispatch->claim window; lease_duration bounds a claimed attempt.
+    if (config_.lease_duration.count() > 0) {
+      const std::chrono::milliseconds initial =
+          config_.lease_initial_duration.count() > 0
+              ? config_.lease_initial_duration
+              : config_.lease_duration;
+      store_.init_attempt_lease(config_.run_id, id.value, attempt,
+                                now_wall_ms() + initial.count());
+    }
 
     execution::v1::TaskEnvelope env;
     env.set_run_id(config_.run_id);
@@ -371,6 +431,10 @@ std::string DistributedRunLoop::run() {
 
     dispatch_ready();
     drain_resource_blocked();
+
+    // Milestone 31: periodically reap expired attempt leases (lost workers).
+    // Paced internally by lease_scan_interval; a no-op most iterations.
+    scan_expired_leases();
 
     if (state_.all_nodes_terminal()) {
       state_.finalize_run();

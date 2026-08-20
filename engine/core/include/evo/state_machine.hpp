@@ -92,6 +92,13 @@ class SchedulerState {
   // transitively reachable not-yet-terminal successors. Returns canceled set.
   std::vector<NodeId> fail_node(const NodeId& id, const std::string& error);
 
+  // Milestone 31: RUNNING/DISPATCHED → READY after the attempt's lease
+  // expired (worker lost). The node becomes eligible for re-dispatch as a NEW
+  // attempt; this is a recovery transition, NOT a failure — no successor is
+  // touched and no dependency counter changes. Returns true only when the
+  // transition applied (the node was in flight).
+  bool abandon_node(const NodeId& id);
+
   // Cancel the entire run: every non-terminal node → CANCELED.
   std::vector<NodeId> cancel_run();
 

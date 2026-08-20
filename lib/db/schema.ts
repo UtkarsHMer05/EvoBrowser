@@ -180,14 +180,44 @@ export const taskAttempts = pgTable(
     error: text("error"),
     startedAt: timestamp("started_at"),
     finishedAt: timestamp("finished_at"),
+    // Phase 2 (M31): task-lease evidence. A worker acquires a lease when it
+    // claims the attempt and renews it while work legitimately runs. The
+    // scheduler scans for leases whose expires_at has passed and transitions
+    // those attempts to `lease_expired` (a recoverable state — NOT a permanent
+    // node failure). All wall-clock UTC.
+    leaseAcquiredAt: timestamp("lease_acquired_at"),
+    leaseRenewedAt: timestamp("lease_renewed_at"),
+    leaseExpiresAt: timestamp("lease_expires_at"),
+    leaseExpiredAt: timestamp("lease_expired_at"),
   },
   (t) => [
     unique("uq_task_attempts_node_attempt").on(t.nodeRunId, t.attemptNumber),
     index("ix_task_attempts_node_run").on(t.nodeRunId),
+    index("ix_task_attempts_lease_expires").on(t.leaseExpiresAt),
   ],
 );
 
 export type TaskAttempt = typeof taskAttempts.$inferSelect;
+
+// Phase 2 (M31): worker registry / liveness. One row per worker process,
+// upserted on each heartbeat. Heartbeat cadence + expiry are defined SEPARATELY
+// from the per-task lease duration (ARCHITECTURE.md): a heartbeat proves the
+// PROCESS is alive; a task lease proves a specific ATTEMPT is being worked.
+// `last_heartbeat_at` is wall-clock UTC; a worker whose heartbeat is older than
+// the heartbeat expiry is considered lost (its leases will expire too).
+export const workers = pgTable(
+  "workers",
+  {
+    workerId: text("worker_id").primaryKey(),
+    envPrefix: text("env_prefix").notNull(),
+    status: text("status").notNull().default("alive"),
+    registeredAt: timestamp("registered_at").defaultNow().notNull(),
+    lastHeartbeatAt: timestamp("last_heartbeat_at"),
+  },
+  (t) => [index("ix_workers_env_prefix").on(t.envPrefix)],
+);
+
+export type WorkerRegistry = typeof workers.$inferSelect;
 
 // App-level idempotency for duplicate requests/events (M33). The key is the
 // primary key, so a second insert with the same key is a no-op conflict that

@@ -99,6 +99,42 @@ class PgRunStore final : public RunStore {
                              const std::string& reason,
                              std::int64_t requested_wall_ms) override;
 
+  bool worker_heartbeat(const std::string& worker_id,
+                        const std::string& env_prefix,
+                        std::int64_t now_wall_ms) override;
+
+  bool init_attempt_lease(const std::string& run_id, const std::string& node_id,
+                          unsigned attempt_number,
+                          std::int64_t expires_wall_ms) override;
+
+  bool acquire_attempt_lease(const std::string& run_id,
+                             const std::string& node_id,
+                             unsigned attempt_number,
+                             const std::string& worker_id,
+                             std::int64_t acquired_wall_ms,
+                             std::int64_t expires_wall_ms) override;
+
+  bool renew_attempt_lease(const std::string& run_id, const std::string& node_id,
+                           unsigned attempt_number,
+                           const std::string& worker_id,
+                           std::int64_t renewed_wall_ms,
+                           std::int64_t expires_wall_ms) override;
+
+  std::vector<AttemptLeaseRecord> scan_expired_attempt_leases(
+      const std::string& run_id, std::int64_t now_wall_ms) override;
+
+  bool mark_attempt_lease_expired(const std::string& run_id,
+                                  const std::string& node_id,
+                                  unsigned attempt_number,
+                                  const std::string& worker_id,
+                                  std::int64_t expired_wall_ms) override;
+
+  std::optional<AttemptLeaseRecord> get_attempt_lease(
+      const std::string& run_id, const std::string& node_id,
+      unsigned attempt_number) override;
+
+  std::optional<WorkerRecord> get_worker(const std::string& worker_id) override;
+
   std::optional<RunRecord> get_run(const std::string& run_id) override;
   std::optional<NodeRunRecord> get_node_run(
       const std::string& run_id, const std::string& node_id) override;

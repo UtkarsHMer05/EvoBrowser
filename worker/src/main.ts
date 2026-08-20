@@ -49,6 +49,7 @@ import {
   loadPredecessorOutputs,
   loadVersion,
 } from "./durable-loaders";
+import { PgTaskLeaseStore } from "./lease-store";
 import { createNodeExecutorAdapter } from "./node-executor-adapter";
 import { RedisStreamsClient, eventStreamKey } from "./redis-streams";
 import { syntheticExecutor } from "./synthetic-executor";
@@ -238,6 +239,12 @@ const compositeExecutor: TaskExecutor = async (task, signal) => {
   return result;
 };
 
+// M31: durable worker-registry + task-lease store over the local Phase-2
+// Postgres. The worker registers/heartbeats itself and acquires/renews a lease
+// per attempt; the C++ scheduler's lease monitor reaps attempts whose lease
+// expires (lost worker) and re-dispatches the node.
+const leaseStore = new PgTaskLeaseStore();
+
 const worker = new Worker({
   redis: { host, port, password },
   envPrefix,
@@ -249,6 +256,8 @@ const worker = new Worker({
   // for the run (worker.ts); close the run's browser session promptly here so
   // Stagehand/Browserbase resources stop as soon as the cancel propagates.
   onCancelRun: (runId) => browserSessions.closeAllForRun(runId),
+  // M31: worker registry + task leases.
+  leaseStore,
 });
 
 let shuttingDown = false;
@@ -258,6 +267,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`[worker] received ${signal}; draining...`);
   await worker.stop();
   await eventPublisher.disconnect().catch(() => undefined);
+  await leaseStore.close().catch(() => undefined);
   process.exit(0);
 }
 

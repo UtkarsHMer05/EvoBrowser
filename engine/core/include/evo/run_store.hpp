@@ -31,7 +31,9 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
+#include <vector>
 
 namespace evo {
 
@@ -64,6 +66,40 @@ inline constexpr const char* kDeadLettered = "dead_lettered";
 // Terminal statuses: once persisted, a node run never changes again.
 bool is_terminal(const std::string& status);
 }  // namespace node_status
+
+// Attempt-row status vocabulary (task_attempts.status, Milestone 31).
+// NOTE: an attempt's terminal status is not the same axis as the NODE's
+// status: `lease_expired` is terminal for the ATTEMPT but the logical node
+// is recoverable (re-dispatched as a new attempt), per M31 step 5.
+namespace attempt_status {
+inline constexpr const char* kRunning = "running";
+inline constexpr const char* kSucceeded = "succeeded";
+inline constexpr const char* kFailed = "failed";
+inline constexpr const char* kLeaseExpired = "lease_expired";
+}  // namespace attempt_status
+
+// Worker registry row (Milestone 31): liveness evidence for one worker
+// process. Heartbeat cadence/expiry are defined separately from the per-task
+// lease duration: a heartbeat proves the PROCESS is alive; a lease proves a
+// specific ATTEMPT is being worked.
+struct WorkerRecord {
+  std::string worker_id;
+  std::string env_prefix;
+  std::string status = "alive";  // alive | lost
+  std::int64_t last_heartbeat_ms = 0;  // wall-clock UTC ms; 0 => never
+};
+
+// One attempt's lease evidence (Milestone 31 step 6).
+struct AttemptLeaseRecord {
+  std::string node_id;
+  unsigned attempt_number = 0;
+  std::string worker_id;
+  std::string status;  // attempt_status::*
+  std::int64_t acquired_ms = 0;  // wall-clock UTC ms; 0 => NULL
+  std::int64_t renewed_ms = 0;
+  std::int64_t expires_ms = 0;
+  std::int64_t expired_ms = 0;  // set when the scheduler reaped the lease
+};
 
 struct RunRecord {
   std::string run_id;
@@ -159,6 +195,74 @@ class RunStore {
                                      const std::string& reason,
                                      std::int64_t requested_wall_ms) = 0;
 
+  // --- Worker registry + task leases (Milestone 31) ---
+
+  // Upsert a worker's liveness row (idempotent on worker_id). Called on
+  // registration and on every heartbeat. `now_wall_ms` stamps
+  // last_heartbeat_at. Returns false only on a hard store failure.
+  virtual bool worker_heartbeat(const std::string& worker_id,
+                                const std::string& env_prefix,
+                                std::int64_t now_wall_ms) = 0;
+
+  // Initialize the lease for a freshly dispatched attempt (scheduler side):
+  // status running, no worker yet, lease_expires_at = the dispatch-time lease
+  // deadline. Covers the queue-wait: if no worker claims and acquires the
+  // lease before it expires, the scan reaps the attempt and the node is
+  // re-dispatched. Idempotent: only stamps when no lease exists yet.
+  virtual bool init_attempt_lease(const std::string& run_id,
+                                  const std::string& node_id,
+                                  unsigned attempt_number,
+                                  std::int64_t expires_wall_ms) = 0;
+
+  // Acquire the lease for an attempt: stamp worker_id + lease_acquired_at +
+  // lease_renewed_at + lease_expires_at. Idempotent for the SAME worker (a
+  // re-acquire refreshes the expiry); a different worker cannot steal an
+  // unexpired lease (returns false). All timestamps wall-clock UTC ms.
+  virtual bool acquire_attempt_lease(const std::string& run_id,
+                                     const std::string& node_id,
+                                     unsigned attempt_number,
+                                     const std::string& worker_id,
+                                     std::int64_t acquired_wall_ms,
+                                     std::int64_t expires_wall_ms) = 0;
+
+  // Renew an attempt's lease while work legitimately runs. Only the lease
+  // holder (matching worker_id) may renew; the attempt must not be terminal.
+  // Updates lease_renewed_at + lease_expires_at.
+  virtual bool renew_attempt_lease(const std::string& run_id,
+                                   const std::string& node_id,
+                                   unsigned attempt_number,
+                                   const std::string& worker_id,
+                                   std::int64_t renewed_wall_ms,
+                                   std::int64_t expires_wall_ms) = 0;
+
+  // Find attempts whose lease has expired (expires_at <= now, still running,
+  // not yet reaped). Returns the evidence rows; the caller decides the
+  // transition. `now_wall_ms` is the scan instant (wall-clock UTC ms).
+  virtual std::vector<AttemptLeaseRecord> scan_expired_attempt_leases(
+      const std::string& run_id, std::int64_t now_wall_ms) = 0;
+
+  // Transition an attempt to lease_expired (terminal for the attempt) and
+  // stamp lease_expired_at. Only applies when the attempt is still running
+  // with an unexpired-or-expired lease held by `worker_id` and not already
+  // terminal — so a racing completion can never be double-completed (M31
+  // no-go: lease expiry must not double-complete the logical node). Returns
+  // true only when applied.
+  virtual bool mark_attempt_lease_expired(const std::string& run_id,
+                                          const std::string& node_id,
+                                          unsigned attempt_number,
+                                          const std::string& worker_id,
+                                          std::int64_t expired_wall_ms) = 0;
+
+  // Read one attempt's lease evidence (audit/tests). nullopt when the
+  // attempt row does not exist.
+  virtual std::optional<AttemptLeaseRecord> get_attempt_lease(
+      const std::string& run_id, const std::string& node_id,
+      unsigned attempt_number) = 0;
+
+  // Read a worker's registry row (audit/tests). nullopt when unknown.
+  virtual std::optional<WorkerRecord> get_worker(
+      const std::string& worker_id) = 0;
+
   // --- Audit readers (tests / observability) ---
   virtual std::optional<RunRecord> get_run(const std::string& run_id) = 0;
   virtual std::optional<NodeRunRecord> get_node_run(
@@ -210,6 +314,42 @@ class InMemoryRunStore final : public RunStore {
                              const std::string& reason,
                              std::int64_t requested_wall_ms) override;
 
+  bool worker_heartbeat(const std::string& worker_id,
+                        const std::string& env_prefix,
+                        std::int64_t now_wall_ms) override;
+
+  bool init_attempt_lease(const std::string& run_id, const std::string& node_id,
+                          unsigned attempt_number,
+                          std::int64_t expires_wall_ms) override;
+
+  bool acquire_attempt_lease(const std::string& run_id,
+                             const std::string& node_id,
+                             unsigned attempt_number,
+                             const std::string& worker_id,
+                             std::int64_t acquired_wall_ms,
+                             std::int64_t expires_wall_ms) override;
+
+  bool renew_attempt_lease(const std::string& run_id, const std::string& node_id,
+                           unsigned attempt_number,
+                           const std::string& worker_id,
+                           std::int64_t renewed_wall_ms,
+                           std::int64_t expires_wall_ms) override;
+
+  std::vector<AttemptLeaseRecord> scan_expired_attempt_leases(
+      const std::string& run_id, std::int64_t now_wall_ms) override;
+
+  bool mark_attempt_lease_expired(const std::string& run_id,
+                                  const std::string& node_id,
+                                  unsigned attempt_number,
+                                  const std::string& worker_id,
+                                  std::int64_t expired_wall_ms) override;
+
+  std::optional<AttemptLeaseRecord> get_attempt_lease(
+      const std::string& run_id, const std::string& node_id,
+      unsigned attempt_number) override;
+
+  std::optional<WorkerRecord> get_worker(const std::string& worker_id) override;
+
   std::optional<RunRecord> get_run(const std::string& run_id) override;
   std::optional<NodeRunRecord> get_node_run(
       const std::string& run_id, const std::string& node_id) override;
@@ -220,6 +360,8 @@ class InMemoryRunStore final : public RunStore {
 
  private:
   using NodeKey = std::pair<std::string, std::string>;  // (run_id, node_id)
+  // (run_id, node_id, attempt_number) — attempt lease identity (M31).
+  using AttemptKey = std::tuple<std::string, std::string, unsigned>;
 
   mutable std::mutex mu_;
   std::set<std::string> workflows_;
@@ -231,6 +373,9 @@ class InMemoryRunStore final : public RunStore {
   std::map<NodeKey, std::map<unsigned, std::string>> attempt_workers_;
   // (run_id, node_id) -> attempt_number -> terminal status (once finished)
   std::map<NodeKey, std::map<unsigned, std::string>> attempt_status_;
+  // Milestone 31: attempt lease evidence + worker registry.
+  std::map<AttemptKey, AttemptLeaseRecord> attempt_leases_;
+  std::map<std::string, WorkerRecord> workers_;
 };
 
 }  // namespace evo

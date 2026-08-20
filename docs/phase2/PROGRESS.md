@@ -40,7 +40,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `c3723bc` |
 | M29 | Achieve UI parity for Evo runs | ✅ DONE | `a24dd9e` |
 | M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `200386a` |
-| M31 | Implement worker registry, leases, and heartbeats | 🚧 IN PROGRESS (claimed by session B) | — |
+| M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `RECORD_AFTER_COMMIT` |
 
 ---
 
@@ -1767,3 +1767,107 @@ Commit subjects follow `phase2(mNN): <description>`.
   requires explicit approval).
 - **COMMIT:** `200386a` — `phase2(m30): implement distributed cancellation`
 - **NEXT:** M31 — Implement worker registry, leases, and heartbeats.
+
+---
+
+## M31 — Implement worker registry, leases, and heartbeats
+
+**Status:** ✅ DONE — lost workers/tasks are now detected via durable leases + heartbeats, without equating slowness with death.
+
+- **BASE_SHA:** `5ba1b8a` (phase2 branch; M31 was claimed in-progress with
+  uncommitted work, which this session reviewed, fixed, tested, and completed).
+- **What was inspected:** master prompt M31 spec (steps 1–8, no-go list,
+  validation), the uncommitted M31 working tree (C++ run loop / run store /
+  state machine / PG store, TS worker + lease-store, migration 0004),
+  `engine/core/src/transport.cpp` (redelivery semantics),
+  `engine/tests/{distributed_run_loop_test,pg_run_store_test}.cpp`,
+  `worker/src/worker.test.ts`, `docs/phase2/DECISIONS.md`.
+- **What changed:**
+  - **Durable schema (M31 step 2):** migration
+    `0004_phase2_worker_registry_leases.sql` — new `workers` registry table
+    (worker_id PK, env_prefix, status, registered_at, last_heartbeat_at) + 4
+    additive `task_attempts` lease columns (`lease_acquired_at`,
+    `lease_renewed_at`, `lease_expires_at`, `lease_expired_at`) +
+    `ix_task_attempts_lease_expires` index. Applied to LOCAL PG only (Neon
+    untouched, needs explicit human approval). `lib/db/schema.ts` mirrors it.
+  - **Heartbeat vs lease separation (M31 step 1):** a heartbeat proves the
+    PROCESS is alive (registry row, `heartbeatIntervalMs`); a lease proves a
+    specific ATTEMPT is being worked (`leaseDurationMs` /
+    `leaseRenewIntervalMs`). Two independent clocks, documented in the schema,
+    the worker, and DECISIONS.md.
+  - **C++ RunStore lease API:** `worker_heartbeat`, `init_attempt_lease`,
+    `acquire_attempt_lease` (steal guard), `renew_attempt_lease` (holder-only),
+    `scan_expired_attempt_leases`, `mark_attempt_lease_expired` (at-most-once
+    reap), `get_attempt_lease`, `get_worker` — implemented in both
+    `InMemoryRunStore` and `PgRunStore` (parameterized SQL).
+  - **Two-phase lease (M31 steps 3–4):** the scheduler stamps a queue-wait
+    deadline at dispatch (`init_attempt_lease`, `lease_initial_duration` —
+    deliberately generous so a live-but-slow-to-claim worker is not reaped);
+    the worker takes over on claim (`acquire_attempt_lease`, resets to
+    `lease_duration`) and renews while working. **Fixed:** `lease_initial_duration`
+    was dead code — `dispatch_ready()` now actually uses it.
+  - **Recovery, not failure (M31 step 5):** `SchedulerState::abandon_node()`
+    moves RUNNING/DISPATCHED → READY (no successor touched, no dependency-counter
+    change); the run loop's `scan_expired_leases()` reaps expired attempts and
+    re-dispatches the node as a NEW attempt, releasing the abandoned resource
+    slot. Emits a `node_lease_expired` event.
+  - **At-most-once reap (M31 no-go):** `mark_attempt_lease_expired` applies only
+    when the attempt is still `running` and held by the recorded worker; a racing
+    completion already left `running`, so it can never be double-completed.
+  - **PG NULL-worker fix (found this session):** `record_attempt` stores
+    `NULLIF(worker_id,'')`, so a never-claimed attempt has `worker_id IS NULL`;
+    `NULL = ''` is never true in SQL, which made queue-wait leases unreapable.
+    The reap now matches an empty `worker_id` argument against NULL explicitly.
+  - **Worker-side (TS):** `TaskLeaseStore` interface + `PgTaskLeaseStore`
+    (parameterized SQL mirroring the C++ queries, incl. the
+    `to_timestamp(ms/1000.0) AT TIME ZONE 'UTC'` conversion). The worker
+    registers/heartbeats on start (own cadence), acquires the lease before
+    executing, renews on an interval while running, stops renewing once the
+    attempt finishes, and skips + acks a task whose lease it cannot acquire.
+  - **Tests added (M31 steps 7–8):**
+    - C++ `distributed_run_loop_test`: slow-but-renewing worker is NOT reaped
+      (run succeeds on one attempt each, no lease_expired event), and a killed
+      worker's lease expires → attempt reaped to `lease_expired` → node
+      re-dispatched as attempt 2 → healthy worker completes it (recovery, not
+      permanent failure). +16 checks.
+    - C++ `pg_run_store_test`: full durable lease lifecycle (heartbeat
+      register/refresh, init, acquire, steal-guard, renew holder-only, scan
+      before/after expiry, at-most-once reap, completed-attempt-not-reapable)
+      + queue-wait (never-claimed, NULL worker) reap. +43 checks.
+    - TS `worker.test`: worker registers + heartbeats on its own cadence;
+      acquires the lease, renews while running, stops after finish; unacquirable
+      lease → task skipped + acked, never executed. +3 scenarios (12/12).
+- **Concurrency/distributed correctness:** the run loop is single-threaded (owns
+  all scheduling state); the scan runs inside it, paced by steady_clock but
+  comparing durable wall-clock `lease_expires_at`. The conditional UPDATE is the
+  invariant guard against double-complete. A slow (not dead) worker that keeps
+  renewing is never reaped; a dead worker's renewals stop and the lease expires.
+  Late results from a reaped attempt are bounded by the existing late-result rule
+  (M22/M26). Browser-affinity slots held by a dead worker are released on reap.
+- **Timestamps:** all durable lease/heartbeat timestamps wall-clock UTC ms;
+  steady_clock used only to pace the scan cadence (never persisted).
+- **Phase-1 preservation:** legacy Trigger.dev engine untouched; no Phase-1
+  default behavior changed; no test removed; browser credentials stay
+  server/worker-only. Migration is additive and local-only.
+- **No-go compliance:** heartbeat documented as proving process liveness, NOT
+  task progress; lease expiry cannot double-complete a logical node (asserted);
+  no performance numbers invented; no future component marked implemented; no
+  secret/credential committed.
+- **Validation:**
+  - CMake build → ✅ clean; `ctest` (Release) → ✅ 18/18
+  - ASan+UBSan → ✅ 18/18; TSan → ✅ 18/18 (no data races)
+  - `npm test` → ✅ exit 0 across 13 suites (worker 12/12 incl. 3 new M31,
+    all prior suites green)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅ (0 errors, 0 warnings)
+  - Postgres/Redis audit assertions → ✅ (pg_run_store 43 M31 checks vs live PG;
+    distributed_run_loop lease evidence vs in-memory store)
+- **Known limitations:** `grpc_integration` uses `pick_free_port()` (bind-0,
+  release, reuse) — a pre-existing M17 TOCTOU pattern that can flake under
+  parallel load; it passes consistently on re-run and is not M31-related.
+  Recovery-latency benchmarking is deferred to M39. Live-browser lease behavior
+  (a real Browserbase session held across a lease renewal) is covered by the
+  mocked-session suites; live E2E deferred to the final campaign.
+- **Human action:** none (local PG migration only; Neon migration still
+  requires explicit approval).
+- **COMMIT:** `RECORD_AFTER_COMMIT` — `phase2(m31): add worker leases and heartbeats`
+- **NEXT:** M32 — Implement node-level retry policy, exponential backoff, jitter, and dead-lettering.

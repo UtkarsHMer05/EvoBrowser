@@ -95,6 +95,20 @@ struct DistributedRunConfig {
 
   // Overall run deadline (steady clock) to bound tests; 0 => no deadline.
   std::chrono::milliseconds run_timeout{0};
+
+  // --- Task leases (Milestone 31) ---
+  // Lease duration a WORKER is expected to hold/renew while an attempt runs.
+  // The worker acquires with this duration on claim and renews it while work
+  // legitimately runs. 0 => lease monitoring disabled.
+  std::chrono::milliseconds lease_duration{30000};
+  // Queue-wait lease stamped at dispatch, BEFORE any worker claims. Covers the
+  // dispatch->claim window; deliberately generous so a live-but-slow-to-claim
+  // worker is not reaped before it acquires. Once a worker acquires, it resets
+  // the expiry to lease_duration. Defaults to lease_duration.
+  std::chrono::milliseconds lease_initial_duration{0};  // 0 => use lease_duration
+  // How often the loop scans for expired leases (steady clock). 0 disables
+  // scanning even when lease_duration > 0.
+  std::chrono::milliseconds lease_scan_interval{5000};
 };
 
 // Wall-clock UTC milliseconds since the Unix epoch — see run_store.hpp.
@@ -156,6 +170,10 @@ class DistributedRunLoop {
   // Publish the CANCEL_RUN control message exactly once (M30). Best-effort:
   // a transport failure is logged via events but never blocks cancellation.
   void publish_cancel_control();
+  // Milestone 31: scan for expired attempt leases and transition them to
+  // lease_expired (a recoverable state — the node is re-dispatched as a new
+  // attempt, NOT failed). Called periodically from run().
+  void scan_expired_leases();
   void emit(const std::string& kind, const NodeId* node,
             const std::string& detail);
   void finalize_run(const std::string& status, const std::string& outcome);
@@ -192,6 +210,10 @@ class DistributedRunLoop {
   // Current attempt number per node (loop-thread only; M26 dispatches once
   // per node — retries are M32 — but the bookkeeping is attempt-aware).
   std::map<NodeId, unsigned> current_attempt_;
+
+  // Milestone 31: steady-clock instant of the last expired-lease scan
+  // (loop-thread only). Zero => never scanned.
+  std::chrono::steady_clock::time_point last_lease_scan_{};
 
   mutable std::mutex events_mu_;
   std::vector<RunEvent> events_;

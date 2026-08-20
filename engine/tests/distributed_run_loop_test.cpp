@@ -158,6 +158,97 @@ class FakeWorker {
   std::atomic<std::size_t> executed_{0};
 };
 
+// M31: lease-aware fake worker. On claim it ACQUIRES the attempt lease from the
+// store (like the real TS worker). Two modes:
+//   renew=true  -> renews the lease periodically while "working" (a slow but
+//                  ALIVE worker; the scheduler must NOT reap it).
+//   renew=false -> acquires once, then never renews (a KILLED worker; the
+//                  scheduler must reap the attempt after the lease expires).
+// `work_ms` simulates how long the task takes before publishing a result.
+class LeaseWorker {
+ public:
+  LeaseWorker(InMemoryTransport& t, evo::RunStore& store, std::string prefix,
+              std::string run_id, std::string worker_id, bool renew,
+              std::chrono::milliseconds work_ms,
+              std::chrono::milliseconds lease_duration,
+              std::chrono::milliseconds renew_interval)
+      : transport_(t),
+        store_(store),
+        prefix_(std::move(prefix)),
+        run_id_(std::move(run_id)),
+        worker_id_(std::move(worker_id)),
+        renew_(renew),
+        work_ms_(work_ms),
+        lease_duration_(lease_duration),
+        renew_interval_(renew_interval) {}
+
+  void start() {
+    thread_ = std::jthread([this](std::stop_token st) { this->loop(st); });
+  }
+  void stop() {
+    thread_.request_stop();
+    if (thread_.joinable()) thread_.join();
+  }
+  std::size_t executed() const { return executed_.load(); }
+
+ private:
+  void loop(std::stop_token st) {
+    const std::string tasks = evo::task_stream_key(prefix_);
+    const std::string results = evo::result_stream_key(prefix_);
+    transport_.ensure_group(tasks, "workers");
+    while (!st.stop_requested()) {
+      auto msg = transport_.read(tasks, "workers", worker_id_, 20ms, st);
+      if (!msg) continue;
+      evo::execution::v1::TaskEnvelope task;
+      if (!task.ParseFromString(msg->payload)) {
+        transport_.ack(tasks, "workers", msg->id);
+        continue;
+      }
+      executed_.fetch_add(1);
+
+      // Acquire the lease (take over the queue-wait lease the scheduler init'd).
+      const std::int64_t now = evo::now_wall_ms();
+      store_.acquire_attempt_lease(run_id_, task.node_id(),
+                                   task.attempt_number(), worker_id_, now,
+                                   now + lease_duration_.count());
+
+      // "Work" for work_ms, renewing the lease every renew_interval if alive.
+      const auto deadline = std::chrono::steady_clock::now() + work_ms_;
+      auto next_renew = std::chrono::steady_clock::now() + renew_interval_;
+      while (std::chrono::steady_clock::now() < deadline &&
+             !st.stop_requested()) {
+        if (renew_ && std::chrono::steady_clock::now() >= next_renew) {
+          const std::int64_t rnow = evo::now_wall_ms();
+          store_.renew_attempt_lease(run_id_, task.node_id(),
+                                     task.attempt_number(), worker_id_, rnow,
+                                     rnow + lease_duration_.count());
+          next_renew = std::chrono::steady_clock::now() + renew_interval_;
+        }
+        std::this_thread::sleep_for(5ms);
+      }
+      if (st.stop_requested()) return;  // killed mid-work: no result, no renew
+
+      const std::string result = encode_success(
+          run_id_, task.node_id(), task.attempt_number(),
+          "{\"ok\":true,\"node\":\"" + task.node_id() + "\"}");
+      transport_.publish(results, result);
+      transport_.ack(tasks, "workers", msg->id);
+    }
+  }
+
+  InMemoryTransport& transport_;
+  evo::RunStore& store_;
+  std::string prefix_;
+  std::string run_id_;
+  std::string worker_id_;
+  bool renew_;
+  std::chrono::milliseconds work_ms_;
+  std::chrono::milliseconds lease_duration_;
+  std::chrono::milliseconds renew_interval_;
+  std::jthread thread_;
+  std::atomic<std::size_t> executed_{0};
+};
+
 }  // namespace
 
 int main() {
@@ -614,6 +705,161 @@ int main() {
       }
     }
     check(all_terminal, "m30: all nodes terminal after late-result injection");
+  }
+
+  // --- 12. M31: slow-but-renewing worker is NOT reaped ----------------------
+  // A worker whose task takes longer than the lease duration, but that RENEWS
+  // its lease while working, must never be reaped: the run succeeds on the
+  // first attempt and no lease_expired event fires.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m31-slow";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m31slow";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    // Lease shorter than the task, but the worker renews well inside it.
+    cfg.lease_duration = 200ms;
+    cfg.lease_scan_interval = 50ms;
+    // Generous queue-wait lease: with ONE worker, nodes a/b/c queue behind
+    // the busy worker; their dispatch-time lease must not expire before the
+    // worker claims them (queue-wait is bounded separately from the claimed
+    // attempt lease, per DistributedRunConfig::lease_initial_duration).
+    cfg.lease_initial_duration = 10s;
+
+    std::vector<evo::RunEvent> events;
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg,
+                            [&](const evo::RunEvent& ev) {
+                              events.push_back(ev);
+                            });
+    // Task takes 600ms (> 3x the 200ms lease) but renews every 50ms.
+    LeaseWorker worker(transport, store, cfg.env_prefix, cfg.run_id,
+                       "m31-slow-worker", /*renew=*/true, /*work_ms=*/600ms,
+                       /*lease_duration=*/200ms, /*renew_interval=*/50ms);
+    worker.start();
+
+    const std::string status = loop.run();
+    worker.stop();
+
+    check(status == evo::run_status::kSucceeded,
+          "m31: slow-but-renewing worker completes the run");
+    bool any_lease_expired = false;
+    for (const auto& ev : events) {
+      if (ev.kind == "node_lease_expired") any_lease_expired = true;
+    }
+    check(!any_lease_expired,
+          "m31: renewing worker never reaped (no lease_expired event)");
+    // Every node succeeded on exactly one attempt (no re-dispatch).
+    bool one_attempt_each = true;
+    for (const char* n : {"start", "a", "b", "c"}) {
+      if (store.attempt_row_count("run-m31-slow", n) != 1) one_attempt_each = false;
+      auto nr = store.get_node_run("run-m31-slow", n);
+      if (!nr.has_value() || nr->status != evo::node_status::kSucceeded) {
+        one_attempt_each = false;
+      }
+    }
+    check(one_attempt_each,
+          "m31: every node succeeded on exactly one attempt (no reap)");
+  }
+
+  // --- 13. M31: killed worker's lease expires -> node re-dispatched ---------
+  // A worker that acquires the lease then dies (never renews, never publishes
+  // a result) must be reaped: the attempt transitions to lease_expired and the
+  // node is re-dispatched as a NEW attempt, which a healthy worker completes.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m31-kill";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m31kill";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.lease_duration = 150ms;
+    cfg.lease_scan_interval = 30ms;
+
+    std::vector<evo::RunEvent> events;
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg,
+                            [&](const evo::RunEvent& ev) {
+                              events.push_back(ev);
+                            });
+
+    // Phase 1: a "killed" worker claims the first dispatched task (start) but
+    // never renews and never publishes a result. The run loop must be RUNNING
+    // (on its own thread) for anything to dispatch; we stop the killer right
+    // after it acquires the lease, simulating a crash.
+    std::jthread loop_thread([&] { loop.run(); });
+
+    LeaseWorker killer(transport, store, cfg.env_prefix, cfg.run_id,
+                       "m31-killed-worker", /*renew=*/false,
+                       /*work_ms=*/60000ms,  // would never finish on its own
+                       /*lease_duration=*/150ms, /*renew_interval=*/1000ms);
+    killer.start();
+    // Wait until the killed worker has actually ACQUIRED the lease for
+    // (start, attempt 1) — not merely claimed the message — so the reap below
+    // has a real lease to expire.
+    {
+      const auto wait_deadline = std::chrono::steady_clock::now() + 5s;
+      bool acquired = false;
+      while (std::chrono::steady_clock::now() < wait_deadline && !acquired) {
+        auto l = store.get_attempt_lease("run-m31-kill", "start", 1);
+        acquired = l.has_value() && l->worker_id == "m31-killed-worker";
+        if (!acquired) std::this_thread::sleep_for(2ms);
+      }
+      check(acquired, "m31: killed worker acquired the lease before crash");
+    }
+    killer.stop();  // simulate crash: no result, no further renewals
+
+    // Phase 2: a healthy worker takes over after the lease expires.
+    LeaseWorker healthy(transport, store, cfg.env_prefix, cfg.run_id,
+                        "m31-healthy-worker", /*renew=*/true,
+                        /*work_ms=*/20ms, /*lease_duration=*/2000ms,
+                        /*renew_interval=*/500ms);
+    healthy.start();
+
+    loop_thread.join();
+    const std::string status = store.get_run("run-m31-kill")->status;
+    healthy.stop();
+
+    check(status == evo::run_status::kSucceeded,
+          "m31: run recovers after a killed worker (re-dispatch succeeds)");
+
+    // The killed worker's attempt (start, attempt 1) is lease_expired.
+    auto lease1 = store.get_attempt_lease("run-m31-kill", "start", 1);
+    check(lease1.has_value() &&
+              lease1->status == evo::attempt_status::kLeaseExpired &&
+              lease1->worker_id == "m31-killed-worker" &&
+              lease1->expired_ms > 0,
+          "m31: killed worker's attempt reaped to lease_expired (evidence)");
+    // Lease evidence timestamps recorded (acquired before expired).
+    check(lease1.has_value() && lease1->acquired_ms > 0 &&
+              lease1->expires_ms > 0,
+          "m31: lease acquired/expires timestamps recorded");
+
+    // The node was re-dispatched as attempt 2 and completed by the healthy
+    // worker — recovery, not permanent failure.
+    auto lease2 = store.get_attempt_lease("run-m31-kill", "start", 2);
+    check(lease2.has_value() &&
+              lease2->worker_id == "m31-healthy-worker",
+          "m31: node re-dispatched as a new attempt to a healthy worker");
+    auto nstart = store.get_node_run("run-m31-kill", "start");
+    check(nstart.has_value() && nstart->status == evo::node_status::kSucceeded,
+          "m31: node eventually succeeded (not permanently failed)");
+    check(store.attempt_row_count("run-m31-kill", "start") == 2,
+          "m31: exactly two attempts for the reaped node");
+
+    // A lease_expired event was emitted for the reaped attempt.
+    bool saw_lease_expired = false;
+    for (const auto& ev : events) {
+      if (ev.kind == "node_lease_expired" && ev.node_id == "start") {
+        saw_lease_expired = true;
+      }
+    }
+    check(saw_lease_expired, "m31: node_lease_expired event emitted");
   }
 
   if (failures == 0) {

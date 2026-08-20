@@ -495,6 +495,185 @@ async function main() {
     ok("m30: cancel during mocked browser task aborts + closes the session");
   }
 
+  // --- M31: worker registry heartbeat + task leases -------------------------
+  // A fake TaskLeaseStore records the worker's heartbeat/acquire/renew calls.
+  // The real durable store (PgTaskLeaseStore) is covered by the C++ PG suite;
+  // here we assert the WORKER's lease protocol.
+  {
+    type LeaseCall = {
+      kind: "heartbeat" | "acquire" | "renew";
+      workerId: string;
+      runId?: string;
+      nodeId?: string;
+      attempt?: number;
+    };
+    const calls: LeaseCall[] = [];
+    const heldByOther = new Set<string>(); // attempt keys another worker holds
+    const fakeLeaseStore = {
+      workerHeartbeat: async (workerId: string) => {
+        calls.push({ kind: "heartbeat", workerId });
+        return true;
+      },
+      acquireAttemptLease: async (
+        runId: string,
+        nodeId: string,
+        attemptNumber: number,
+        workerId: string,
+      ) => {
+        calls.push({
+          kind: "acquire",
+          workerId,
+          runId,
+          nodeId,
+          attempt: attemptNumber,
+        });
+        return !heldByOther.has(`${runId}:${nodeId}:${attemptNumber}`);
+      },
+      renewAttemptLease: async (
+        runId: string,
+        nodeId: string,
+        attemptNumber: number,
+        workerId: string,
+      ) => {
+        calls.push({
+          kind: "renew",
+          workerId,
+          runId,
+          nodeId,
+          attempt: attemptNumber,
+        });
+        return true;
+      },
+    };
+
+    // (a) Heartbeat: the worker registers on start and keeps heartbeating.
+    const w = new Worker({
+      redis: redisCfg,
+      envPrefix,
+      group,
+      workerId: "w-m31",
+      executor: syntheticExecutor,
+      leaseStore: fakeLeaseStore,
+      heartbeatIntervalMs: 60,
+      leaseDurationMs: 500,
+      leaseRenewIntervalMs: 60,
+      log: silent,
+    });
+    await w.start();
+    await waitFor(
+      async () =>
+        calls.filter((c) => c.kind === "heartbeat" && c.workerId === "w-m31")
+          .length >= 2,
+      3000,
+      "m31: worker heartbeats repeatedly",
+    );
+    ok("m31: worker registers + heartbeats on its own cadence");
+    await w.stop();
+
+    // (b) Acquire + renew: a task slower than the renew interval is acquired
+    // before execution and renewed while it runs.
+    const before = await publisher.streamLength(resultStream);
+    const slowExecutor = async () => {
+      await sleep(250);
+      return { completed: true, output: '{"ok":true}' };
+    };
+    const wSlow = new Worker({
+      redis: redisCfg,
+      envPrefix,
+      group,
+      workerId: "w-m31-slow",
+      executor: slowExecutor,
+      leaseStore: fakeLeaseStore,
+      heartbeatIntervalMs: 60_000,
+      leaseDurationMs: 500,
+      leaseRenewIntervalMs: 60,
+      log: silent,
+    });
+    await wSlow.start();
+    const leaseTask = await encodeTaskEnvelope({
+      runId: "run-m31-lease",
+      orgId: "org_m23",
+      nodeId: "lease_node",
+      attemptNumber: 1,
+      nodeType: "bench:echo",
+      nodePayloadJson: "{}",
+    });
+    await publisher.publish(taskStream, leaseTask);
+    await waitFor(
+      async () => (await publisher.streamLength(resultStream)) >= before + 1,
+      5000,
+      "m31: slow task handed off a result",
+    );
+    const acquires = calls.filter(
+      (c) =>
+        c.kind === "acquire" &&
+        c.runId === "run-m31-lease" &&
+        c.nodeId === "lease_node",
+    );
+    const renews = calls.filter(
+      (c) =>
+        c.kind === "renew" &&
+        c.runId === "run-m31-lease" &&
+        c.nodeId === "lease_node",
+    );
+    assert.ok(acquires.length >= 1, "lease acquired before execution");
+    assert.ok(
+      renews.length >= 1,
+      "lease renewed while work legitimately runs",
+    );
+    // Renewals stop after the attempt finishes.
+    const renewsAtFinish = renews.length;
+    await sleep(150);
+    assert.equal(
+      calls.filter(
+        (c) =>
+          c.kind === "renew" &&
+          c.runId === "run-m31-lease" &&
+          c.nodeId === "lease_node",
+      ).length,
+      renewsAtFinish,
+      "no lease renewal after the attempt finished",
+    );
+    ok("m31: worker acquires the lease, renews while running, stops after");
+    await wSlow.stop();
+
+    // (c) Lease held by another worker: the task is skipped + acked, never
+    // executed (the rightful owner hands off the result).
+    heldByOther.add("run-m31-held:held_node:1");
+    let executedHeld = false;
+    const wHeld = new Worker({
+      redis: redisCfg,
+      envPrefix,
+      group,
+      workerId: "w-m31-held",
+      executor: async () => {
+        executedHeld = true;
+        return { completed: true, output: "{}" };
+      },
+      leaseStore: fakeLeaseStore,
+      heartbeatIntervalMs: 60_000,
+      log: silent,
+    });
+    await wHeld.start();
+    const heldTask = await encodeTaskEnvelope({
+      runId: "run-m31-held",
+      orgId: "org_m23",
+      nodeId: "held_node",
+      attemptNumber: 1,
+      nodeType: "bench:echo",
+      nodePayloadJson: "{}",
+    });
+    await publisher.publish(taskStream, heldTask);
+    await waitFor(
+      async () => (await wHeld.pendingCount()) === 0,
+      5000,
+      "m31: held-lease task acked without execution",
+    );
+    assert.equal(executedHeld, false, "held-lease task never executed");
+    ok("m31: unacquirable lease -> task skipped + acked, not executed");
+    await wHeld.stop();
+  }
+
   await publisher.disconnect();
 
   console.log(`\nALL M23 WORKER INTEGRATION TESTS PASSED! (${passed}/${passed})`);

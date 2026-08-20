@@ -212,6 +212,162 @@ int main() {
   check(store.get_node_run(run_id, "a").has_value(),
         "node_runs table intact after injection probe");
 
+  // --- M31: worker registry + task-lease audit -------------------------------
+  // A fresh run + node + attempt to exercise the durable lease lifecycle.
+  const std::string lease_run_id =
+      "m31-pgtest-" +
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  evo::RunRecord lease_run;
+  lease_run.run_id = lease_run_id;
+  lease_run.org_id = "org-pg";
+  lease_run.workflow_id = wf_id;
+  lease_run.engine = "evo";
+  lease_run.status = evo::run_status::kRunning;
+  check(store.create_run(lease_run, evo::now_wall_ms()),
+        "m31: lease run created");
+  check(store.create_node_run(lease_run_id, "n1", "bench:echo"),
+        "m31: lease node created");
+  check(store.record_attempt(lease_run_id, "n1", 1, "", evo::now_wall_ms()),
+        "m31: attempt row created (no worker yet)");
+
+  // Worker registry: register + heartbeat upsert the liveness row.
+  const std::string w1 = "m31-pg-worker-1";
+  const std::int64_t hb1 = evo::now_wall_ms();
+  check(store.worker_heartbeat(w1, "evo:pgtest", hb1),
+        "m31: worker heartbeat registers the row");
+  auto wrec = store.get_worker(w1);
+  check(wrec.has_value() && wrec->status == "alive" &&
+            wrec->env_prefix == "evo:pgtest" && wrec->last_heartbeat_ms > 0,
+        "m31: worker registry row readable (alive + heartbeat ts)");
+  check(store.worker_heartbeat(w1, "evo:pgtest", hb1 + 1000),
+        "m31: heartbeat upsert idempotent");
+  auto wrec2 = store.get_worker(w1);
+  check(wrec2.has_value() && wrec2->last_heartbeat_ms > wrec->last_heartbeat_ms,
+        "m31: heartbeat refreshes last_heartbeat_at");
+  check(!store.get_worker("m31-no-such-worker").has_value(),
+        "m31: unknown worker -> nullopt");
+
+  // Lease init (scheduler side): stamps the queue-wait deadline only.
+  const std::int64_t t0 = evo::now_wall_ms();
+  check(store.init_attempt_lease(lease_run_id, "n1", 1, t0 + 30000),
+        "m31: init_attempt_lease stamps queue-wait deadline");
+  auto l0 = store.get_attempt_lease(lease_run_id, "n1", 1);
+  check(l0.has_value() && l0->status == evo::attempt_status::kRunning &&
+            l0->worker_id.empty() && l0->expires_ms > 0 &&
+            l0->acquired_ms == 0,
+        "m31: initialized lease has expiry but no worker");
+
+  // Acquire: worker-1 takes over the queue-wait lease.
+  check(store.acquire_attempt_lease(lease_run_id, "n1", 1, w1, t0 + 10,
+                                    t0 + 30010),
+        "m31: worker-1 acquires the lease");
+  auto l1 = store.get_attempt_lease(lease_run_id, "n1", 1);
+  check(l1.has_value() && l1->worker_id == w1 && l1->acquired_ms > 0 &&
+            l1->renewed_ms > 0 && l1->expires_ms > 0,
+        "m31: lease evidence (worker/acquired/renewed/expires) recorded");
+
+  // Steal guard: a DIFFERENT worker cannot take an unexpired lease.
+  check(!store.acquire_attempt_lease(lease_run_id, "n1", 1, "m31-pg-worker-2",
+                                     t0 + 20, t0 + 30020),
+        "m31: unexpired lease cannot be stolen by another worker");
+  auto l1b = store.get_attempt_lease(lease_run_id, "n1", 1);
+  check(l1b.has_value() && l1b->worker_id == w1,
+        "m31: lease still held by worker-1 after steal attempt");
+
+  // Renew: only the holder may renew, while running.
+  check(store.renew_attempt_lease(lease_run_id, "n1", 1, w1, t0 + 100,
+                                  t0 + 30100),
+        "m31: holder renews the lease");
+  auto l2 = store.get_attempt_lease(lease_run_id, "n1", 1);
+  check(l2.has_value() && l2->renewed_ms > l1->renewed_ms &&
+            l2->expires_ms > l1->expires_ms,
+        "m31: renewal advances renewed_at + expires_at");
+  check(!store.renew_attempt_lease(lease_run_id, "n1", 1, "m31-pg-worker-2",
+                                   t0 + 110, t0 + 30110),
+        "m31: non-holder cannot renew the lease");
+
+  // Scan: nothing expired yet (expiry is 30s out).
+  check(store.scan_expired_attempt_leases(lease_run_id, t0 + 200).empty(),
+        "m31: scan finds nothing before expiry");
+  // Scan at a now past the expiry finds the running attempt.
+  auto expired = store.scan_expired_attempt_leases(lease_run_id, t0 + 40000);
+  check(expired.size() == 1 && expired[0].node_id == "n1" &&
+            expired[0].attempt_number == 1 && expired[0].worker_id == w1,
+        "m31: scan finds the expired running attempt");
+
+  // Reap: at-most-once transition to lease_expired.
+  check(store.mark_attempt_lease_expired(lease_run_id, "n1", 1, w1,
+                                         t0 + 40001),
+        "m31: mark_attempt_lease_expired applies once");
+  check(!store.mark_attempt_lease_expired(lease_run_id, "n1", 1, w1,
+                                          t0 + 40002),
+        "m31: second reap is a no-op (at-most-once)");
+  auto l3 = store.get_attempt_lease(lease_run_id, "n1", 1);
+  check(l3.has_value() && l3->status == evo::attempt_status::kLeaseExpired &&
+            l3->expired_ms > 0,
+        "m31: attempt row durably lease_expired with evidence timestamp");
+  // A reaped attempt is no longer running, so the scan never returns it.
+  check(store.scan_expired_attempt_leases(lease_run_id, t0 + 50000).empty(),
+        "m31: reaped attempt no longer returned by scan");
+
+  // Completion races reap: a completed attempt can never be reaped (M31 no-go:
+  // lease expiry must not double-complete the logical node).
+  check(store.record_attempt(lease_run_id, "n1", 2, "", evo::now_wall_ms()),
+        "m31: attempt 2 created");
+  check(store.init_attempt_lease(lease_run_id, "n1", 2, t0 + 60000),
+        "m31: attempt 2 lease initialized");
+  check(store.acquire_attempt_lease(lease_run_id, "n1", 2, w1, t0 + 60010,
+                                    t0 + 90010),
+        "m31: attempt 2 acquired");
+  check(store.finish_attempt(lease_run_id, "n1", 2, w1,
+                             evo::node_status::kSucceeded, "", t0 + 60500),
+        "m31: attempt 2 completed (succeeded)");
+  check(!store.mark_attempt_lease_expired(lease_run_id, "n1", 2, w1,
+                                          t0 + 95000),
+        "m31: completed attempt cannot be reaped (no double-complete)");
+  auto l4 = store.get_attempt_lease(lease_run_id, "n1", 2);
+  check(l4.has_value() && l4->status == evo::attempt_status::kSucceeded,
+        "m31: completed attempt keeps its terminal status");
+
+  check(store.finish_run(lease_run_id, evo::run_status::kSucceeded,
+                         "succeeded", evo::now_wall_ms()),
+        "m31: lease run finalized");
+
+  // --- M31: queue-wait lease reap (never-claimed attempt) --------------------
+  // An attempt that was dispatched but never claimed has worker_id NULL; its
+  // queue-wait lease must still be reapable (NULL = '' is never true in SQL,
+  // so the reap matches an empty worker_id argument against NULL explicitly).
+  const std::string qw_run_id =
+      "m31-pgtest-qw-" +
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  evo::RunRecord qw_run;
+  qw_run.run_id = qw_run_id;
+  qw_run.org_id = "org-pg";
+  qw_run.workflow_id = wf_id;
+  qw_run.engine = "evo";
+  qw_run.status = evo::run_status::kRunning;
+  check(store.create_run(qw_run, evo::now_wall_ms()), "m31: qw run created");
+  check(store.create_node_run(qw_run_id, "q1", "bench:echo"),
+        "m31: qw node created");
+  check(store.record_attempt(qw_run_id, "q1", 1, "", evo::now_wall_ms()),
+        "m31: qw attempt created (never claimed)");
+  const std::int64_t q0 = evo::now_wall_ms();
+  check(store.init_attempt_lease(qw_run_id, "q1", 1, q0 + 100),
+        "m31: qw lease initialized");
+  auto qw_expired = store.scan_expired_attempt_leases(qw_run_id, q0 + 5000);
+  check(qw_expired.size() == 1 && qw_expired[0].worker_id.empty(),
+        "m31: scan finds the never-claimed expired attempt (empty worker)");
+  check(store.mark_attempt_lease_expired(qw_run_id, "q1", 1, "", q0 + 5001),
+        "m31: never-claimed attempt reapable via empty worker_id");
+  auto qw_lease = store.get_attempt_lease(qw_run_id, "q1", 1);
+  check(qw_lease.has_value() &&
+            qw_lease->status == evo::attempt_status::kLeaseExpired &&
+            qw_lease->expired_ms > 0,
+        "m31: qw attempt durably lease_expired");
+  check(store.finish_run(qw_run_id, evo::run_status::kCanceled, "test-done",
+                         evo::now_wall_ms()),
+        "m31: qw run finalized");
+
   if (failures == 0) {
     printf("\nALL M26 PG RUN STORE TESTS PASSED!\n");
     return 0;
