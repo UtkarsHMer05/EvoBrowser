@@ -53,6 +53,7 @@
 #include "evo/dag.hpp"
 #include "evo/envelope.hpp"
 #include "evo/execution_policy.hpp"
+#include "evo/retry_policy.hpp"
 #include "evo/run_store.hpp"
 #include "evo/state_machine.hpp"
 #include "evo/transport.hpp"
@@ -61,7 +62,8 @@ namespace evo {
 
 // Normalized run event for UI consumers (M26 step 7). `kind` is one of:
 //   run_started, node_dispatched, node_succeeded, node_failed,
-//   node_canceled, run_finished
+//   node_canceled, run_finished, node_lease_expired (M31),
+//   node_retry_scheduled, node_dead_lettered (M32)
 struct RunEvent {
   std::string run_id;
   std::string node_id;  // empty for run-level events
@@ -109,6 +111,17 @@ struct DistributedRunConfig {
   // How often the loop scans for expired leases (steady clock). 0 disables
   // scanning even when lease_duration > 0.
   std::chrono::milliseconds lease_scan_interval{5000};
+
+  // --- Node-level retries (Milestone 32) ---
+  // Retry policies by resource class. Defaults: internal 3 attempts, browser
+  // 2 attempts, external_io 1 attempt (no retry — side effects need an
+  // idempotency strategy first). Set `enabled=false` to disable retries
+  // entirely (every retryable failure then fails the node immediately).
+  RetryPolicySet retry_policies = RetryPolicySet::defaults();
+  bool retries_enabled = true;
+  // Seed for the deterministic backoff jitter (M32 step 4). The per-node seed
+  // is derived from this + the node id, so tests are reproducible.
+  std::uint64_t retry_jitter_seed = 0xC0FFEE;
 };
 
 // Wall-clock UTC milliseconds since the Unix epoch — see run_store.hpp.
@@ -174,6 +187,15 @@ class DistributedRunLoop {
   // lease_expired (a recoverable state — the node is re-dispatched as a new
   // attempt, NOT failed). Called periodically from run().
   void scan_expired_leases();
+  // Milestone 32: move RETRY_WAIT nodes whose backoff has elapsed back to
+  // READY so dispatch_ready() re-dispatches them as a new attempt. Called
+  // every loop iteration (cheap map scan; no blocking, no worker-thread wait).
+  void process_retry_waits();
+  // Milestone 32: apply the retry policy to a failed attempt. Returns true if
+  // the node was parked for retry (RETRY_WAIT) or dead-lettered, false if the
+  // caller should run the plain fail path.
+  bool handle_retryable_failure(const execution::v1::ResultEnvelope& result,
+                                std::int64_t finished_ms);
   void emit(const std::string& kind, const NodeId* node,
             const std::string& detail);
   void finalize_run(const std::string& status, const std::string& outcome);
@@ -214,6 +236,14 @@ class DistributedRunLoop {
   // Milestone 31: steady-clock instant of the last expired-lease scan
   // (loop-thread only). Zero => never scanned.
   std::chrono::steady_clock::time_point last_lease_scan_{};
+
+  // Milestone 32: RETRY_WAIT bookkeeping (loop-thread only). node -> wall-clock
+  // UTC ms when its backoff elapses. The failed attempt number comes from the
+  // result envelope; the per-node jitter seed is derived from
+  // config_.retry_jitter_seed + node id + attempt number. A node in RETRY_WAIT
+  // is not terminal, so all_nodes_terminal() keeps the run alive until its
+  // backoff elapses and it is re-dispatched.
+  std::map<NodeId, std::int64_t> retry_due_;
 
   mutable std::mutex events_mu_;
   std::vector<RunEvent> events_;

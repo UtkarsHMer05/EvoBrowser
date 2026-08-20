@@ -151,6 +151,90 @@ void DistributedRunLoop::scan_expired_leases() {
   }
 }
 
+namespace {
+// Deterministic per-(node, attempt) jitter seed: FNV-1a 64 of the node id,
+// mixed with the attempt number and the run-level seed. Same inputs => same
+// backoff jitter, so retry timing is reproducible in tests (M32 step 4).
+std::uint64_t jitter_seed_for(const std::string& node_id, unsigned attempt,
+                              std::uint64_t base_seed) {
+  std::uint64_t h = 1469598103934665603ULL;  // FNV offset basis
+  for (const char c : node_id) {
+    h ^= static_cast<std::uint64_t>(static_cast<unsigned char>(c));
+    h *= 1099511628211ULL;  // FNV prime
+  }
+  h ^= static_cast<std::uint64_t>(attempt) * 0x9E3779B97F4A7C15ULL;
+  h ^= base_seed;
+  return h == 0 ? 0xC0FFEEULL : h;
+}
+}  // namespace
+
+bool DistributedRunLoop::handle_retryable_failure(
+    const execution::v1::ResultEnvelope& result, std::int64_t finished_ms) {
+  if (!config_.retries_enabled) return false;  // plain fail path
+
+  const NodeId node_id{result.node_id()};
+  const ResourcePolicy pol = policy_for_node(node_id);
+  const RetryPolicy& policy = config_.retry_policies.for_class(pol.klass);
+
+  const unsigned failed_attempt = result.attempt_number();
+  const RetryDecision decision = decide_retry(
+      policy, failed_attempt, result.error_class(), result.has_retryable(),
+      result.retryable(),
+      jitter_seed_for(node_id.value, failed_attempt, config_.retry_jitter_seed));
+
+  if (decision.fail) {
+    return false;  // caller runs the plain fail path (M26)
+  }
+
+  if (decision.dead_letter) {
+    // Retries exhausted: terminal DEAD_LETTERED (M32 step 7). Persist the
+    // terminal node state FIRST, then cancel downstream (same semantics as a
+    // failed node). The resource slot is released by run() (applied==true).
+    const bool applied = store_.complete_node_run(
+        config_.run_id, node_id.value, node_status::kDeadLettered, "",
+        decision.reason, finished_ms);
+    if (!applied) return false;
+    auto canceled = state_.dead_letter_node(node_id, decision.reason);
+    emit("node_dead_lettered", &node_id, decision.reason);
+    persist_canceled(canceled);
+    return true;
+  }
+
+  // Retry: park the node in RETRY_WAIT with its backoff due-time (M32 step 5).
+  // The wait is realized as a state + due-time, NOT by blocking any thread
+  // (M32 step 6); process_retry_waits() re-readies it when the time elapses.
+  const std::int64_t due_ms = finished_ms + decision.backoff.count();
+  const bool parked = state_.retry_wait_node(node_id);
+  if (!parked) return false;  // not Running anymore (e.g. raced cancel)
+  store_.set_node_retry_wait(config_.run_id, node_id.value, due_ms,
+                             decision.reason);
+  retry_due_[node_id] = due_ms;
+  emit("node_retry_scheduled", &node_id,
+       decision.reason + " attempt=" + std::to_string(failed_attempt));
+  return true;
+}
+
+void DistributedRunLoop::process_retry_waits() {
+  if (retry_due_.empty()) return;
+  // No new dispatch after a cancellation request (M30): leave parked nodes for
+  // the cancel path to transition.
+  if (cancel_requested_.load(std::memory_order_relaxed)) return;
+
+  const std::int64_t now = now_wall_ms();
+  std::vector<NodeId> due;
+  for (const auto& [id, due_ms] : retry_due_) {
+    if (due_ms <= now) due.push_back(id);
+  }
+  for (const auto& id : due) {
+    retry_due_.erase(id);
+    // RETRY_WAIT -> READY only if still parked (a racing cancel may have moved
+    // it). dispatch_ready() then re-dispatches it as a NEW attempt.
+    if (state_.ready_from_retry(id)) {
+      store_.set_node_status(config_.run_id, id.value, node_status::kReady);
+    }
+  }
+}
+
 std::vector<RunEvent> DistributedRunLoop::events() const {
   std::lock_guard lock(events_mu_);
   return events_;
@@ -351,17 +435,23 @@ bool DistributedRunLoop::apply_result(
     return true;
   }
 
-  // Failure: persist details (M26 step 6), then propagate cancellation to
-  // downstream nodes. Retry policy is M32 — M26 records the hint's inputs
-  // (error_class/retryable are already in the durable attempt/result stream)
-  // but does not re-dispatch.
+  // Failure path (M32): persist the failed attempt, then consult the retry
+  // policy. A retryable failure parks the node in RETRY_WAIT (re-dispatched
+  // after its backoff) or dead-letters it (attempt budget exhausted); a
+  // non-retryable failure fails the node and cancels downstream (M26).
+  store_.finish_attempt(config_.run_id, node_id.value, result.attempt_number(),
+                        result.worker_id(), node_status::kFailed,
+                        result.error(), finished_ms);
+
+  if (handle_retryable_failure(result, finished_ms)) {
+    return true;  // retried (RETRY_WAIT) or dead-lettered
+  }
+
+  // Non-retryable: fail the node + cancel downstream (M26 step 6).
   const bool applied = store_.complete_node_run(
       config_.run_id, node_id.value, node_status::kFailed, "", result.error(),
       finished_ms);
   if (!applied) return false;
-  store_.finish_attempt(config_.run_id, node_id.value, result.attempt_number(),
-                        result.worker_id(), node_status::kFailed,
-                        result.error(), finished_ms);
   auto canceled = state_.complete_node(node_id, TaskResult{false, result.error()});
   emit("node_failed", &node_id, result.error());
   persist_canceled(canceled);
@@ -435,6 +525,11 @@ std::string DistributedRunLoop::run() {
     // Milestone 31: periodically reap expired attempt leases (lost workers).
     // Paced internally by lease_scan_interval; a no-op most iterations.
     scan_expired_leases();
+
+    // Milestone 32: re-ready RETRY_WAIT nodes whose backoff has elapsed.
+    // Cheap map scan; the backoff wait is a state + due-time, never a blocked
+    // thread (M32 step 6).
+    process_retry_waits();
 
     if (state_.all_nodes_terminal()) {
       state_.finalize_run();

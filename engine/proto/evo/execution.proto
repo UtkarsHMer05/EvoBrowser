@@ -41,6 +41,9 @@ enum ErrorClass {
   ERROR_PERMANENT          = 2; // bad input, 4xx, logic error — retry won't help
   ERROR_RESOURCE_EXHAUSTED = 3; // quota/rate limit — retry only after backoff
   ERROR_CANCELED           = 4; // attempt was canceled (not a failure per se)
+  // Milestone 32 additions (additive; never retried — see retry policy):
+  ERROR_VALIDATION         = 5; // input/schema validation failed — retry won't help
+  ERROR_AUTHORIZATION      = 6; // auth/permission denied — retry won't help
 }
 
 // Lifecycle state of an individual node within a run.

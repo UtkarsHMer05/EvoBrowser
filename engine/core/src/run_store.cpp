@@ -71,6 +71,19 @@ bool InMemoryRunStore::set_node_status(const std::string& run_id,
   return true;
 }
 
+bool InMemoryRunStore::set_node_retry_wait(
+    const std::string& run_id, const std::string& node_id,
+    std::int64_t retry_wait_until_wall_ms, const std::string& retry_reason) {
+  std::lock_guard lock(mu_);
+  auto it = node_runs_.find({run_id, node_id});
+  if (it == node_runs_.end()) return false;
+  if (node_status::is_terminal(it->second.status)) return false;
+  it->second.status = node_status::kRetryWait;
+  it->second.retry_wait_until = retry_wait_until_wall_ms;
+  it->second.retry_reason = retry_reason;
+  return true;
+}
+
 bool InMemoryRunStore::record_attempt(const std::string& run_id,
                                       const std::string& node_id,
                                       unsigned attempt_number,

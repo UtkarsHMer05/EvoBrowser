@@ -58,6 +58,7 @@ inline constexpr const char* kBlocked = "blocked";
 inline constexpr const char* kReady = "ready";
 inline constexpr const char* kDispatched = "dispatched";
 inline constexpr const char* kRunning = "running";
+inline constexpr const char* kRetryWait = "retry_wait";  // Milestone 32
 inline constexpr const char* kSucceeded = "succeeded";
 inline constexpr const char* kFailed = "failed";
 inline constexpr const char* kCanceled = "canceled";
@@ -123,6 +124,11 @@ struct NodeRunRecord {
   int attempt_count = 0;
   std::string output_json;    // empty => NULL
   std::string failure_reason;  // empty => NULL
+  // Milestone 32: retry evidence. retry_wait_until is the wall-clock UTC ms
+  // backoff due-time (0 => NULL / not waiting); retry_reason is the
+  // human-readable reason for the current retry wait (empty => NULL).
+  std::int64_t retry_wait_until = 0;
+  std::string retry_reason;
 };
 
 class RunStore {
@@ -150,6 +156,14 @@ class RunStore {
   virtual bool set_node_status(const std::string& run_id,
                                const std::string& node_id,
                                const std::string& status) = 0;
+
+  // Milestone 32: park a node in RETRY_WAIT with its backoff due-time +
+  // reason. Sets status='retry_wait', retry_wait_until, retry_reason. Never
+  // applies to a terminal node. `retry_wait_until_wall_ms` is wall-clock UTC.
+  virtual bool set_node_retry_wait(const std::string& run_id,
+                                   const std::string& node_id,
+                                   std::int64_t retry_wait_until_wall_ms,
+                                   const std::string& retry_reason) = 0;
 
   // Record an attempt. Idempotent per (node_run, attempt_number): returns
   // true only when this call created the attempt row (a duplicate delivery
@@ -290,6 +304,11 @@ class InMemoryRunStore final : public RunStore {
 
   bool set_node_status(const std::string& run_id, const std::string& node_id,
                        const std::string& status) override;
+
+  bool set_node_retry_wait(const std::string& run_id,
+                           const std::string& node_id,
+                           std::int64_t retry_wait_until_wall_ms,
+                           const std::string& retry_reason) override;
 
   bool record_attempt(const std::string& run_id, const std::string& node_id,
                       unsigned attempt_number, const std::string& worker_id,

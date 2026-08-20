@@ -2751,32 +2751,33 @@ const char descriptor_table_protodef_evo_2fexecution_2eproto[] ABSL_ATTRIBUTE_SE
     "rotobuf.Timestamp\022/\n\013finished_at\030\007 \001(\0132\032"
     ".google.protobuf.Timestamp\"\017\n\rHealthRequ"
     "est\",\n\016HealthResponse\022\n\n\002ok\030\001 \001(\010\022\016\n\006det"
-    "ail\030\002 \001(\t*\205\001\n\nErrorClass\022\033\n\027ERROR_CLASS_"
+    "ail\030\002 \001(\t*\264\001\n\nErrorClass\022\033\n\027ERROR_CLASS_"
     "UNSPECIFIED\020\000\022\023\n\017ERROR_TRANSIENT\020\001\022\023\n\017ER"
     "ROR_PERMANENT\020\002\022\034\n\030ERROR_RESOURCE_EXHAUS"
-    "TED\020\003\022\022\n\016ERROR_CANCELED\020\004*\323\001\n\tNodeState\022"
-    "\032\n\026NODE_STATE_UNSPECIFIED\020\000\022\026\n\022NODE_STAT"
-    "E_BLOCKED\020\001\022\024\n\020NODE_STATE_READY\020\002\022\026\n\022NOD"
-    "E_STATE_RUNNING\020\003\022\030\n\024NODE_STATE_SUCCEEDE"
-    "D\020\004\022\025\n\021NODE_STATE_FAILED\020\007\022\027\n\023NODE_STATE"
-    "_CANCELED\020\010\022\032\n\026NODE_STATE_DEAD_LETTER\020\t*"
-    "N\n\nRunOutcome\022\027\n\023OUTCOME_UNSPECIFIED\020\000\022\r"
-    "\n\tSUCCEEDED\020\001\022\n\n\006FAILED\020\002\022\014\n\010CANCELED\020\003*"
-    "U\n\rResourceClass\022\030\n\024RESOURCE_UNSPECIFIED"
-    "\020\000\022\014\n\010INTERNAL\020\001\022\013\n\007BROWSER\020\002\022\017\n\013EXTERNA"
-    "L_IO\020\003*}\n\tRunStatus\022\032\n\026RUN_STATUS_UNSPEC"
-    "IFIED\020\000\022\016\n\nRUN_QUEUED\020\001\022\017\n\013RUN_RUNNING\020\002"
-    "\022\021\n\rRUN_SUCCEEDED\020\003\022\016\n\nRUN_FAILED\020\004\022\020\n\014R"
-    "UN_CANCELED\020\0052\326\002\n\016ControlService\022T\n\tSubm"
-    "itRun\022\".evo.execution.v1.SubmitRunReques"
-    "t\032#.evo.execution.v1.SubmitRunResponse\022T"
-    "\n\tCancelRun\022\".evo.execution.v1.CancelRun"
-    "Request\032#.evo.execution.v1.CancelRunResp"
-    "onse\022K\n\006GetRun\022\037.evo.execution.v1.GetRun"
-    "Request\032 .evo.execution.v1.GetRunRespons"
-    "e\022K\n\006Health\022\037.evo.execution.v1.HealthReq"
-    "uest\032 .evo.execution.v1.HealthResponseB\t"
-    "\200\001\000\210\001\000\220\001\000b\006proto3"
+    "TED\020\003\022\022\n\016ERROR_CANCELED\020\004\022\024\n\020ERROR_VALID"
+    "ATION\020\005\022\027\n\023ERROR_AUTHORIZATION\020\006*\323\001\n\tNod"
+    "eState\022\032\n\026NODE_STATE_UNSPECIFIED\020\000\022\026\n\022NO"
+    "DE_STATE_BLOCKED\020\001\022\024\n\020NODE_STATE_READY\020\002"
+    "\022\026\n\022NODE_STATE_RUNNING\020\003\022\030\n\024NODE_STATE_S"
+    "UCCEEDED\020\004\022\025\n\021NODE_STATE_FAILED\020\007\022\027\n\023NOD"
+    "E_STATE_CANCELED\020\010\022\032\n\026NODE_STATE_DEAD_LE"
+    "TTER\020\t*N\n\nRunOutcome\022\027\n\023OUTCOME_UNSPECIF"
+    "IED\020\000\022\r\n\tSUCCEEDED\020\001\022\n\n\006FAILED\020\002\022\014\n\010CANC"
+    "ELED\020\003*U\n\rResourceClass\022\030\n\024RESOURCE_UNSP"
+    "ECIFIED\020\000\022\014\n\010INTERNAL\020\001\022\013\n\007BROWSER\020\002\022\017\n\013"
+    "EXTERNAL_IO\020\003*}\n\tRunStatus\022\032\n\026RUN_STATUS"
+    "_UNSPECIFIED\020\000\022\016\n\nRUN_QUEUED\020\001\022\017\n\013RUN_RU"
+    "NNING\020\002\022\021\n\rRUN_SUCCEEDED\020\003\022\016\n\nRUN_FAILED"
+    "\020\004\022\020\n\014RUN_CANCELED\020\0052\326\002\n\016ControlService\022"
+    "T\n\tSubmitRun\022\".evo.execution.v1.SubmitRu"
+    "nRequest\032#.evo.execution.v1.SubmitRunRes"
+    "ponse\022T\n\tCancelRun\022\".evo.execution.v1.Ca"
+    "ncelRunRequest\032#.evo.execution.v1.Cancel"
+    "RunResponse\022K\n\006GetRun\022\037.evo.execution.v1"
+    ".GetRunRequest\032 .evo.execution.v1.GetRun"
+    "Response\022K\n\006Health\022\037.evo.execution.v1.He"
+    "althRequest\032 .evo.execution.v1.HealthRes"
+    "ponseB\t\200\001\000\210\001\000\220\001\000b\006proto3"
 };
 static const ::_pbi::DescriptorTable* PROTOBUF_NONNULL const
     descriptor_table_evo_2fexecution_2eproto_deps[1] = {
@@ -2786,7 +2787,7 @@ static ::absl::once_flag descriptor_table_evo_2fexecution_2eproto_once;
 PROTOBUF_CONSTINIT const ::_pbi::DescriptorTable descriptor_table_evo_2fexecution_2eproto = {
     false,
     false,
-    3457,
+    3504,
     descriptor_table_protodef_evo_2fexecution_2eproto,
     "evo/execution.proto",
     &descriptor_table_evo_2fexecution_2eproto_once,
@@ -2822,7 +2823,7 @@ ErrorClass_descriptor() {
   return file_level_enum_descriptors_evo_2fexecution_2eproto[2];
 }
 PROTOBUF_CONSTINIT const uint32_t ErrorClass_internal_data_[] = {
-    327680u, 0u, };
+    458752u, 0u, };
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
 NodeState_descriptor() {
   ::google::protobuf::internal::AssignDescriptors(&descriptor_table_evo_2fexecution_2eproto);

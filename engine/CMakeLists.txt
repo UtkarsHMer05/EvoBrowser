@@ -168,7 +168,10 @@ target_compile_features(evo_envelope PUBLIC cxx_std_20)
 # and the envelope semantics (dedupe/late-result/validation). Not part of
 # evo_scheduler_core because it needs the protobuf contract.
 # ---------------------------------------------------------------------------
-add_library(evo_distributed STATIC core/src/distributed_run_loop.cpp)
+add_library(evo_distributed STATIC
+  core/src/distributed_run_loop.cpp
+  core/src/retry_policy.cpp
+)
 target_include_directories(evo_distributed PUBLIC core/include)
 target_link_libraries(evo_distributed PUBLIC evo_scheduler_core evo_envelope)
 target_compile_options(evo_distributed PRIVATE
@@ -388,6 +391,17 @@ target_compile_options(evo_envelope_test PRIVATE
   -Wall -Wextra -Wpedantic -Werror
 )
 add_test(NAME envelope COMMAND evo_envelope_test)
+
+# ---------------------------------------------------------------------------
+# evo_retry_policy_test — M32: error taxonomy, retryability policy floor,
+# attempt budget + dead-lettering, deterministic exponential backoff + jitter.
+# ---------------------------------------------------------------------------
+add_executable(evo_retry_policy_test tests/retry_policy_test.cpp)
+target_link_libraries(evo_retry_policy_test PRIVATE evo_distributed)
+target_compile_options(evo_retry_policy_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME retry_policy COMMAND evo_retry_policy_test)
 
 # ---------------------------------------------------------------------------
 # evo_distributed_run_loop_test — M26: scheduler -> worker -> result ->

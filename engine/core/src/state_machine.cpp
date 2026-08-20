@@ -172,6 +172,48 @@ bool SchedulerState::abandon_node(const NodeId& id) {
   return true;
 }
 
+bool SchedulerState::retry_wait_node(const NodeId& id) {
+  std::lock_guard lock(mu_);
+  auto it = node_states_.find(id);
+  if (it == node_states_.end()) return false;
+  // Only a Running node (a failed attempt just applied) can park for retry.
+  // Not terminal: no successor touched, no dependency-counter change, no
+  // completion recorded. The run loop owns the backoff due-time.
+  if (it->second != NodeState::Running) return false;
+  it->second = NodeState::RetryWait;
+  return true;
+}
+
+bool SchedulerState::ready_from_retry(const NodeId& id) {
+  std::lock_guard lock(mu_);
+  auto it = node_states_.find(id);
+  if (it == node_states_.end()) return false;
+  // Only a parked RETRY_WAIT node becomes ready again; dispatch_ready() then
+  // re-dispatches it as a NEW attempt.
+  if (it->second != NodeState::RetryWait) return false;
+  it->second = NodeState::Ready;
+  return true;
+}
+
+std::vector<NodeId> SchedulerState::dead_letter_node(const NodeId& id,
+                                                     const std::string& error) {
+  std::lock_guard lock(mu_);
+  auto it = node_states_.find(id);
+  if (it == node_states_.end()) return {};
+  if (it->second == NodeState::Succeeded || completed_.contains(id)) {
+    return {};  // never clobber a logical success
+  }
+  // Terminal failure (retries exhausted): same downstream semantics as a
+  // failed node — propagate CANCELED to reachable non-terminal successors.
+  it->second = NodeState::DeadLettered;
+  failure_reasons_[id] = error;
+  completed_.insert(id);
+
+  std::vector<NodeId> canceled;
+  mark_canceled_transitive(id, canceled);
+  return canceled;
+}
+
 void SchedulerState::mark_canceled_transitive(const NodeId& id,
                                               std::vector<NodeId>& canceled) {
   // Caller holds mu_.
@@ -251,6 +293,7 @@ void SchedulerState::finalize_run() {
   for (const auto& [_, state] : node_states_) {
     switch (state) {
       case NodeState::Failed:
+      case NodeState::DeadLettered:  // M32: retries exhausted is a failure
         any_failed = true;
         break;
       case NodeState::Canceled:

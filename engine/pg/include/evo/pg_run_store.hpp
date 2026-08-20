@@ -76,6 +76,11 @@ class PgRunStore final : public RunStore {
   bool set_node_status(const std::string& run_id, const std::string& node_id,
                        const std::string& status) override;
 
+  bool set_node_retry_wait(const std::string& run_id,
+                           const std::string& node_id,
+                           std::int64_t retry_wait_until_wall_ms,
+                           const std::string& retry_reason) override;
+
   bool record_attempt(const std::string& run_id, const std::string& node_id,
                       unsigned attempt_number, const std::string& worker_id,
                       std::int64_t started_wall_ms) override;

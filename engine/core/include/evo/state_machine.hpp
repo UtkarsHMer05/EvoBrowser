@@ -99,6 +99,23 @@ class SchedulerState {
   // transition applied (the node was in flight).
   bool abandon_node(const NodeId& id);
 
+  // Milestone 32: RUNNING → RETRY_WAIT after a retryable failure. The node is
+  // parked until its backoff elapses (the run loop owns the due-time and calls
+  // ready_from_retry). NOT terminal; no successor is touched. Returns true only
+  // when the transition applied (the node was Running).
+  bool retry_wait_node(const NodeId& id);
+
+  // Milestone 32: RETRY_WAIT → READY once the backoff has elapsed. The node
+  // becomes eligible for re-dispatch as a NEW attempt. Returns true only when
+  // the transition applied (the node was RetryWait).
+  bool ready_from_retry(const NodeId& id);
+
+  // Milestone 32: RUNNING → DEAD_LETTERED (retries exhausted). Terminal
+  // failure: propagates CANCELED to reachable non-terminal successors and
+  // returns them (same downstream semantics as a failed node).
+  std::vector<NodeId> dead_letter_node(const NodeId& id,
+                                       const std::string& error);
+
   // Cancel the entire run: every non-terminal node → CANCELED.
   std::vector<NodeId> cancel_run();
 

@@ -41,6 +41,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M29 | Achieve UI parity for Evo runs | ✅ DONE | `a24dd9e` |
 | M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `200386a` |
 | M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `4543443` |
+| M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `RECORD_AFTER_COMMIT` |
 
 ---
 
@@ -1871,3 +1872,125 @@ Commit subjects follow `phase2(mNN): <description>`.
   requires explicit approval).
 - **COMMIT:** `4543443` — `phase2(m31): add worker leases and heartbeats`
 - **NEXT:** M32 — Implement node-level retry policy, exponential backoff, jitter, and dead-lettering.
+
+## M32 — Implement node-level retry policy, exponential backoff, jitter, and dead-lettering
+
+**Status:** ✅ DONE — Evo runs now retry transient failures per resource class with bounded deterministic backoff, park nodes in a durable RETRY_WAIT state (no blocked threads), and dead-letter exhausted failures as terminal run failures.
+
+- **BASE_SHA:** `2abd695` (phase2 branch; M32 was claimed in-progress with
+  uncommitted work, which this session reviewed, completed, tested, and
+  documented — including adding the missing "retry after worker lease expiry"
+  scenario required by M32 step 9).
+- **What was inspected:** master prompt M32 spec (steps 1–19, no-go list,
+  validation, exit criteria), the uncommitted M32 working tree (C++ retry
+  policy / run loop / state machine / run store / PG store, proto contract,
+  migration 0005, TS UI mappings), `engine/core/src/retry_policy.cpp`,
+  `engine/tests/{retry_policy_test,distributed_run_loop_test,pg_run_store_test}.cpp`,
+  `features/workflows/lib/{run-view-model,evo-run-events}.ts`,
+  `engine/app/grpc_service.cpp`, `docs/phase2/DECISIONS.md`.
+- **What changed:**
+  - **Error taxonomy (M32 step 1):** `ErrorCategory` enum — transient,
+    resource_lost, permanent, validation, authorization, canceled, unknown —
+    classified from the proto `ErrorClass` via `classify_error()`. Added
+    `ERROR_VALIDATION = 5` and `ERROR_AUTHORIZATION = 6` to the proto
+    `ErrorClass` enum (additive-only field evolution) and regenerated the
+    pb sources with `engine/proto/generate.sh`.
+  - **Default retry policy by resource class (M32 step 2):**
+    `RetryPolicySet::for_class()` — internal = 3 attempts / 100ms base,
+    browser = 2 attempts / 500ms base (sessions are expensive),
+    external_io = 1 attempt (NO retry by default: side effects require an
+    idempotency strategy, which is M33). Legacy Trigger.dev untouched —
+    Evo-only path.
+  - **Policy floor (M32 no-go):** permanent / validation / authorization /
+    canceled are NEVER retried even if the worker hinted `retryable=true`;
+    unknown retries ONLY on an explicit positive hint; a `retryable=false`
+    hint overrides a default-retryable class. The scheduler's taxonomy
+    outranks the worker hint for never-retry classes.
+  - **Attempt limits + budget (M32 step 3):** `failed_attempt >= max_attempts`
+    ⇒ dead-letter. The attempt number rides in the result envelope, so a
+    lease-expiry re-dispatch (M31 recovery) consumes NO retry budget — the two
+    mechanisms compose (asserted in run-loop test 18).
+  - **Exponential backoff + bounded deterministic jitter (M32 step 4):**
+    `base * multiplier^(attempt-1)` capped at `max_backoff`, scaled by a
+    factor in `[1-j, 1+j]` from a per-(node, attempt, run-seed) FNV-1a-seeded
+    xorshift64*. Same inputs ⇒ same backoff ⇒ reproducible tests.
+  - **Durable retry evidence (M32 step 5):** migration
+    `0005_phase2_node_retry.sql` — 2 additive `node_runs` columns
+    (`retry_wait_until` timestamp, `retry_reason` text). Applied to LOCAL PG
+    only (Neon untouched, needs explicit human approval). `lib/db/schema.ts`
+    mirrors it. `set_node_retry_wait()` implemented in both
+    `InMemoryRunStore` and `PgRunStore`, guarded against terminal nodes.
+  - **Non-blocking backoff (M32 step 6):** the node parks in `RETRY_WAIT`
+    with a persisted due-time; `process_retry_waits()` re-readies due nodes
+    each loop iteration (state + due-time, NOT a blocked thread). The run
+    loop stays single-threaded; no new synchronization.
+  - **Dead-lettering (M32 step 7):** `dead_letter_node()` moves the node to
+    `DEAD_LETTERED` + cancels downstream; `finalize_run()` now counts
+    `DeadLettered` as failure (**fix found this session** — without it a
+    dead-lettered run finalized as CANCELED, not FAILED).
+  - **Diagnostics, not UI noise (M32 step 8):** `node_retry_scheduled` keeps
+    the step reading as RUNNING (a transient failure is not terminal);
+    `node_dead_lettered` reads as FAILED with the reason; durable
+    `retry_wait` maps to running in the reconnect snapshot. Attempt history
+    stays in `task_attempts` + events. Three mapping surfaces updated
+    consistently: `reduceEvoEvents`, `mapNodeStatus`, gRPC `GetRun`
+    (`NODE_STATE_DEAD_LETTER`).
+  - **State-machine transitions:** `retry_wait_node()` (RUNNING→RETRY_WAIT),
+    `ready_from_retry()` (RETRY_WAIT→READY), `dead_letter_node()`
+    (→DEAD_LETTERED + cancel downstream). Cancellation racing backoff wins
+    cleanly: `process_retry_waits()` short-circuits once `cancel_requested_`
+    is set, and a parked node is canceled, never re-dispatched.
+  - **Tests added (M32 step 9 — all five required scenarios):**
+    - C++ `retry_policy_test` (NEW, 38 checks): taxonomy classification,
+      policy floor (never-retry classes ignore worker hint), unknown-needs-hint,
+      attempt budget, backoff bounds + deterministic jitter, dead-letter
+      decision.
+    - C++ `distributed_run_loop_test` +4 scenarios: (14) transient-then-success
+      (2 attempts, retry event, downstream proceeds), (15) permanent fail-fast
+      (1 attempt, no retry, downstream canceled), (16) repeated transient →
+      dead-letter (exactly max_attempts, run FAILED, downstream canceled),
+      (17) cancellation during backoff (parked node canceled, not re-dispatched,
+      run CANCELED), and (18) **retry after worker lease expiry** (killed
+      attempt reaped → re-dispatched → transient fail → RETRY_WAIT → success on
+      attempt 3; reap consumes no retry budget).
+    - C++ `pg_run_store_test`: retry persistence (set_node_retry_wait round-trip,
+      terminal guard) vs live PG.
+    - TS `run-view-model.test` +5 checks: retry-then-success fold, backoff reads
+      as running (not failed), dead-letter folds to terminal failed, dead-letter
+      does not overwrite a completed node, and durable snapshot maps
+      retry_wait→running / dead_lettered→failed (25/25).
+- **Concurrency/distributed correctness:** the run loop is single-threaded and
+  owns `retry_due_`; backoff never blocks a thread. Retry/dead-letter
+  transitions are guarded by the state machine AND the store's terminal guard,
+  so cancellation racing backoff wins cleanly (test 17). A late result for a
+  reaped attempt is bounded by the existing late-result rule (M22/M26).
+  Lease-expiry recovery and retry compose without double-counting attempts
+  (test 18). Duplicate deliveries remain idempotent (M26 dedup unchanged).
+- **Timestamps:** `retry_wait_until` and the due-time comparison are wall-clock
+  UTC ms (durable boundary); steady_clock is never persisted for retry.
+- **Phase-1 preservation:** legacy Trigger.dev engine untouched; no Phase-1
+  default behavior changed; no test removed; browser credentials stay
+  server/worker-only. Migration is additive and local-only.
+- **No-go compliance:** authorization/validation never retried blindly (policy
+  floor, asserted); external_io side effects NOT retried by default (idempotency
+  is M33); no performance numbers invented; no future component marked
+  implemented; no secret/credential committed.
+- **Validation:**
+  - CMake build → ✅ clean; `ctest` (Release) → ✅ 19/19
+  - ASan+UBSan → ✅ 19/19; TSan → ✅ 19/19 (no data races)
+  - `npm test` → ✅ exit 0 across 13 suites (run-view-model 25/25 incl. 5 new
+    M32, all prior suites green)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅ (0 errors, 0 warnings)
+  - Postgres audit assertions → ✅ (pg_run_store retry persistence vs live PG;
+    migration 0005 applied locally)
+- **Known limitations:** `grpc_integration` uses `pick_free_port()` (bind-0,
+  release, reuse) — a pre-existing M17 TOCTOU pattern that can flake under
+  parallel load; it passes consistently on re-run and is not M32-related.
+  Retry-latency/throughput benchmarking is deferred to M39. external_io retry
+  is intentionally OFF pending the M33 idempotency strategy. Live-browser retry
+  behavior (a real Browserbase session re-opened across a retry) is covered by
+  the mocked-session suites; live E2E deferred to the final campaign.
+- **Human action:** none (local PG migration only; Neon migration still
+  requires explicit approval).
+- **COMMIT:** `RECORD_AFTER_COMMIT` — `phase2(m32): add node retries backoff and dead lettering`
+- **NEXT:** M33 — Implement idempotency and duplicate suppression.

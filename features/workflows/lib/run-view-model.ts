@@ -430,6 +430,27 @@ export function reduceEvoEvents(
         s.finishedAtMs = ev.wall_ms;
         break;
       }
+      case "node_retry_scheduled": {
+        // M32: a retryable failure parked the node for backoff. Keep it reading
+        // as still-running (not failed) so the normal UI does not surface a
+        // transient failure as terminal; the retry reason rides in `detail` for
+        // diagnostics. A later node_dispatched flips it back to running anyway.
+        const s = ensureStep(ev.node_id);
+        if (s.status !== "done" && s.status !== "failed") {
+          s.status = "running";
+        }
+        break;
+      }
+      case "node_dead_lettered": {
+        // M32: retries exhausted — terminal failure.
+        const s = ensureStep(ev.node_id);
+        if (s.status !== "done") {
+          s.status = "failed";
+          s.error = ev.detail || undefined;
+          s.finishedAtMs = ev.wall_ms;
+        }
+        break;
+      }
       case "run_finished":
         finishedAtMs = ev.wall_ms;
         status =

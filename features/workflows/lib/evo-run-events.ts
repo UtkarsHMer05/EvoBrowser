@@ -168,6 +168,10 @@ function mapNodeStatus(status: string): NormalizedRunStep["status"] {
     case "running":
     case "dispatched":
     case "ready":
+    // M32: a node parked in retry_wait is still in progress (waiting out its
+    // backoff before a new attempt) — read it as running, not failed, so the
+    // normal UI does not show a transient failure as terminal.
+    case "retry_wait":
       return "running";
     default:
       return "pending"; // blocked / queued

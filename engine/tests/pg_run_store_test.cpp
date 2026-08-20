@@ -368,6 +368,50 @@ int main() {
                          evo::now_wall_ms()),
         "m31: qw run finalized");
 
+  // --- M32: node retry persistence (retry_wait_until + retry_reason) --------
+  {
+    const std::string retry_run_id =
+        "m32-pgtest-" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    evo::RunRecord retry_run;
+    retry_run.run_id = retry_run_id;
+    retry_run.org_id = "org-pg";
+    retry_run.workflow_id = wf_id;
+    retry_run.engine = "evo";
+    retry_run.status = evo::run_status::kRunning;
+    check(store.create_run(retry_run, evo::now_wall_ms()), "m32: retry run created");
+    check(store.create_node_run(retry_run_id, "r1", "bench:echo"),
+          "m32: retry node created");
+
+    // Park the node in retry_wait with a due-time + reason.
+    const std::int64_t due = evo::now_wall_ms() + 5000;
+    check(store.set_node_retry_wait(retry_run_id, "r1", due,
+                                    "retry after 100ms (transient)"),
+          "m32: set_node_retry_wait parks the node");
+    auto nr = store.get_node_run(retry_run_id, "r1");
+    check(nr.has_value() && nr->status == evo::node_status::kRetryWait &&
+              nr->retry_wait_until > 0 && !nr->retry_reason.empty(),
+          "m32: retry_wait status + due-time + reason round-trip");
+    // The due-time should be close to what we set (wall-clock, ms precision).
+    check(nr.has_value() && std::llabs(nr->retry_wait_until - due) < 2000,
+          "m32: retry_wait_until round-trips the due-time");
+
+    // A terminal node can never be parked for retry.
+    check(store.complete_node_run(retry_run_id, "r1",
+                                  evo::node_status::kFailed, "", "boom",
+                                  evo::now_wall_ms()),
+          "m32: node failed (terminal)");
+    check(!store.set_node_retry_wait(retry_run_id, "r1", due, "too late"),
+          "m32: terminal node cannot be parked for retry");
+    auto nr2 = store.get_node_run(retry_run_id, "r1");
+    check(nr2.has_value() && nr2->status == evo::node_status::kFailed,
+          "m32: terminal status preserved after rejected retry_wait");
+
+    check(store.finish_run(retry_run_id, evo::run_status::kFailed, "failed",
+                           evo::now_wall_ms()),
+          "m32: retry run finalized");
+  }
+
   if (failures == 0) {
     printf("\nALL M26 PG RUN STORE TESTS PASSED!\n");
     return 0;

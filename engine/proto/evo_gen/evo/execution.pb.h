@@ -303,6 +303,8 @@ enum ErrorClass : int {
   ERROR_PERMANENT = 2,
   ERROR_RESOURCE_EXHAUSTED = 3,
   ERROR_CANCELED = 4,
+  ERROR_VALIDATION = 5,
+  ERROR_AUTHORIZATION = 6,
   ErrorClass_INT_MIN_SENTINEL_DO_NOT_USE_ =
       ::std::numeric_limits<::int32_t>::min(),
   ErrorClass_INT_MAX_SENTINEL_DO_NOT_USE_ =
@@ -313,11 +315,11 @@ extern const uint32_t ErrorClass_internal_data_[];
 inline constexpr ErrorClass ErrorClass_MIN =
     static_cast<ErrorClass>(0);
 inline constexpr ErrorClass ErrorClass_MAX =
-    static_cast<ErrorClass>(4);
+    static_cast<ErrorClass>(6);
 [[nodiscard]] inline bool ErrorClass_IsValid(int value) {
-  return 0 <= value && value <= 4;
+  return 0 <= value && value <= 6;
 }
-inline constexpr int ErrorClass_ARRAYSIZE = 4 + 1;
+inline constexpr int ErrorClass_ARRAYSIZE = 6 + 1;
 [[nodiscard]] const ::google::protobuf::EnumDescriptor* PROTOBUF_NONNULL
 ErrorClass_descriptor();
 [[nodiscard]] inline auto ProtobufInternalGetEnumDescriptor(ErrorClass) {
@@ -332,7 +334,7 @@ template <typename T>
 }
 template <>
 [[nodiscard]] inline const ::std::string& ErrorClass_Name(ErrorClass value) {
-  return ::google::protobuf::internal::NameOfDenseEnum<ErrorClass_descriptor, 0, 4>(
+  return ::google::protobuf::internal::NameOfDenseEnum<ErrorClass_descriptor, 0, 6>(
       static_cast<int>(value));
 }
 [[nodiscard]] inline bool ErrorClass_Parse(

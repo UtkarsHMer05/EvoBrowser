@@ -152,6 +152,13 @@ export const nodeRuns = pgTable(
     attemptCount: integer("attempt_count").notNull().default(0),
     output: jsonb("output"),
     failureReason: text("failure_reason"),
+    // Phase 2 (M32): node-level retry evidence. When a retryable failure parks
+    // the node in RETRY_WAIT, the scheduler stamps the backoff due-time
+    // (wall-clock UTC) and the retry reason here; the node is re-dispatched as
+    // a new attempt once the due-time passes. `retry_wait_until` NULL => not
+    // waiting for retry.
+    retryWaitUntil: timestamp("retry_wait_until"),
+    retryReason: text("retry_reason"),
     startedAt: timestamp("started_at"),
     finishedAt: timestamp("finished_at"),
   },

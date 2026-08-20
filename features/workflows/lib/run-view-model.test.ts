@@ -35,6 +35,7 @@ import {
   type LegacyRunLike,
 } from "./run-view-model";
 import { buildEvoRunEventsResponse } from "./evo-run-events-route";
+import { durableRunSnapshot } from "./evo-run-events";
 import type { VersioningDb } from "./workflow-versions";
 
 let passed = 0;
@@ -247,6 +248,58 @@ function ev(
   assert.equal(emptyVm.isLive, true);
   assert.equal(emptyVm.steps.length, 0);
   ok("empty event list yields queued view");
+
+  // M32: a retryable failure parks the node in backoff. The UI must keep
+  // reading it as running (not failed) until retries are exhausted.
+  const retryVm = reduceEvoEvents("evo_run_RT", [
+    ev("evo_run_RT", "run_started", "", 100),
+    ev("evo_run_RT", "node_dispatched", "n1", 200, "open-url"),
+    ev("evo_run_RT", "node_retry_scheduled", "n1", 300, "transient: net::ERR_TIMEOUT"),
+    ev("evo_run_RT", "node_dispatched", "n1", 500, "open-url"),
+    ev("evo_run_RT", "node_succeeded", "n1", 700, '{"ok":true}'),
+    ev("evo_run_RT", "run_finished", "", 800, "succeeded"),
+  ]);
+  assert.equal(retryVm.status, "succeeded");
+  assert.equal(retryVm.steps[0].status, "done");
+  ok("retry-then-success folds to a succeeded run");
+
+  // Mid-backoff view: retry_scheduled with no terminal event yet keeps the
+  // step running and the run live.
+  const backoffVm = reduceEvoEvents("evo_run_RB", [
+    ev("evo_run_RB", "run_started", "", 100),
+    ev("evo_run_RB", "node_dispatched", "n1", 200, "open-url"),
+    ev("evo_run_RB", "node_retry_scheduled", "n1", 300, "transient: 503"),
+  ]);
+  assert.equal(backoffVm.status, "running");
+  assert.equal(backoffVm.isLive, true);
+  assert.equal(backoffVm.steps[0].status, "running");
+  ok("node in retry backoff reads as running, not failed");
+
+  // M32: retries exhausted -> node_dead_lettered is a terminal failure.
+  const dlVm = reduceEvoEvents("evo_run_DL", [
+    ev("evo_run_DL", "run_started", "", 100),
+    ev("evo_run_DL", "node_dispatched", "n1", 200, "open-url"),
+    ev("evo_run_DL", "node_retry_scheduled", "n1", 300, "transient: 503"),
+    ev("evo_run_DL", "node_dispatched", "n1", 500, "open-url"),
+    ev("evo_run_DL", "node_dead_lettered", "n1", 600, "retries exhausted: 503"),
+    ev("evo_run_DL", "run_finished", "", 700, "failed"),
+  ]);
+  assert.equal(dlVm.status, "failed");
+  assert.equal(dlVm.steps[0].status, "failed");
+  assert.equal(dlVm.steps[0].error, "retries exhausted: 503");
+  assert.equal(dlVm.failedCount, 1);
+  ok("dead-lettered node folds to terminal failed view");
+
+  // A dead-letter must not overwrite a completed node (late-event race).
+  const dlRaceVm = reduceEvoEvents("evo_run_DR", [
+    ev("evo_run_DR", "run_started", "", 100),
+    ev("evo_run_DR", "node_dispatched", "n1", 200, "open-url"),
+    ev("evo_run_DR", "node_succeeded", "n1", 300, "{}"),
+    ev("evo_run_DR", "node_dead_lettered", "n1", 400, "stale"),
+    ev("evo_run_DR", "run_finished", "", 500, "succeeded"),
+  ]);
+  assert.equal(dlRaceVm.steps[0].status, "done");
+  ok("dead-letter does not overwrite a completed node");
 }
 
 // --- 3+4. Authorized route + reconnect (local Redis + Postgres) ------------
@@ -484,6 +537,51 @@ function ev(
       assert.equal(snapshot.steps[0].status, "done");
       assert.equal(snapshot.durationMs, 2000);
       ok("durable snapshot served when stream has no events (reconnect fallback)");
+
+      // --- M32: durable retry states map correctly in the snapshot --------
+      // A node parked in retry_wait is still in progress; a dead-lettered
+      // node is a terminal failure. Both must survive the reconnect path.
+      const runRT = `evo_${randomUUID()}`;
+      await db.insert(schema.workflowRuns).values({
+        id: runRT,
+        orgId,
+        workflowId,
+        engine: "evo",
+        status: "running",
+        startedAt: new Date("2026-08-21T00:00:00Z"),
+      });
+      await db.insert(schema.nodeRuns).values([
+        {
+          runId: runRT,
+          nodeId: "n_wait",
+          nodeType: "open-url",
+          status: "retry_wait",
+          attemptCount: 1,
+          retryWaitUntil: new Date("2026-08-21T00:00:01Z"),
+          retryReason: "transient: 503",
+          startedAt: new Date("2026-08-21T00:00:00Z"),
+        },
+        {
+          runId: runRT,
+          nodeId: "n_dl",
+          nodeType: "open-url",
+          status: "dead_lettered",
+          attemptCount: 3,
+          failureReason: "retries exhausted: 503",
+          startedAt: new Date("2026-08-21T00:00:00Z"),
+          finishedAt: new Date("2026-08-21T00:00:02Z"),
+        },
+      ]);
+
+      const snapRT = await durableRunSnapshot(runRT, db);
+      assert.ok(snapRT, "retry/dead-letter snapshot resolves");
+      assert.equal(snapRT!.status, "running");
+      const waitStep = snapRT!.steps.find((s) => s.nodeId === "n_wait");
+      const dlStep = snapRT!.steps.find((s) => s.nodeId === "n_dl");
+      assert.equal(waitStep?.status, "running"); // retry_wait reads as running
+      assert.equal(dlStep?.status, "failed"); // dead_lettered reads as failed
+      assert.equal(dlStep?.error, "retries exhausted: 503");
+      ok("durable snapshot maps retry_wait->running and dead_lettered->failed");
 
       // --- Live tail: connect on a running run, then publish terminal -----
       const runD = `evo_${randomUUID()}`;

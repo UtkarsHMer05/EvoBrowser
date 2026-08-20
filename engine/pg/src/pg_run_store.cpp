@@ -156,6 +156,25 @@ bool PgRunStore::set_node_status(const std::string& run_id,
   return r.ok && r.rows_affected == 1;
 }
 
+bool PgRunStore::set_node_retry_wait(const std::string& run_id,
+                                     const std::string& node_id,
+                                     std::int64_t retry_wait_until_wall_ms,
+                                     const std::string& retry_reason) {
+  // Milestone 32: park the node in retry_wait with its backoff due-time +
+  // reason. Never applies to a terminal node (kTerminalNotIn).
+  auto r = exec_params(
+      "UPDATE node_runs SET status = 'retry_wait', "
+      "retry_wait_until = to_timestamp($3::bigint / 1000.0) AT TIME ZONE "
+      "'UTC', "
+      "retry_reason = NULLIF($4, '') "
+      "WHERE run_id = $1 AND node_id = $2 AND " +
+          std::string(kTerminalNotIn),
+      {run_id, node_id, std::to_string(retry_wait_until_wall_ms),
+       retry_reason});
+  if (r.res) PQclear(r.res);
+  return r.ok && r.rows_affected == 1;
+}
+
 bool PgRunStore::record_attempt(const std::string& run_id,
                                 const std::string& node_id,
                                 unsigned attempt_number,
@@ -492,7 +511,9 @@ std::optional<NodeRunRecord> PgRunStore::get_node_run(
     const std::string& run_id, const std::string& node_id) {
   auto r = exec_params(
       "SELECT node_id, node_type, status, attempt_count, "
-      "COALESCE(output::text, ''), COALESCE(failure_reason, '') "
+      "COALESCE(output::text, ''), COALESCE(failure_reason, ''), "
+      "COALESCE(extract(epoch FROM retry_wait_until) * 1000, 0)::bigint, "
+      "COALESCE(retry_reason, '') "
       "FROM node_runs WHERE run_id = $1 AND node_id = $2",
       {run_id, node_id});
   std::optional<NodeRunRecord> out;
@@ -504,6 +525,8 @@ std::optional<NodeRunRecord> PgRunStore::get_node_run(
     rec.attempt_count = std::atoi(PQgetvalue(r.res, 0, 3));
     rec.output_json = PQgetvalue(r.res, 0, 4);
     rec.failure_reason = PQgetvalue(r.res, 0, 5);
+    rec.retry_wait_until = std::atoll(PQgetvalue(r.res, 0, 6));
+    rec.retry_reason = PQgetvalue(r.res, 0, 7);
     out = rec;
   }
   if (r.res) PQclear(r.res);

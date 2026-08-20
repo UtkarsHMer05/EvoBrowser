@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -247,6 +248,110 @@ class LeaseWorker {
   std::chrono::milliseconds renew_interval_;
   std::jthread thread_;
   std::atomic<std::size_t> executed_{0};
+};
+
+// Encode a TRANSIENT failure result (retryable by default). M32 tests use this
+// to drive the retry path.
+std::string encode_transient_failure(const std::string& run_id,
+                                     const std::string& node, unsigned attempt,
+                                     const std::string& error) {
+  evo::execution::v1::ResultEnvelope env;
+  env.set_run_id(run_id);
+  env.set_node_id(node);
+  env.set_attempt_number(attempt);
+  env.set_completed(false);
+  env.set_error(error);
+  env.set_status(evo::execution::v1::ResultEnvelope::NODE_FAILED);
+  env.set_error_class(evo::execution::v1::ERROR_TRANSIENT);
+  *env.mutable_finished_at() =
+      google::protobuf::util::TimeUtil::MillisecondsToTimestamp(
+          evo::now_wall_ms());
+  return env.SerializeAsString();
+}
+
+// Encode a PERMANENT failure result (never retried).
+std::string encode_permanent_failure(const std::string& run_id,
+                                     const std::string& node, unsigned attempt,
+                                     const std::string& error) {
+  evo::execution::v1::ResultEnvelope env;
+  env.set_run_id(run_id);
+  env.set_node_id(node);
+  env.set_attempt_number(attempt);
+  env.set_completed(false);
+  env.set_error(error);
+  env.set_status(evo::execution::v1::ResultEnvelope::NODE_FAILED);
+  env.set_error_class(evo::execution::v1::ERROR_PERMANENT);
+  *env.mutable_finished_at() =
+      google::protobuf::util::TimeUtil::MillisecondsToTimestamp(
+          evo::now_wall_ms());
+  return env.SerializeAsString();
+}
+
+// M32: flaky worker. For a configured node, fails TRANSIENTLY for the first
+// `fail_times` attempts, then succeeds. Every other node succeeds immediately.
+// This drives the transient-then-success retry path end to end.
+class FlakyWorker {
+ public:
+  FlakyWorker(InMemoryTransport& t, std::string prefix, std::string run_id,
+              std::string flaky_node, int fail_times)
+      : transport_(t),
+        prefix_(std::move(prefix)),
+        run_id_(std::move(run_id)),
+        flaky_node_(std::move(flaky_node)),
+        fail_times_(fail_times) {}
+
+  void start() {
+    thread_ = std::jthread([this](std::stop_token st) { this->loop(st); });
+  }
+  void stop() {
+    thread_.request_stop();
+    if (thread_.joinable()) thread_.join();
+  }
+  std::size_t executed() const { return executed_.load(); }
+  int attempts_for(const std::string& node) const {
+    return attempts_.count(node) ? attempts_.at(node) : 0;
+  }
+
+ private:
+  void loop(std::stop_token st) {
+    const std::string tasks = evo::task_stream_key(prefix_);
+    const std::string results = evo::result_stream_key(prefix_);
+    transport_.ensure_group(tasks, "workers");
+    while (!st.stop_requested()) {
+      auto msg = transport_.read(tasks, "workers", "flaky-worker", 20ms, st);
+      if (!msg) continue;
+      evo::execution::v1::TaskEnvelope task;
+      if (!task.ParseFromString(msg->payload)) {
+        transport_.ack(tasks, "workers", msg->id);
+        continue;
+      }
+      executed_.fetch_add(1);
+      attempts_[task.node_id()]++;
+
+      std::string result;
+      if (task.node_id() == flaky_node_ &&
+          attempts_[task.node_id()] <= fail_times_) {
+        result = encode_transient_failure(
+            run_id_, task.node_id(), task.attempt_number(),
+            "synthetic transient failure");
+      } else {
+        result = encode_success(run_id_, task.node_id(), task.attempt_number(),
+                                "{\"ok\":true,\"node\":\"" + task.node_id() +
+                                    "\"}");
+      }
+      transport_.publish(results, result);
+      transport_.ack(tasks, "workers", msg->id);
+    }
+  }
+
+  InMemoryTransport& transport_;
+  std::string prefix_;
+  std::string run_id_;
+  std::string flaky_node_;
+  int fail_times_;
+  std::jthread thread_;
+  std::atomic<std::size_t> executed_{0};
+  std::map<std::string, int> attempts_;
 };
 
 }  // namespace
@@ -860,6 +965,346 @@ int main() {
       }
     }
     check(saw_lease_expired, "m31: node_lease_expired event emitted");
+  }
+
+  // --- 14. M32: transient-then-success retry -------------------------------
+  // A node that fails transiently once, then succeeds on retry, must end
+  // SUCCEEDED with exactly 2 attempts and a node_retry_scheduled event.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m32-retry";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m32retry";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    // Short backoff so the test is fast; deterministic jitter seed.
+    cfg.retry_policies = evo::RetryPolicySet::defaults();
+    cfg.retry_policies.internal.base_backoff = 30ms;
+    cfg.retry_policies.internal.max_attempts = 3;
+    cfg.retry_jitter_seed = 42;
+
+    std::vector<evo::RunEvent> events;
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg,
+                            [&](const evo::RunEvent& ev) { events.push_back(ev); });
+    // Node "a" fails transiently once, then succeeds.
+    FlakyWorker worker(transport, cfg.env_prefix, cfg.run_id, "a", 1);
+    worker.start();
+
+    const std::string status = loop.run();
+    worker.stop();
+
+    check(status == evo::run_status::kSucceeded,
+          "m32: transient-then-success run succeeds");
+    check(worker.attempts_for("a") == 2,
+          "m32: flaky node executed exactly 2 attempts");
+    auto na = store.get_node_run("run-m32-retry", "a");
+    check(na.has_value() && na->status == evo::node_status::kSucceeded &&
+              na->attempt_count == 2,
+          "m32: node succeeded on attempt 2 (attempt_count=2)");
+    // A retry was scheduled for node a.
+    bool saw_retry = false;
+    for (const auto& ev : events) {
+      if (ev.kind == "node_retry_scheduled" && ev.node_id == "a") saw_retry = true;
+    }
+    check(saw_retry, "m32: node_retry_scheduled event emitted");
+    // Downstream c still succeeded (retry did not break the fan-in).
+    auto nc = store.get_node_run("run-m32-retry", "c");
+    check(nc.has_value() && nc->status == evo::node_status::kSucceeded,
+          "m32: downstream node succeeded after retry");
+  }
+
+  // --- 15. M32: permanent failure fails fast (no retry) ---------------------
+  // A permanent failure must fail the node immediately (1 attempt), cancel
+  // downstream, and NOT schedule a retry.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m32-perm";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m32perm";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.retry_policies = evo::RetryPolicySet::defaults();
+
+    std::vector<evo::RunEvent> events;
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg,
+                            [&](const evo::RunEvent& ev) { events.push_back(ev); });
+    // Worker that fails node "a" PERMANENTLY on every attempt.
+    class PermanentFailWorker {
+     public:
+      PermanentFailWorker(InMemoryTransport& t, std::string prefix,
+                          std::string run_id, std::string node)
+          : transport_(t),
+            prefix_(std::move(prefix)),
+            run_id_(std::move(run_id)),
+            node_(std::move(node)) {}
+      void start() {
+        thread_ = std::jthread([this](std::stop_token st) { this->loop(st); });
+      }
+      void stop() {
+        thread_.request_stop();
+        if (thread_.joinable()) thread_.join();
+      }
+      int attempts() const { return attempts_.load(); }
+
+     private:
+      void loop(std::stop_token st) {
+        const std::string tasks = evo::task_stream_key(prefix_);
+        const std::string results = evo::result_stream_key(prefix_);
+        transport_.ensure_group(tasks, "workers");
+        while (!st.stop_requested()) {
+          auto msg = transport_.read(tasks, "workers", "perm-worker", 20ms, st);
+          if (!msg) continue;
+          evo::execution::v1::TaskEnvelope task;
+          if (!task.ParseFromString(msg->payload)) {
+            transport_.ack(tasks, "workers", msg->id);
+            continue;
+          }
+          std::string result;
+          if (task.node_id() == node_) {
+            attempts_.fetch_add(1);
+            result = encode_permanent_failure(run_id_, task.node_id(),
+                                              task.attempt_number(),
+                                              "synthetic permanent failure");
+          } else {
+            result = encode_success(run_id_, task.node_id(),
+                                    task.attempt_number(), "{\"ok\":true}");
+          }
+          transport_.publish(results, result);
+          transport_.ack(tasks, "workers", msg->id);
+        }
+      }
+      InMemoryTransport& transport_;
+      std::string prefix_;
+      std::string run_id_;
+      std::string node_;
+      std::jthread thread_;
+      std::atomic<int> attempts_{0};
+    };
+    PermanentFailWorker worker(transport, cfg.env_prefix, cfg.run_id, "a");
+    worker.start();
+
+    const std::string status = loop.run();
+    worker.stop();
+
+    check(status == evo::run_status::kFailed,
+          "m32: permanent failure -> run failed");
+    check(worker.attempts() == 1,
+          "m32: permanent failure executed exactly once (no retry)");
+    auto na = store.get_node_run("run-m32-perm", "a");
+    check(na.has_value() && na->status == evo::node_status::kFailed &&
+              na->attempt_count == 1,
+          "m32: node failed on attempt 1 (no retry)");
+    // No retry scheduled for a.
+    bool saw_retry = false;
+    for (const auto& ev : events) {
+      if (ev.kind == "node_retry_scheduled" && ev.node_id == "a") saw_retry = true;
+    }
+    check(!saw_retry, "m32: no retry scheduled for permanent failure");
+    // Downstream c canceled (upstream failed).
+    auto nc = store.get_node_run("run-m32-perm", "c");
+    check(nc.has_value() && nc->status == evo::node_status::kCanceled,
+          "m32: downstream canceled after permanent failure");
+  }
+
+  // --- 16. M32: repeated transient failure -> dead-letter -------------------
+  // A node that fails transiently on EVERY attempt must exhaust its budget and
+  // be dead-lettered (terminal), canceling downstream.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m32-dl";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m32dl";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.retry_policies = evo::RetryPolicySet::defaults();
+    cfg.retry_policies.internal.base_backoff = 20ms;
+    cfg.retry_policies.internal.max_attempts = 3;
+
+    std::vector<evo::RunEvent> events;
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg,
+                            [&](const evo::RunEvent& ev) { events.push_back(ev); });
+    // Node "a" fails transiently forever (fail_times huge).
+    FlakyWorker worker(transport, cfg.env_prefix, cfg.run_id, "a", 1000);
+    worker.start();
+
+    const std::string status = loop.run();
+    worker.stop();
+
+    check(status == evo::run_status::kFailed,
+          "m32: exhausted retries -> run failed");
+    check(worker.attempts_for("a") == 3,
+          "m32: node executed exactly max_attempts (3) attempts");
+    auto na = store.get_node_run("run-m32-dl", "a");
+    check(na.has_value() && na->status == evo::node_status::kDeadLettered &&
+              na->attempt_count == 3,
+          "m32: node dead-lettered after 3 attempts");
+    bool saw_dl = false;
+    for (const auto& ev : events) {
+      if (ev.kind == "node_dead_lettered" && ev.node_id == "a") saw_dl = true;
+    }
+    check(saw_dl, "m32: node_dead_lettered event emitted");
+    auto nc = store.get_node_run("run-m32-dl", "c");
+    check(nc.has_value() && nc->status == evo::node_status::kCanceled,
+          "m32: downstream canceled after dead-letter");
+  }
+
+  // --- 17. M32: cancellation during backoff ---------------------------------
+  // A node parked in RETRY_WAIT must be canceled (not re-dispatched) when the
+  // run is canceled during its backoff.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m32-cancel";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m32cancel";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.retry_policies = evo::RetryPolicySet::defaults();
+    // Long backoff so the node is still parked when we cancel.
+    cfg.retry_policies.internal.base_backoff = 5000ms;
+    cfg.retry_policies.internal.max_attempts = 3;
+
+    std::vector<evo::RunEvent> events;
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg,
+                            [&](const evo::RunEvent& ev) { events.push_back(ev); });
+    // Node "a" fails transiently forever -> parks in RETRY_WAIT on the long
+    // backoff after attempt 1.
+    FlakyWorker worker(transport, cfg.env_prefix, cfg.run_id, "a", 1000);
+    worker.start();
+
+    // Run on a thread so we can cancel mid-backoff.
+    std::jthread loop_thread([&] { loop.run(); });
+    // Wait until node a is parked in RETRY_WAIT.
+    {
+      const auto deadline = std::chrono::steady_clock::now() + 5s;
+      bool parked = false;
+      while (std::chrono::steady_clock::now() < deadline && !parked) {
+        auto na = store.get_node_run("run-m32-cancel", "a");
+        parked = na.has_value() && na->status == evo::node_status::kRetryWait;
+        if (!parked) std::this_thread::sleep_for(5ms);
+      }
+      check(parked, "m32: node parked in retry_wait during backoff");
+    }
+    loop.cancel("user stop during backoff");
+    loop_thread.join();
+    worker.stop();
+
+    auto na = store.get_node_run("run-m32-cancel", "a");
+    check(na.has_value() && na->status == evo::node_status::kCanceled,
+          "m32: retry-waiting node canceled (not re-dispatched)");
+    check(worker.attempts_for("a") == 1,
+          "m32: node not re-dispatched after cancel during backoff");
+    auto run = store.get_run("run-m32-cancel");
+    check(run.has_value() && run->status == evo::run_status::kCanceled,
+          "m32: run terminal canceled");
+  }
+
+  // --- 18. M32: retry after worker lease expiry ------------------------------
+  // A killed worker's attempt is reaped (M31 recovery) and the node is
+  // re-dispatched; when the NEXT attempt fails transiently, the retry policy
+  // must still apply normally: lease-expiry recovery consumes no retry budget,
+  // and the node parks in RETRY_WAIT, then succeeds on the following attempt.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m32-lease-retry";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m32leaseretry";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.lease_duration = 150ms;
+    cfg.lease_scan_interval = 30ms;
+    // Generous queue-wait lease: the flaky worker does not acquire/renew
+    // leases itself, so its attempts must not be reaped while in flight.
+    cfg.lease_initial_duration = 10s;
+    cfg.retry_policies = evo::RetryPolicySet::defaults();
+    cfg.retry_policies.internal.base_backoff = 50ms;  // keep the test fast
+
+    std::vector<evo::RunEvent> events;
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg,
+                            [&](const evo::RunEvent& ev) {
+                              events.push_back(ev);
+                            });
+    std::jthread loop_thread([&] { loop.run(); });
+
+    // Phase 1: a killed worker claims (start, attempt 1) then dies.
+    LeaseWorker killer(transport, store, cfg.env_prefix, cfg.run_id,
+                       "m32-killed-worker", /*renew=*/false,
+                       /*work_ms=*/60000ms, /*lease_duration=*/150ms,
+                       /*renew_interval=*/1000ms);
+    killer.start();
+    {
+      const auto wait_deadline = std::chrono::steady_clock::now() + 5s;
+      bool acquired = false;
+      while (std::chrono::steady_clock::now() < wait_deadline && !acquired) {
+        auto l = store.get_attempt_lease("run-m32-lease-retry", "start", 1);
+        acquired = l.has_value() && l->worker_id == "m32-killed-worker";
+        if (!acquired) std::this_thread::sleep_for(2ms);
+      }
+      check(acquired, "m32: killed worker acquired the lease before crash");
+    }
+    killer.stop();  // crash: no result, no further renewals
+
+    // Phase 2: the reaped node is re-dispatched as attempt 2 to a flaky
+    // worker, which fails it TRANSIENTLY once (-> RETRY_WAIT) and then
+    // succeeds on attempt 3.
+    FlakyWorker flaky(transport, cfg.env_prefix, cfg.run_id, "start", 1);
+    flaky.start();
+
+    loop_thread.join();
+    const std::string status = store.get_run("run-m32-lease-retry")->status;
+    flaky.stop();
+
+    check(status == evo::run_status::kSucceeded,
+          "m32: run succeeds after lease-expiry recovery + retry");
+
+    // The killed attempt was reaped, and recovery consumed NO retry budget:
+    // the node needed 3 attempts total (reaped, transient-fail, success).
+    auto lease1 = store.get_attempt_lease("run-m32-lease-retry", "start", 1);
+    check(lease1.has_value() &&
+              lease1->status == evo::attempt_status::kLeaseExpired,
+          "m32: killed attempt reaped to lease_expired before retry");
+    check(store.attempt_row_count("run-m32-lease-retry", "start") == 3,
+          "m32: exactly 3 attempts (reap does not consume retry budget)");
+    auto nstart = store.get_node_run("run-m32-lease-retry", "start");
+    check(nstart.has_value() &&
+              nstart->status == evo::node_status::kSucceeded &&
+              nstart->attempt_count == 3,
+          "m32: node succeeded on attempt 3 after reap + transient retry");
+
+    // Both recovery and retry evidence events were emitted.
+    bool saw_lease_expired = false;
+    bool saw_retry = false;
+    for (const auto& ev : events) {
+      if (ev.kind == "node_lease_expired" && ev.node_id == "start") {
+        saw_lease_expired = true;
+      }
+      if (ev.kind == "node_retry_scheduled" && ev.node_id == "start") {
+        saw_retry = true;
+      }
+    }
+    check(saw_lease_expired, "m32: node_lease_expired emitted before retry");
+    check(saw_retry, "m32: node_retry_scheduled emitted after reap");
+
+    // Downstream completed normally.
+    for (const char* n : {"a", "b", "c"}) {
+      auto nr = store.get_node_run("run-m32-lease-retry", n);
+      check(nr.has_value() && nr->status == evo::node_status::kSucceeded,
+            "m32: downstream node succeeded after lease-retry recovery");
+    }
   }
 
   if (failures == 0) {

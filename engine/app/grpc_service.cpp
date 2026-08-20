@@ -514,6 +514,15 @@ class ControlServiceImpl final
           }
           v.finished = true;
           v.finished_ms = ev.wall_ms;
+        } else if (ev.kind == "node_retry_scheduled") {
+          // M32: parked for backoff — still in progress (not terminal).
+          v.state = NodeState::NODE_STATE_RUNNING;
+        } else if (ev.kind == "node_dead_lettered") {
+          // M32: retries exhausted — terminal failure.
+          v.state = NodeState::NODE_STATE_DEAD_LETTER;
+          v.error = ev.detail;
+          v.finished = true;
+          v.finished_ms = ev.wall_ms;
         }
       }
     }
