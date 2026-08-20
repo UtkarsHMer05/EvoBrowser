@@ -40,7 +40,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M28 | Build engine-neutral Evo run events and realtime frontend transport | ✅ DONE | `c3723bc` |
 | M29 | Achieve UI parity for Evo runs | ✅ DONE | `a24dd9e` |
 | M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `200386a` |
-| M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `RECORD_AFTER_COMMIT` |
+| M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `4543443` |
 
 ---
 
@@ -1869,5 +1869,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   mocked-session suites; live E2E deferred to the final campaign.
 - **Human action:** none (local PG migration only; Neon migration still
   requires explicit approval).
-- **COMMIT:** `RECORD_AFTER_COMMIT` — `phase2(m31): add worker leases and heartbeats`
+- **COMMIT:** `4543443` — `phase2(m31): add worker leases and heartbeats`
 - **NEXT:** M32 — Implement node-level retry policy, exponential backoff, jitter, and dead-lettering.
