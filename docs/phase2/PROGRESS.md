@@ -43,6 +43,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `4543443` |
 | M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `dcad613` |
 | M33 | Implement idempotency and duplicate suppression | ✅ DONE | `2887e88` |
+| M34 | Implement worker crash recovery and failure injection | 🚧 IN PROGRESS (claimed by session B) | — |
 
 ---
 
