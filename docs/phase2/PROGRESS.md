@@ -43,7 +43,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `4543443` |
 | M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `dcad613` |
 | M33 | Implement idempotency and duplicate suppression | ✅ DONE | `2887e88` |
-| M34 | Implement worker crash recovery and failure injection | ✅ DONE | `RECORD_AFTER_COMMIT` |
+| M34 | Implement worker crash recovery and failure injection | ✅ DONE | `b6cff19` |
 
 ---
 
@@ -2240,5 +2240,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   for a fault-injection harness.
 - **Human action:** none (no new migration; reused M19/M31 local tables; Neon
   untouched).
-- **COMMIT:** `RECORD_AFTER_COMMIT` — `phase2(m34): implement and measure worker crash recovery`
+- **COMMIT:** `b6cff19` — `phase2(m34): implement and measure worker crash recovery`
 - **NEXT:** M35 — Implement scheduler restart recovery and durable reconciliation.
