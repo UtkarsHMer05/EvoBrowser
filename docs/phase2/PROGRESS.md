@@ -43,7 +43,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `4543443` |
 | M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `dcad613` |
 | M33 | Implement idempotency and duplicate suppression | ✅ DONE | `2887e88` |
-| M34 | Implement worker crash recovery and failure injection | 🚧 IN PROGRESS (claimed by session B) | — |
+| M34 | Implement worker crash recovery and failure injection | ✅ DONE | `RECORD_AFTER_COMMIT` |
 
 ---
 
@@ -2124,3 +2124,121 @@ Commit subjects follow `phase2(mNN): <description>`.
   untouched).
 - **COMMIT:** `2887e88` — `phase2(m33): add idempotency and duplicate suppression`
 - **NEXT:** M34 — Implement worker crash recovery and failure injection.
+
+## M34 — Implement worker crash recovery and failure injection
+
+**Status:** ✅ DONE — task reassignment is now DEMONSTRATED, not described: a real TS worker is SIGKILLed mid-task while holding its lease, the scheduler reaps the expired lease, re-dispatches the node as a new attempt on a surviving worker, and no logical task is lost. Recovery timelines are recorded as raw samples.
+
+- **BASE_SHA:** `c23855d` (phase2 branch; M34 was claimed in-progress with
+  uncommitted work, which this session reviewed, FIXED, tested, and completed).
+- **What was inspected:** master prompt M34 spec (steps 1–8, no-go list,
+  validation, exit criteria), the uncommitted M34 working tree (crash recovery
+  test, run-loop browser-affinity test, `apply_result` late-result reorder,
+  `main.ts` lease-cadence env config, CMake target), `engine/tests/
+  distributed_e2e_test.cpp` (M26 spawn pattern), the `npx tsx` process-tree
+  behavior on this host, `docs/phase2/FAILURE_MODEL.md` §4 (browser loss
+  policy), `docs/phase2/BENCHMARK_METHODOLOGY.md` §4 (artifact format).
+- **What changed:**
+  - **Fault-injection harness (M34 step 1):** `engine/tests/crash_recovery_test.cpp`
+    (NEW) drives a real multi-process fleet — `DistributedRunLoop` (this process)
+    + 2 spawned TS workers (`worker/src/main.ts`) over real Redis + Postgres —
+    over a `start -> {slow, quick} -> join` DAG where `slow` is a 4000ms
+    `bench:sleep`. It waits until SOME worker acquires the `(slow, attempt 1)`
+    lease, records the injection timestamp, SIGKILLs that exact worker, then
+    asserts recovery. 3 trials by default (`EVO_M34_TRIALS`).
+  - **CRITICAL FIX found this session — process-group kill:** `npx tsx` spawns
+    a 3-level tree (`npm exec` → `node tsx` → `node main.ts`). The original
+    harness killed only the spawned pid, which left the REAL worker running —
+    the "killed" worker finished its own task (1 attempt, no reap), and the
+    orphan held CTest's stdout pipe open, wedging ctest until its 300s timeout.
+    Fixed with `POSIX_SPAWN_SETPGROUP` (whole tree in its own pgid) +
+    `kill(-pid, SIGKILL)` (signal the whole group), and worker stdout/stderr
+    redirected to `/dev/null` so no orphan can wedge CTest on pipe EOF.
+  - **Reassignment on another worker (M34 step 2):** the killed worker's lease
+    expires (short 1500ms lease, env-configurable via M34 `main.ts` change),
+    the scheduler's expired-lease scan reaps the attempt to `lease_expired`,
+    and re-dispatches the node as attempt 2, which the SURVIVING worker
+    completes. Asserted: run succeeds, exactly 2 attempts for `slow`, attempt 2
+    on a different worker, `slow` succeeded, unaffected siblings + join
+    succeeded, single logical commit (output present).
+  - **Recovery timeline recorded (M34 step 3):** per-trial wall-clock UTC ms —
+    `t_inject` (SIGKILL), `t_lease_expired` (scheduler reap),
+    `t_replacement_acquired` (new worker lease), `t_run_complete` — plus
+    derived reap/reassign/recovery latencies.
+  - **No lost task + no corruption (M34 steps 4–5):** asserted per trial (run
+    succeeds, `slow` succeeded, single terminal success with output). Duplicate/
+    late completion cannot corrupt state — the M33 ledger + late-result rule
+    (reordered BEFORE the durable claim this milestone) are the guards.
+  - **Browser-affinity resource-loss policy (M34 step 6):** run-loop test 19
+    (NEW, `distributed_run_loop_test.cpp`) proves the documented policy for
+    browser work: when the OWNING worker of a capacity-1 browser affinity key
+    dies, the slot is RELEASED on lease reap (not leaked), the node
+    re-dispatched as a new attempt on a FRESH session, and the downstream
+    browser node then runs on the freed slot. No transparent session
+    continuation is claimed. (`make_browser_chain`: b1 trigger + b2 action, both
+    `open-url` => same capacity-1 key.)
+  - **Raw recovery artifacts (M34 step 7):** when `EVO_M34_ARTIFACT_DIR` is
+    set, writes `manifest.json` (slug/workload/resource_class/build_mode/
+    commit/hardware/trials/clock/note), `samples.jsonl` (per-trial timeline),
+    `summary.json` (min/median/max recovery_latency_ms), and `command.txt`,
+    following BENCHMARK_METHODOLOGY.md §4. Committed under
+    `engine/bench-results/m34/`. Timings are DIAGNOSTIC (single local stack),
+    not evidence-grade benchmark numbers.
+  - **Separate recovery documentation (M34 step 8):** synthetic/non-browser
+    work recovers by reassignment on a surviving worker (crash test);
+    browser-affinity work recovers by resource-loss + re-create on a fresh
+    session (run-loop test 19). Documented separately, never conflated.
+  - **`apply_result` late-result reorder:** the late-result rule now runs
+    BEFORE the durable idempotency claim, so a forged/late result can never
+    pollute the ledger's "first committed output".
+  - **`worker/src/main.ts` lease-cadence env config:** `EVO_WORKER_LEASE_DURATION_MS`
+    / `_RENEW_INTERVAL_MS` / `_HEARTBEAT_INTERVAL_MS` (undefined => Worker's
+    production defaults). Lets the crash test use short leases; production
+    unchanged.
+  - **`engine/CMakeLists.txt`:** `evo_crash_recovery_test` target (gated on
+    hiredis + libpq), 300s timeout, `EVO_REPO_ROOT_DIR` baked for worker spawn.
+- **Measured recovery evidence (diagnostic, 3 trials, Release, Apple M2 arm64,
+  commit recorded in manifest):** reap_latency ≈ 1570–1672ms (bounded by the
+  1500ms lease + 100ms scan), reassign_latency ≈ 114–121ms, recovery_latency
+  (SIGKILL → run complete) ≈ 6460–6552ms (includes the 4000ms re-execution of
+  the slow task on the replacement worker). These are DIAGNOSTIC samples — no
+  resume number is claimed; evidence-grade recovery benchmarking is M39.
+- **Concurrency/distributed correctness:** the run loop is single-threaded and
+  owns lease scanning; the reap is an at-most-once conditional UPDATE (M31),
+  so a racing completion can never be double-completed. The killed worker's
+  in-flight task produces NO result (process dead), so there is no late result
+  to race; the late-result rule + ledger bound any hypothetical one. The
+  browser affinity slot is released exactly once on reap (no leak, no double
+  free). Recovery uses wall-clock UTC ms at every durable boundary.
+- **Phase-1 preservation:** legacy Trigger.dev engine untouched; no Phase-1
+  default behavior changed; no test removed; browser credentials stay
+  server/worker-only. `main.ts` lease-cadence config defaults to production
+  values when unset.
+- **No-go compliance:** the kill targets an ACTIVE lease-holding worker mid-task
+  (not an idle worker); recovery claims specify workload/resource class
+  (synthetic INTERNAL vs browser-affinity, documented separately); no
+  performance numbers invented; no future component marked implemented; no
+  secret/credential committed.
+- **Validation:**
+  - CMake build → ✅ clean; `ctest` (Release) → ✅ 20/20 (incl. crash_recovery
+    27.5s, distributed_run_loop incl. browser-affinity test 19)
+  - ASan+UBSan → ✅ 20/20; TSan → ✅ 20/20 (no data races)
+  - `npm test` → ✅ exit 0 across 13 suites (all prior suites green; no new TS
+    suite — the crash harness is C++-driven, `main.ts` change is config-only)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅ (0 errors, 0 warnings)
+  - Postgres/Redis audit assertions → ✅ (crash recovery vs live Redis + PG;
+    browser-affinity slot release vs in-memory store)
+  - Recovery artifacts → ✅ `engine/bench-results/m34/` (manifest/samples/
+    summary/command with commit + hardware provenance)
+- **Known limitations:** `grpc_integration` uses `pick_free_port()` (pre-existing
+  M17 TOCTOU pattern) — passes consistently, not M34-related. Recovery latencies
+  are diagnostic single-stack samples; evidence-grade multi-trial benchmarking
+  deferred to M39. Browser-affinity recovery is proven at the scheduler/slot
+  level (in-memory store); a live Browserbase session re-open across a crash is
+  covered by the mocked-session suites, live E2E deferred to the final campaign.
+  The crash test spawns workers via `npx tsx` (adds ~1.5s startup); acceptable
+  for a fault-injection harness.
+- **Human action:** none (no new migration; reused M19/M31 local tables; Neon
+  untouched).
+- **COMMIT:** `RECORD_AFTER_COMMIT` — `phase2(m34): implement and measure worker crash recovery`
+- **NEXT:** M35 — Implement scheduler restart recovery and durable reconciliation.

@@ -1,0 +1,12 @@
+{
+  "slug": "m34_worker_crash_recovery",
+  "workload": "synthetic bench:sleep 4000ms, 2 TS workers, SIGKILL lease-holder mid-attempt",
+  "resource_class": "INTERNAL (synthetic, non-browser)",
+  "build_mode": "Release",
+  "commit": "c23855d",
+  "hardware": "Darwin arm64",
+  "trials": 3,
+  "clock": "wall-clock UTC ms (durable store)",
+  "note": "diagnostic recovery samples on a single local stack; not evidence-grade benchmark numbers",
+  "generated_at_wall_ms": 1787301592499
+}

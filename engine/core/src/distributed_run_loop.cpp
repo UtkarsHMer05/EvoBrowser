@@ -405,7 +405,17 @@ bool DistributedRunLoop::apply_result(
   //    fast path for same-process redelivery (no durable round-trip).
   if (!dedupe_.first_time(attempt_key_of(result))) return false;
 
-  // 3b. Durable idempotency claim (M33 step 3): the in-memory dedupe above is
+  // 4. Late-result rule (M22): an older attempt never overwrites newer
+  // logical state (attempt-aware; retries are M32). Checked BEFORE the durable
+  // claim so a forged/late result can never pollute the idempotency ledger.
+  const unsigned current = current_attempt_.contains(node_id)
+                               ? current_attempt_.at(node_id)
+                               : 0;
+  if (is_late_result(result, current, /*node_is_terminal=*/false)) {
+    return false;
+  }
+
+  // 4b. Durable idempotency claim (M33 step 3): the in-memory dedupe above is
   //    lost on a scheduler restart, so the authoritative duplicate-suppression
   //    gate is the durable ledger. The logical operation key is derived from
   //    the attempt identity; the ledger's unique constraint makes a second
@@ -416,15 +426,6 @@ bool DistributedRunLoop::apply_result(
                                     config_.run_id,
                                     result.completed() ? result.output() : "")) {
     return false;  // already applied (duplicate suppressed)
-  }
-
-  // 4. Late-result rule (M22): an older attempt never overwrites newer
-  // logical state (attempt-aware; retries are M32).
-  const unsigned current = current_attempt_.contains(node_id)
-                               ? current_attempt_.at(node_id)
-                               : 0;
-  if (is_late_result(result, current, /*node_is_terminal=*/false)) {
-    return false;
   }
 
   const std::int64_t finished_ms =

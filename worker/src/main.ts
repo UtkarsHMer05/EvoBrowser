@@ -63,6 +63,20 @@ const envPrefix = process.env.EVO_WORKER_ENV_PREFIX ?? "evo:dev";
 const group = process.env.EVO_WORKER_GROUP ?? "workers";
 const workerId = process.env.EVO_WORKER_ID || undefined;
 
+// Milestone 34: lease/heartbeat cadence is env-configurable so the
+// crash-recovery failure-injection test can use short leases (fast reap) while
+// production keeps the generous defaults. The defaults match Worker's own
+// defaults (worker.ts); setting these does NOT change production behavior.
+const leaseDurationMs = process.env.EVO_WORKER_LEASE_DURATION_MS
+  ? Number(process.env.EVO_WORKER_LEASE_DURATION_MS)
+  : undefined;
+const leaseRenewIntervalMs = process.env.EVO_WORKER_LEASE_RENEW_INTERVAL_MS
+  ? Number(process.env.EVO_WORKER_LEASE_RENEW_INTERVAL_MS)
+  : undefined;
+const heartbeatIntervalMs = process.env.EVO_WORKER_HEARTBEAT_INTERVAL_MS
+  ? Number(process.env.EVO_WORKER_HEARTBEAT_INTERVAL_MS)
+  : undefined;
+
 // Live-view handshake timing (M29 parity with Phase-1 run-workflow.ts): hold
 // the first browser step until the watching browser's live view connects, up to
 // this deadline, then proceed anyway so an unwatched run never hangs.
@@ -256,8 +270,12 @@ const worker = new Worker({
   // for the run (worker.ts); close the run's browser session promptly here so
   // Stagehand/Browserbase resources stop as soon as the cancel propagates.
   onCancelRun: (runId) => browserSessions.closeAllForRun(runId),
-  // M31: worker registry + task leases.
+  // M31: worker registry + task leases. M34: cadence is env-configurable
+  // (undefined => Worker's production defaults).
   leaseStore,
+  leaseDurationMs,
+  leaseRenewIntervalMs,
+  heartbeatIntervalMs,
 });
 
 let shuttingDown = false;

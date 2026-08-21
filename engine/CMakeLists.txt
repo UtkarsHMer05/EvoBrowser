@@ -474,6 +474,26 @@ if(EVO_HAVE_HIREDIS AND EVO_HAVE_LIBPQ)
   )
   add_test(NAME distributed_e2e COMMAND evo_distributed_e2e_test)
   set_tests_properties(distributed_e2e PROPERTIES TIMEOUT 180)
+
+  # -------------------------------------------------------------------------
+  # evo_crash_recovery_test — M34: real SIGKILL fault injection of a
+  # lease-holding TS worker mid-task; lease expiry -> reassignment on a
+  # surviving worker -> no lost task; recovery timeline recorded as raw
+  # samples (EVO_M34_ARTIFACT_DIR). Skips at runtime when Redis/Postgres/tsx
+  # are unavailable. Requires both hiredis and libpq.
+  # -------------------------------------------------------------------------
+  add_executable(evo_crash_recovery_test tests/crash_recovery_test.cpp)
+  target_link_libraries(evo_crash_recovery_test PRIVATE
+    evo_distributed evo_redis_transport evo_pg_run_store)
+  target_compile_options(evo_crash_recovery_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -Wno-c99-extensions  # hiredis headers (transitive)
+  )
+  target_compile_definitions(evo_crash_recovery_test PRIVATE
+    EVO_REPO_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+  add_test(NAME crash_recovery COMMAND evo_crash_recovery_test)
+  set_tests_properties(crash_recovery PROPERTIES TIMEOUT 300)
 endif()
 # Point the integration test at the real server binary so it runs instead of
 # skipping (the test also honors an EVO_SCHEDULER_SERVER_BIN env override).

@@ -69,7 +69,10 @@ test requirement in the milestone that implements the affected component.
 The chaos campaign must demonstrate, with recorded evidence:
 
 - Worker kill mid-attempt → lease expiry → replacement attempt → correct
-  logical result (no duplicate success, no lost success).
+  logical result (no duplicate success, no lost success). **Demonstrated in
+  M34** (`engine/tests/crash_recovery_test.cpp`, real SIGKILL of the
+  lease-holding worker process group; raw samples committed under
+  `engine/bench-results/m34/`).
 - Duplicate delivery of a task envelope → single logical execution.
 - Duplicate delivery of a result envelope → single logical commit.
 - Scheduler restart with in-flight work → reconciliation resumes without
@@ -77,7 +80,59 @@ The chaos campaign must demonstrate, with recorded evidence:
 - Cancellation during dispatch, during execution, and racing completion.
 - Redis unavailability window → bounded degradation, loud failure, recovery.
 
-## 7. What we do NOT claim
+## 7. Verified crash-recovery behavior (M34)
+
+Recovery is demonstrated — not merely designed — and differs by resource
+class. Both paths share the same mechanism (lease expiry → reap →
+re-dispatch as a NEW attempt; the killed attempt is `lease_expired`, never
+`failed`, and reaping consumes no retry budget), but the *resource* outcome
+differs:
+
+### 7.1 Synthetic / non-browser work (resource class INTERNAL)
+
+- Fault: `SIGKILL` to the lease-holding worker's entire process group
+  (`npx tsx` tree) mid-attempt on a `bench:sleep 4000ms` node, 2-worker
+  fleet, short leases (1500ms, renew 400ms, scan 100ms).
+- Observed sequence (3/3 trials, wall-clock UTC ms from the durable store):
+  1. the killed attempt stops renewing; the scheduler's expired-lease scan
+     reaps it to `lease_expired` (reap latency ≈ lease duration + scan
+     interval; measured ≈ 1.5–1.6s with the test cadence),
+  2. the node is re-dispatched as attempt 2 (reassign latency ≈ 0.1s),
+  3. a DIFFERENT surviving worker acquires the new attempt's lease and
+     completes it; the run succeeds.
+- No logical task lost; exactly 2 attempts for the killed node; the node's
+  single terminal success is the replacement attempt's output. A late result
+  from the killed attempt (had it published before dying) is rejected by the
+  late-result rule + M33 ledger and cannot corrupt state.
+- Recovery latency (SIGKILL → run complete) is workload-bound: the
+  replacement must re-run the full task. Diagnostic samples: median ≈ 6.5s
+  for the 4s-sleep workload (see the committed raw artifact directory; these
+  are single-local-stack diagnostic numbers, not benchmark claims).
+
+### 7.2 Browser-affinity work (resource class BROWSER)
+
+- Same reap/re-dispatch mechanism, plus the browser resource rule from §4:
+  the killed worker's browser slot (capacity-1 affinity key) is RELEASED on
+  reap, so the replacement attempt can acquire it.
+- There is NO transparent session continuation: the replacement attempt
+  starts a FRESH browser session (the old Browserbase session is treated as
+  lost; cleanup is best-effort via Browserbase TTL). Verified in
+  `engine/tests/distributed_run_loop_test.cpp` test 19: after killing the
+  lease-holding worker mid browser-affinity chain, the downstream browser
+  node runs on the freed capacity-1 slot, the killed node has exactly 2
+  attempts, and the run succeeds.
+- Side effects already performed in the lost session (page mutations) are
+  NOT rolled back; the fresh session re-executes the node from scratch
+  (documented ambiguity, §3).
+
+### 7.3 What recovery does NOT cover (yet)
+
+- Scheduler-process crash mid-run: durable reconciliation is M35.
+- Whole-fleet outage (all workers dead): tasks wait in the queue until a
+  worker returns; queue-wait leases are deliberately generous so a
+  slow-to-claim live worker is not reaped (M31 two-phase lease).
+
+## 8. What we do NOT claim
 
 - No transparent browser-session continuation after worker crash.
 - No exactly-once external side effects (email/page mutations).

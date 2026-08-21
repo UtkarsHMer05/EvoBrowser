@@ -1,0 +1,2 @@
+ctest --test-dir engine/build -R crash_recovery --output-on-failure
+# (or directly) EVO_M34_TRIALS=3 EVO_M34_ARTIFACT_DIR=/Users/utkarshkhajuria/Desktop/evo builder/engine/bench-results/m34 engine/build/evo_crash_recovery_test

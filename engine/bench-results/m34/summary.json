@@ -1,0 +1,7 @@
+{
+  "metric": "recovery_latency_ms (SIGKILL -> run complete)",
+  "samples": 3,
+  "min": 6438,
+  "median": 6460,
+  "max": 6473
+}

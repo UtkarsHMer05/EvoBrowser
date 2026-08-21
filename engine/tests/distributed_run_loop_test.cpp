@@ -71,6 +71,28 @@ Dag make_diamond() {
   return std::move(*br.dag);
 }
 
+// M34: a browser-affinity chain used to prove the browser resource-loss policy
+// under worker crash. b1 is the TRIGGER (the only initially-ready node, so a
+// killed worker deterministically claims it) and BOTH b1 and b2 are browser
+// node types ("open-url"), so ExecutionPolicy gives them the SAME capacity-1
+// affinity key (the run id). The test proves: when the owning worker dies, the
+// single affinity slot is RELEASED on lease reap (not leaked), the node is
+// re-dispatched as a new attempt on a fresh session, and the chain then
+// continues to b2 on the same capacity-1 key. This is the documented policy:
+// browser resource treated as lost + re-created, never transparent session
+// continuation, never a permanently leaked slot.
+Dag make_browser_chain() {
+  std::vector<NodeSpec> nodes = {
+      {NodeId{"b1"}, NodeKind::Trigger, "open-url"},
+      {NodeId{"b2"}, NodeKind::Action, "open-url"},
+  };
+  std::vector<Edge> edges = {
+      {NodeId{"b1"}, NodeId{"b2"}},
+  };
+  auto br = Dag::build(nodes, edges);
+  return std::move(*br.dag);
+}
+
 std::string encode_success(const std::string& run_id, const std::string& node,
                            unsigned attempt, const std::string& output) {
   evo::execution::v1::ResultEnvelope env;
@@ -1326,6 +1348,102 @@ int main() {
       check(nr.has_value() && nr->status == evo::node_status::kSucceeded,
             "m32: downstream node succeeded after lease-retry recovery");
     }
+  }
+
+  // --- 19. M34: browser-affinity worker crash -> slot released, re-dispatch --
+  // The documented browser resource-loss policy (FAILURE_MODEL.md §4): when the
+  // owning worker dies, the browser resource is treated as LOST — the single
+  // capacity-1 affinity slot must be released on lease reap (not leaked), the
+  // node re-dispatched as a new attempt on a FRESH session, and the chain then
+  // continues. No transparent session continuation is claimed. This test proves
+  // the slot is released: if it leaked, b1's re-dispatch and b2 would be
+  // blocked forever on the capacity-1 key and the run would time out.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m34-browser";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m34browser";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.lease_duration = 150ms;
+    cfg.lease_scan_interval = 30ms;
+    // Generous queue-wait so the killed worker can claim before the reap.
+    cfg.lease_initial_duration = 10s;
+
+    std::vector<evo::RunEvent> events;
+    DistributedRunLoop loop(make_browser_chain(), transport, store, cfg,
+                            [&](const evo::RunEvent& ev) {
+                              events.push_back(ev);
+                            });
+    std::jthread loop_thread([&] { loop.run(); });
+
+    // Phase 1: a killed worker claims the browser node b1 (attempt 1) then dies.
+    LeaseWorker killer(transport, store, cfg.env_prefix, cfg.run_id,
+                       "m34-killed-worker", /*renew=*/false,
+                       /*work_ms=*/60000ms, /*lease_duration=*/150ms,
+                       /*renew_interval=*/1000ms);
+    killer.start();
+    {
+      const auto wait_deadline = std::chrono::steady_clock::now() + 5s;
+      bool acquired = false;
+      while (std::chrono::steady_clock::now() < wait_deadline && !acquired) {
+        auto l = store.get_attempt_lease("run-m34-browser", "b1", 1);
+        acquired = l.has_value() && l->worker_id == "m34-killed-worker";
+        if (!acquired) std::this_thread::sleep_for(2ms);
+      }
+      check(acquired, "m34: killed worker acquired the browser lease pre-crash");
+    }
+    killer.stop();  // crash: no result, no further renewals
+
+    // Phase 2: a healthy worker takes over after the lease expires. It renews,
+    // so its own attempts are never reaped.
+    LeaseWorker healthy(transport, store, cfg.env_prefix, cfg.run_id,
+                        "m34-healthy-worker", /*renew=*/true,
+                        /*work_ms=*/20ms, /*lease_duration=*/2000ms,
+                        /*renew_interval=*/500ms);
+    healthy.start();
+
+    loop_thread.join();
+    const std::string status = store.get_run("run-m34-browser")->status;
+    healthy.stop();
+
+    check(status == evo::run_status::kSucceeded,
+          "m34: browser chain recovers after owning-worker crash (run succeeds)");
+
+    // The killed attempt was reaped; the node re-dispatched as attempt 2 on the
+    // healthy worker and succeeded. Exactly 2 attempts for b1.
+    auto lease1 = store.get_attempt_lease("run-m34-browser", "b1", 1);
+    check(lease1.has_value() &&
+              lease1->status == evo::attempt_status::kLeaseExpired &&
+              lease1->worker_id == "m34-killed-worker",
+          "m34: killed browser attempt reaped to lease_expired");
+    check(store.attempt_row_count("run-m34-browser", "b1") == 2,
+          "m34: browser node re-dispatched as a new attempt after crash");
+    auto lease2 = store.get_attempt_lease("run-m34-browser", "b1", 2);
+    check(lease2.has_value() && lease2->worker_id == "m34-healthy-worker",
+          "m34: replacement attempt ran on a different (healthy) worker");
+    auto nb1 = store.get_node_run("run-m34-browser", "b1");
+    check(nb1.has_value() && nb1->status == evo::node_status::kSucceeded,
+          "m34: browser node eventually succeeded on a fresh session");
+
+    // The affinity slot was RELEASED on reap: b2 (same capacity-1 key) was able
+    // to dispatch + complete after b1. If the slot had leaked, b2 would never
+    // have run and the run would have timed out.
+    auto nb2 = store.get_node_run("run-m34-browser", "b2");
+    check(nb2.has_value() && nb2->status == evo::node_status::kSucceeded &&
+              store.attempt_row_count("run-m34-browser", "b2") == 1,
+          "m34: downstream browser node ran on the freed capacity-1 slot");
+
+    bool saw_lease_expired = false;
+    for (const auto& ev : events) {
+      if (ev.kind == "node_lease_expired" && ev.node_id == "b1") {
+        saw_lease_expired = true;
+      }
+    }
+    check(saw_lease_expired, "m34: node_lease_expired emitted for browser node");
   }
 
   if (failures == 0) {
