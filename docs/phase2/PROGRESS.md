@@ -42,7 +42,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `200386a` |
 | M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `4543443` |
 | M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `dcad613` |
-| M33 | Implement idempotency and duplicate suppression | ✅ DONE | `RECORD_AFTER_COMMIT` |
+| M33 | Implement idempotency and duplicate suppression | ✅ DONE | `2887e88` |
 
 ---
 
@@ -2121,5 +2121,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   suites; live E2E deferred to the final campaign.
 - **Human action:** none (no new migration; reused the M19 local table; Neon
   untouched).
-- **COMMIT:** `RECORD_AFTER_COMMIT` — `phase2(m33): add idempotency and duplicate suppression`
+- **COMMIT:** `2887e88` — `phase2(m33): add idempotency and duplicate suppression`
 - **NEXT:** M34 — Implement worker crash recovery and failure injection.
