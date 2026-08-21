@@ -88,6 +88,100 @@ void SchedulerState::start_run() {
   }
 }
 
+std::size_t SchedulerState::reconstruct(const std::vector<NodeRunRecord>& rows) {
+  std::lock_guard lock(mu_);
+  // A reconstructed run was already started before the restart.
+  run_state_ = RunState::Running;
+
+  // Map each persisted node-run row to a logical state.
+  std::map<NodeId, NodeState> restored;
+  std::map<NodeId, std::string> restored_output;
+  std::map<NodeId, std::string> restored_reason;
+  for (const auto& r : rows) {
+    NodeId id{r.node_id};
+    NodeState st;
+    if (r.status == node_status::kSucceeded) {
+      st = NodeState::Succeeded;
+    } else if (r.status == node_status::kFailed) {
+      st = NodeState::Failed;
+    } else if (r.status == node_status::kDeadLettered) {
+      st = NodeState::DeadLettered;
+    } else if (r.status == node_status::kCanceled) {
+      st = NodeState::Canceled;
+    } else if (r.status == node_status::kRetryWait) {
+      st = NodeState::RetryWait;
+    } else if (r.status == node_status::kReady) {
+      st = NodeState::Ready;
+    } else if (r.status == node_status::kDispatched ||
+               r.status == node_status::kRunning) {
+      // In-flight at crash time: restore to RUNNING. The attempt either
+      // completes (its result arrives) or its lease expires and the ordinary
+      // lease-reap path re-dispatches it. The loop does NOT dispatch a
+      // duplicate replacement while a valid lease still exists (M35 step 4).
+      st = NodeState::Running;
+    } else {
+      st = NodeState::Blocked;  // blocked or unrecognized
+    }
+    restored[id] = st;
+    restored_output[id] = r.output_json;
+    restored_reason[id] = r.failure_reason;
+  }
+
+  // Apply restored states; DAG nodes absent from `rows` start BLOCKED.
+  for (const auto& id : dag_.node_ids()) {
+    auto it = restored.find(id);
+    const NodeState st =
+        (it == restored.end()) ? NodeState::Blocked : it->second;
+    node_states_[id] = st;
+
+    // Rebuild the terminal bookkeeping the live path maintains incrementally.
+    switch (st) {
+      case NodeState::Succeeded:
+        completed_.insert(id);
+        results_[id] = TaskResult{true, restored_output[id]};
+        break;
+      case NodeState::Failed:
+      case NodeState::DeadLettered:
+        completed_.insert(id);
+        failure_reasons_[id] = restored_reason[id];
+        results_[id] = TaskResult{false, restored_reason[id]};
+        break;
+      case NodeState::Canceled:
+        failure_reasons_[id] = restored_reason[id];
+        break;
+      default:
+        break;  // non-terminal: no completion/result recorded
+    }
+  }
+
+  // Re-derive dependency counters from restored predecessor states: a node's
+  // remaining deps = predecessors NOT yet logically succeeded.
+  for (const auto& id : dag_.node_ids()) {
+    int remaining = 0;
+    for (const auto& pred : dag_.predecessors(id)) {
+      if (node_states_[pred] != NodeState::Succeeded) ++remaining;
+    }
+    dep_counts_[id] = remaining;
+  }
+
+  // Resume dependency scheduling (M35 step 5): a non-terminal BLOCKED node
+  // whose predecessors are all satisfied becomes READY. Nodes already READY /
+  // RUNNING (in-flight) / RETRY_WAIT keep their restored state.
+  std::size_t nonterminal = 0;
+  for (const auto& id : dag_.node_ids()) {
+    const NodeState st = node_states_[id];
+    const bool terminal = st == NodeState::Succeeded ||
+                          st == NodeState::Failed ||
+                          st == NodeState::DeadLettered ||
+                          st == NodeState::Canceled;
+    if (!terminal) ++nonterminal;
+    if (st == NodeState::Blocked && dep_counts_[id] == 0) {
+      node_states_[id] = NodeState::Ready;
+    }
+  }
+  return nonterminal;
+}
+
 void SchedulerState::dispatch_node(const NodeId& id) {
   std::lock_guard lock(mu_);
   auto it = node_states_.find(id);

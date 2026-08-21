@@ -235,6 +235,49 @@ bool RedisTransport::ack(const std::string& stream_key, const std::string& group
   return ok;
 }
 
+std::optional<TransportMessage> RedisTransport::read_pending(
+    const std::string& stream_key, const std::string& group,
+    const std::string& consumer, std::stop_token st) {
+  if (st.stop_requested()) return std::nullopt;
+  std::lock_guard lock(mu_);
+  // XREADGROUP with stream id "0" (not ">") returns the consumer's OWN pending
+  // entries (its PEL) instead of new messages — the standard recovery read.
+  // Non-blocking (no BLOCK): a pending drain never needs to wait.
+  void* raw = run_with_retry(config_, ctx_, [&](redisContext* c) {
+    return static_cast<void*>(redisCommand(
+        c, "XREADGROUP GROUP %s %s COUNT 1 STREAMS %s 0", group.c_str(),
+        consumer.c_str(), stream_key.c_str()));
+  });
+  if (raw == nullptr) return std::nullopt;
+  auto* reply = static_cast<redisReply*>(raw);
+  std::optional<TransportMessage> got;
+  // Reply shape mirrors read(): array of streams -> [ [stream, [ [id, [f,v]] ] ] ]
+  if (reply->type == REDIS_REPLY_ARRAY && reply->elements > 0) {
+    redisReply* stream_entry = reply->element[0];
+    if (stream_entry->type == REDIS_REPLY_ARRAY &&
+        stream_entry->elements >= 2) {
+      redisReply* messages = stream_entry->element[1];
+      if (messages->type == REDIS_REPLY_ARRAY && messages->elements > 0) {
+        redisReply* msg = messages->element[0];
+        if (msg->type == REDIS_REPLY_ARRAY && msg->elements >= 2 &&
+            msg->element[0]->type == REDIS_REPLY_STRING) {
+          TransportMessage m;
+          m.id = std::string(msg->element[0]->str, msg->element[0]->len);
+          redisReply* fields = msg->element[1];
+          if (fields->type == REDIS_REPLY_ARRAY && fields->elements >= 2 &&
+              fields->element[1]->type == REDIS_REPLY_STRING) {
+            m.payload =
+                std::string(fields->element[1]->str, fields->element[1]->len);
+          }
+          got = std::move(m);
+        }
+      }
+    }
+  }
+  freeReplyObject(raw);
+  return got;
+}
+
 std::size_t RedisTransport::pending_count(const std::string& stream_key,
                                           const std::string& group) {
   std::lock_guard lock(mu_);

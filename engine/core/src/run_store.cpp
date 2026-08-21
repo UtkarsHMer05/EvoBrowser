@@ -376,4 +376,32 @@ std::vector<std::string> InMemoryRunStore::attempt_worker_ids(
   return out;
 }
 
+// --- Milestone 35: reconstruction readers -----------------------------------
+
+std::vector<NodeRunRecord> InMemoryRunStore::list_node_runs(
+    const std::string& run_id) {
+  std::lock_guard lock(mu_);
+  std::vector<NodeRunRecord> out;
+  // node_runs_ is a std::map keyed by (run_id, node_id), so iterating the
+  // [run_id, ""] .. [run_id, ~] range yields node_id order.
+  for (auto it = node_runs_.lower_bound({run_id, ""});
+       it != node_runs_.end() && it->first.first == run_id; ++it) {
+    out.push_back(it->second);
+  }
+  return out;
+}
+
+std::vector<std::string> InMemoryRunStore::list_active_evo_run_ids() {
+  std::lock_guard lock(mu_);
+  std::vector<std::string> out;
+  for (const auto& [run_id, rec] : runs_) {
+    if (rec.engine != "evo") continue;
+    if (rec.status == run_status::kQueued ||
+        rec.status == run_status::kRunning) {
+      out.push_back(run_id);
+    }
+  }
+  return out;
+}
+
 }  // namespace evo

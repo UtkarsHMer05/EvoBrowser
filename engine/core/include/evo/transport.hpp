@@ -69,6 +69,18 @@ class TaskTransport {
   virtual bool ack(const std::string& stream_key, const std::string& group,
                    const std::string& message_id) = 0;
 
+  // Milestone 35 (scheduler restart recovery): redeliver ONE message that is
+  // currently PENDING (delivered but not yet acked) for (group, consumer),
+  // without consuming a new stream entry. Mirrors Redis
+  // `XREADGROUP GROUP g c COUNT 1 STREAMS s 0`, which returns the consumer's
+  // own pending entries. Returns nullopt when the consumer has no pending
+  // messages (drain complete) or on stop. The returned message REMAINS pending
+  // until ack(); a recovery loop therefore drains by read_pending -> apply ->
+  // ack. Non-blocking (pending drain never needs to wait).
+  virtual std::optional<TransportMessage> read_pending(
+      const std::string& stream_key, const std::string& group,
+      const std::string& consumer, std::stop_token st = std::stop_token{}) = 0;
+
   // Number of pending (delivered, not yet acked) entries for a group.
   virtual std::size_t pending_count(const std::string& stream_key,
                                     const std::string& group) = 0;
@@ -99,6 +111,11 @@ class InMemoryTransport final : public TaskTransport {
 
   bool ack(const std::string& stream_key, const std::string& group,
            const std::string& message_id) override;
+
+  std::optional<TransportMessage> read_pending(
+      const std::string& stream_key, const std::string& group,
+      const std::string& consumer,
+      std::stop_token st = std::stop_token{}) override;
 
   std::size_t pending_count(const std::string& stream_key,
                             const std::string& group) override;

@@ -1,5 +1,7 @@
 // Milestone 17: C++ scheduler service over gRPC.
 // Milestone 29: bridge product workflows to the distributed run loop.
+// Milestone 35: restart recovery — on startup, resume active evo runs from
+// the durable store instead of forgetting them.
 //
 // Wraps the scheduler core (M10–M13) behind the versioned ControlService
 // (engine/proto/evo/execution.proto, generated stubs) and serves
@@ -470,6 +472,154 @@ class ControlServiceImpl final
     return grpc::Status::OK;
   }
 
+ public:
+  // --- Startup reconciliation (M35): resume active runs after a restart. ---
+  // On scheduler startup, identify every NON-TERMINAL run owned by the Evo
+  // engine (Postgres is the durable source), reconstruct each run's DAG from
+  // its persisted dag_json, and re-drive it with resume=true. The run loop
+  // rebuilds logical state from durable node rows, drains the dead scheduler's
+  // pending result messages, and resumes dependency scheduling — so no active
+  // run is forgotten and no node is double-completed across the restart.
+  //
+  // Runs whose dag_json is missing/invalid (legacy / pre-M35 rows) are logged
+  // and skipped: without durable topology the scheduler cannot reconstruct
+  // them, and it must not guess. This is the documented small restart window
+  // that is not recoverable (M35 no-go).
+  void reconcile_active_runs() {
+    evo::PgRunStoreConfig pcfg;
+    pcfg.host = env_or("EVO_PHASE2_PG_HOST", "127.0.0.1");
+    pcfg.port = std::atoi(env_or("EVO_PHASE2_PG_PORT", "5433").c_str());
+    pcfg.user = env_or("EVO_PHASE2_PG_USER", "evo");
+    pcfg.password = env_or("EVO_PHASE2_PG_PASSWORD", "evo_dev_password");
+    pcfg.dbname = env_or("EVO_PHASE2_PG_DB", "evo_phase2");
+    evo::PgRunStore lister(pcfg);
+    if (!lister.connect()) {
+      std::fprintf(stderr,
+                   "[evo-scheduler] reconcile: Postgres unreachable; skipping "
+                   "active-run reconciliation\n");
+      return;
+    }
+    const std::vector<std::string> active = lister.list_active_evo_run_ids();
+    if (active.empty()) {
+      std::fprintf(stderr, "[evo-scheduler] reconcile: no active evo runs\n");
+      return;
+    }
+    std::fprintf(stderr,
+                 "[evo-scheduler] reconcile: %zu active evo run(s) to resume\n",
+                 active.size());
+
+    for (const std::string& rid : active) {
+      auto run = lister.get_run(rid);
+      if (!run.has_value()) continue;
+      if (run->dag_json.empty()) {
+        std::fprintf(stderr,
+                     "[evo-scheduler] reconcile: run %s has no durable dag_json "
+                     "(pre-M35); skipping\n",
+                     rid.c_str());
+        continue;
+      }
+      auto parse = evo::Dag::from_json_string(run->dag_json);
+      if (!parse.ok() || !parse.dag.has_value()) {
+        std::fprintf(stderr,
+                     "[evo-scheduler] reconcile: run %s dag_json invalid; "
+                     "skipping\n",
+                     rid.c_str());
+        continue;
+      }
+      evo::Dag dag = std::move(*parse.dag);
+
+      {
+        std::lock_guard lock(runs_mu_);
+        if (runs_.count(rid) != 0) continue;  // already driving (idempotent)
+      }
+
+      auto entry = std::make_unique<ActiveRun>();
+      entry->distributed = true;
+      entry->org_id = run->org_id;
+      entry->workflow_version_id = run->workflow_version_id;
+      entry->steady_anchor = std::chrono::steady_clock::now();
+      entry->wall_anchor = std::chrono::system_clock::now();
+      for (const auto& id : dag.node_ids()) {
+        const evo::NodeSpec* spec = dag.node(id);
+        entry->node_id_type.emplace_back(id.value, spec ? spec->type : "");
+      }
+
+      evo::RedisTransportConfig rcfg;
+      rcfg.host = env_or("EVO_PHASE2_REDIS_HOST", "127.0.0.1");
+      rcfg.port = std::atoi(env_or("EVO_PHASE2_REDIS_PORT", "6390").c_str());
+      entry->transport = std::make_unique<evo::RedisTransport>(rcfg);
+      if (!entry->transport->connect()) {
+        std::fprintf(stderr,
+                     "[evo-scheduler] reconcile: run %s Redis unreachable; "
+                     "skipping\n",
+                     rid.c_str());
+        continue;
+      }
+
+      entry->store = std::make_unique<evo::PgRunStore>(pcfg);
+      if (!entry->store->connect()) {
+        std::fprintf(stderr,
+                     "[evo-scheduler] reconcile: run %s Postgres unreachable; "
+                     "skipping\n",
+                     rid.c_str());
+        continue;
+      }
+
+      evo::DistributedRunConfig dcfg;
+      dcfg.run_id = rid;
+      dcfg.org_id = run->org_id;
+      dcfg.workflow_id = run->workflow_id;
+      dcfg.workflow_version_id = run->workflow_version_id;
+      dcfg.env_prefix = env_or("EVO_WORKER_ENV_PREFIX", "evo:dev");
+      dcfg.result_group = "scheduler";
+      // Same consumer id the pre-crash loop used, so the pending-entry list is
+      // reclaimed by the same consumer on resume.
+      dcfg.consumer_id = "scheduler-grpc";
+      dcfg.read_block_ms = std::chrono::milliseconds(100);
+      dcfg.resume = true;  // M35: reconstruct from durable state
+
+      const std::string worker_group = env_or("EVO_WORKER_GROUP", "workers");
+      entry->transport->ensure_group(evo::task_stream_key(dcfg.env_prefix),
+                                     worker_group, "$");
+
+      ActiveRun* raw = entry.get();
+      raw->loop = std::make_unique<evo::DistributedRunLoop>(
+          std::move(dag), *raw->transport, *raw->store, dcfg,
+          [raw](const evo::RunEvent& ev) {
+            std::lock_guard lock(raw->events_mu);
+            raw->events.push_back(ev);
+          });
+
+      {
+        std::lock_guard lock(runs_mu_);
+        runs_.emplace(rid, std::move(entry));
+      }
+
+      raw->runner = std::thread([this, raw, rid]() {
+        const std::string status = raw->loop->run();  // blocks
+        evo::execution::v1::RunOutcome outcome =
+            evo::execution::v1::RunOutcome::FAILED;
+        if (status == evo::run_status::kSucceeded) {
+          outcome = evo::execution::v1::RunOutcome::SUCCEEDED;
+        } else if (status == evo::run_status::kCanceled) {
+          outcome = evo::execution::v1::RunOutcome::CANCELED;
+        }
+        {
+          std::lock_guard lock(runs_mu_);
+          raw->outcome = outcome;
+          raw->done = true;
+        }
+        log_line("run_terminal", rid, raw->org_id,
+                 std::string("outcome=") +
+                     evo::execution::v1::RunOutcome_Name(outcome) +
+                     " (resumed)");
+      });
+
+      std::fprintf(stderr, "[evo-scheduler] reconcile: resumed run %s\n",
+                   rid.c_str());
+    }
+  }
+
   // Fill GetRun from the loop's normalized events (thread-safe: events_mu).
   grpc::Status fill_run_distributed(
       const ActiveRun& e, evo::execution::v1::GetRunResponse* resp) {
@@ -574,6 +724,8 @@ class ControlServiceImpl final
   }
 #endif  // EVO_HAVE_DISTRIBUTED
 
+ private:
+
   // Fill GetRun from the local ConcurrentScheduler's run log (the M17 path).
   grpc::Status fill_run_local(const ActiveRun& e,
                               evo::execution::v1::GetRunResponse* resp) {
@@ -647,6 +799,15 @@ int main() {
   const std::string addr = env_addr ? env_addr : "127.0.0.1:50051";
 
   evo::service::ControlServiceImpl service;
+
+#ifdef EVO_HAVE_DISTRIBUTED
+  // M35: resume active evo runs from the durable store BEFORE accepting new
+  // RPCs, so GetRun/CancelRun can see recovered runs from the first request.
+  // Best-effort: unreachable infra or unrecoverable runs are logged/skipped,
+  // never fatal (the server must still start for fresh submissions).
+  service.reconcile_active_runs();
+#endif
+
   grpc::ServerBuilder builder;
   builder.AddListeningPort(addr, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);

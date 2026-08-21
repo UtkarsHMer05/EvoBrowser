@@ -44,7 +44,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `dcad613` |
 | M33 | Implement idempotency and duplicate suppression | ✅ DONE | `2887e88` |
 | M34 | Implement worker crash recovery and failure injection | ✅ DONE | `b6cff19` |
-| M35 | Implement scheduler restart recovery and durable reconciliation | 🚧 IN PROGRESS (claimed by session B) | — |
+| M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `M35_SHA` |
 
 ---
 
@@ -2243,3 +2243,126 @@ Commit subjects follow `phase2(mNN): <description>`.
   untouched).
 - **COMMIT:** `b6cff19` — `phase2(m34): implement and measure worker crash recovery`
 - **NEXT:** M35 — Implement scheduler restart recovery and durable reconciliation.
+
+## M35 — Implement scheduler restart recovery and durable reconciliation
+
+**Status:** ✅ DONE — the orchestrator is now RESTARTABLE without forgetting active runs: a real scheduler process is SIGKILLed mid-run (workers/Redis/Postgres stay alive), a second scheduler process restarts with `resume=true`, reconstructs logical state from the durable store, drains the dead scheduler's pending result messages, and drives the run to a consistent terminal outcome. No logical task is lost and no node is double-completed. Restart-with-no-active-work is a clean no-op (no resurrection).
+
+- **BASE_SHA:** `603b389` (phase2 branch; M35 was claimed in-progress with
+  uncommitted work, which this session reviewed, completed, and validated).
+- **What was inspected:** master prompt M35 spec (steps 1–8, no-go list,
+  validation, exit criteria), the uncommitted M35 working tree (run-store
+  readers, transport `read_pending`, `SchedulerState::reconstruct`, run-loop
+  `reconstruct_from_store`/`drain_pending_results`, `resume` config, migration
+  0006, schema mirror, `run_loop_driver.cpp`, `scheduler_restart_test.cpp`,
+  CMake targets), `engine/app/grpc_service.cpp` (M29 distributed submit path),
+  `docs/phase2/ARCHITECTURE.md` §7 (durable timestamps are wall-clock UTC),
+  `docs/phase2/FAILURE_MODEL.md` (Postgres is the audit source).
+- **What changed:**
+  - **Durable topology (M35 step 1):** migration `0006_phase2_run_dag_json.sql`
+    adds `workflow_runs.dag_json text`; `lib/db/schema.ts` mirrors `dagJson`.
+    `RunRecord.dag_json` is persisted by `create_run` (NULLIF => NULL for
+    legacy/empty; ON CONFLICT backfills only when the existing row lacks it)
+    and read back by `get_run`. The canonical engine DAG is captured at
+    submission (`run.dag_json = dag_.to_json_string()`) so a restarted
+    scheduler can reconstruct the run's topology from durable state.
+  - **RunStore readers (M35 step 2):** `list_node_runs(run_id)` (ordered by
+    node_id) and `list_active_evo_run_ids()` (engine='evo' AND status IN
+    queued/running, ordered by id) added to the `RunStore` interface and both
+    implementations (InMemory + PG). These let startup identify every
+    non-terminal Evo run and read its persisted node rows.
+  - **Transport pending reclaim (M35 step 3):** `read_pending(stream, group,
+    consumer)` added to `TaskTransport` (InMemory + Redis). Redis uses
+    `XREADGROUP GROUP g c COUNT 1 STREAMS s 0` (id "0" => the consumer's own
+    PEL, non-blocking). A recovery loop drains by `read_pending -> apply ->
+    ack`, so results the pre-crash loop read but did not ack are not lost.
+  - **State reconstruction (M35 steps 4–5):** `SchedulerState::reconstruct(rows)`
+    maps each persisted node status to a logical state (terminal stays terminal;
+    dispatched/running => RUNNING in-flight; retry_wait parked; else BLOCKED),
+    rebuilds `completed_`/`results_`/`failure_reasons_` for terminal nodes,
+    re-derives `dep_counts_` (remaining = predecessors not Succeeded), and
+    promotes non-terminal BLOCKED nodes with 0 remaining deps to READY. An
+    in-flight node is restored to RUNNING so its valid lease is respected — the
+    loop does NOT dispatch a duplicate replacement while a lease still exists
+    (M35 step 4); if the lease lapses, the ordinary lease-reap path handles it
+    (M35 step 6).
+  - **Run-loop resume (M35 steps 3–6):** `DistributedRunConfig.resume`; on
+    `run()`, when `resume` is set the loop first checks whether the run is
+    already terminal (returns its durable status without re-executing — never
+    resurrect a finished run), else calls `reconstruct_from_store()`: rebuilds
+    logical state, restores per-node attempt numbers / retry due-times /
+    in-flight resource slots, honors a durable cancel request, then
+    `drain_pending_results()` (read_pending -> apply_result -> ack) before the
+    main loop resumes dependency scheduling. Falls back to fresh-run init when
+    there is nothing to reconstruct.
+  - **gRPC startup reconciliation (M35 steps 2–3):** `grpc_service.cpp`
+    `reconcile_active_runs()` runs once at startup BEFORE the server accepts
+    RPCs: lists every non-terminal Evo run from Postgres, reconstructs each
+    run's DAG from its persisted `dag_json`, and re-drives it with `resume=true`
+    (same `scheduler-grpc` consumer id so the pending-entry list is reclaimed).
+    Runs with missing/invalid `dag_json` (pre-M35 rows) are logged and skipped
+    — the documented small restart window that is not recoverable (M35 no-go).
+    Best-effort: unreachable infra or an unrecoverable run never blocks the
+    server from starting.
+  - **Scheduler driver binary (M35 step 7):** `engine/app/run_loop_driver.cpp`
+    (NEW) runs ONE `DistributedRunLoop` against real Redis + Postgres so the
+    restart test can SIGKILL the scheduler as a REAL process and restart it
+    with `resume=true`. Fixed `start -> {slow, quick} -> join` DAG (mirrors the
+    M34 crash DAG); exit 0 on SUCCEEDED.
+  - **Restart integration test (M35 steps 7–8):** `engine/tests/
+    scheduler_restart_test.cpp` (NEW) drives a real multi-process fleet — driver
+    scheduler + 2 spawned TS workers over real Redis + Postgres. Per trial:
+    spawn fleet, wait for the `(slow, attempt 1)` lease, SIGKILL the scheduler's
+    process group (workers survive), assert the run is still non-terminal,
+    restart with `resume=1`, assert the run reaches SUCCEEDED with every node
+    succeeded exactly once (no double-completion), then restart AGAIN against
+    the now-terminal run and assert it exits cleanly with no new attempts (no
+    resurrection). 2 trials by default (`EVO_M35_TRIALS`). Skips cleanly when
+    Redis/Postgres/tsx/the driver are unavailable.
+  - **Unit tests (M35 steps 4–8):** `distributed_run_loop_test.cpp` tests
+    20–23 — resume-with-no-durable-state falls back to a fresh run; restart
+    mid-run reconstructs + resumes to success without re-dispatching an
+    already-succeeded node and resumes downstream dependency scheduling; restart
+    never resurrects an already-terminal run; resume drains the consumer's
+    pending (unacked) result and applies it to the existing attempt.
+  - **`engine/CMakeLists.txt`:** `evo-run-loop-driver` target + `evo_scheduler_
+    restart_test` target (gated on hiredis + libpq), 300s timeout,
+    `EVO_REPO_ROOT_DIR` baked for worker spawn, `EVO_M35_DRIVER_BIN` pointed at
+    the real driver binary.
+- **Concurrency/distributed correctness:** Postgres remains the durable source
+  of truth (Redis alone is never the audit database). Reconstruction is
+  single-threaded per run loop; the at-most-once terminal completion guard
+  (M26) + idempotency ledger (M33) + late-result rule mean a duplicate or late
+  result across the restart can never double-complete a node. An in-flight
+  node's valid lease is respected on resume (no duplicate replacement); an
+  expired lease is reaped by the ordinary M31 path. A durable cancel request
+  made before the crash is honored on resume. All durable timestamps are
+  wall-clock UTC ms.
+- **Phase-1 preservation:** legacy Trigger.dev engine untouched; no Phase-1
+  default behavior changed; no test removed; browser credentials stay
+  server/worker-only. The `dag_json` column is additive (NULL for legacy rows);
+  reconciliation only touches engine='evo' runs.
+- **No-go compliance:** Postgres remains the audit source; the small
+  non-recoverable restart window (pre-M35 rows with no `dag_json`) is documented
+  above; no performance numbers invented (no resume number claimed — this is not
+  a benchmark milestone); no future component marked implemented; no
+  secret/credential committed.
+- **Validation:**
+  - CMake build → ✅ clean; `ctest` (Release) → ✅ 21/21 (incl.
+    scheduler_restart 17.6s, distributed_run_loop incl. tests 20–23)
+  - ASan+UBSan → ✅ 21/21; TSan → ✅ 21/21 (no data races)
+  - `npm test` → ✅ exit 0 (all prior suites green; M29 parity 9/9)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅ (0 errors, 0 warnings)
+  - Postgres/Redis audit assertions → ✅ (restart recovery vs live Redis + PG;
+    no double-completion; no resurrection)
+- **Known limitations:** restart recovery reconstructs LOGICAL state from
+  Postgres; a run whose `dag_json` was never persisted (pre-M35 rows) cannot be
+  reconstructed and is skipped (logged) — the documented non-recoverable
+  window. A live Browserbase session owned by a worker that ALSO died is handled
+  by the M34 resource-loss policy (lease reap -> re-dispatch on a fresh
+  session), not by session continuation. Recovery timing is not benchmarked
+  (evidence-grade recovery benchmarking is M39).
+- **Human action:** migration 0006 applied to the LOCAL Phase-2 Postgres only
+  (`scripts/phase2/migrate-local.sh`); Neon untouched.
+- **COMMIT:** `M35_SHA` — `phase2(m35): add scheduler restart recovery`
+- **NEXT:** M36 — Multi-tenant quotas and backpressure.

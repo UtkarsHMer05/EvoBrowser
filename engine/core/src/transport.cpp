@@ -120,6 +120,26 @@ bool InMemoryTransport::ack(const std::string& stream_key,
   return true;
 }
 
+std::optional<TransportMessage> InMemoryTransport::read_pending(
+    const std::string& stream_key, const std::string& group,
+    const std::string& consumer, std::stop_token st) {
+  (void)consumer;  // delivery attribution is not modeled in the fake
+  if (st.stop_requested()) return std::nullopt;
+  std::lock_guard lock(mu_);
+  auto it = streams_.find(stream_key);
+  if (it == streams_.end()) return std::nullopt;
+  auto& s = it->second;
+  auto pend = s.pending.find(group);
+  if (pend == s.pending.end() || pend->second.empty()) return std::nullopt;
+  // Return the first pending (delivered, unacked) message. It REMAINS pending
+  // until ack(); a recovery loop drains by read_pending -> apply -> ack.
+  const std::string& id = pend->second.front();
+  for (const auto& msg : s.messages) {
+    if (msg.id == id) return msg;
+  }
+  return std::nullopt;  // pending id vanished from the stream
+}
+
 std::size_t InMemoryTransport::pending_count(const std::string& stream_key,
                                              const std::string& group) {
   std::lock_guard lock(mu_);

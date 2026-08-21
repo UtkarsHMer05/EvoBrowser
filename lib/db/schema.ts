@@ -124,6 +124,12 @@ export const workflowRuns = pgTable(
     // is best-effort and not authoritative). Legacy runs carry their session id
     // in Trigger.dev run output instead and leave this null.
     browserbaseSessionId: text("browserbase_session_id"),
+    // Phase 2 (M35): the canonical engine DAG (evo JSON) the run executes,
+    // persisted at submission so a restarted scheduler can reconstruct the run's
+    // topology from durable state. Postgres is the durable source for run
+    // history (Redis alone is not the audit database). NULL for legacy runs and
+    // pre-M35 rows.
+    dagJson: text("dag_json"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     startedAt: timestamp("started_at"),
     finishedAt: timestamp("finished_at"),

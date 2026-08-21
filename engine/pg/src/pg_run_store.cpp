@@ -118,16 +118,23 @@ bool PgRunStore::create_run(const RunRecord& run,
   // WHERE guard achieves both: a fresh insert lands as 'running'; a
   // pre-existing 'queued' row is promoted; an already-running or terminal row
   // is left untouched (idempotent, never regresses state).
+  //
+  // M35: dag_json is persisted on the same statement (NULLIF => NULL for
+  // legacy/empty). On conflict the update backfills dag_json only when the
+  // existing row lacks it (COALESCE keeps any prior value), so a restarted
+  // scheduler can always reconstruct the run's topology from durable state.
   auto r = exec_params(
       "INSERT INTO workflow_runs (id, org_id, workflow_id, "
-      "workflow_version_id, engine, status, started_at) "
+      "workflow_version_id, engine, status, started_at, dag_json) "
       "VALUES ($1, $2, $3::uuid, NULLIF($4, '')::uuid, $5, $6, "
-      "to_timestamp($7::bigint / 1000.0) AT TIME ZONE 'UTC') "
+      "to_timestamp($7::bigint / 1000.0) AT TIME ZONE 'UTC', "
+      "NULLIF($8, '')) "
       "ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, "
-      "started_at = EXCLUDED.started_at "
+      "started_at = EXCLUDED.started_at, "
+      "dag_json = COALESCE(workflow_runs.dag_json, EXCLUDED.dag_json) "
       "WHERE workflow_runs.status = 'queued'",
       {run.run_id, run.org_id, run.workflow_id, run.workflow_version_id,
-       run.engine, run.status, std::to_string(started_wall_ms)});
+       run.engine, run.status, std::to_string(started_wall_ms), run.dag_json});
   if (r.res) PQclear(r.res);
   return r.ok;
 }
@@ -518,7 +525,8 @@ std::optional<RunRecord> PgRunStore::get_run(const std::string& run_id) {
       "COALESCE(workflow_version_id::text, ''), engine, status, "
       "COALESCE(outcome, ''), "
       "COALESCE(cancel_reason, ''), "
-      "COALESCE(extract(epoch FROM cancel_requested_at) * 1000, 0)::bigint "
+      "COALESCE(extract(epoch FROM cancel_requested_at) * 1000, 0)::bigint, "
+      "COALESCE(dag_json, '') "
       "FROM workflow_runs WHERE id = $1",
       {run_id});
   std::optional<RunRecord> out;
@@ -533,6 +541,7 @@ std::optional<RunRecord> PgRunStore::get_run(const std::string& run_id) {
     rec.outcome = PQgetvalue(r.res, 0, 6);
     rec.cancel_reason = PQgetvalue(r.res, 0, 7);
     rec.cancel_requested_at = std::atoll(PQgetvalue(r.res, 0, 8));
+    rec.dag_json = PQgetvalue(r.res, 0, 9);
     out = rec;
   }
   if (r.res) PQclear(r.res);
@@ -591,6 +600,56 @@ std::vector<std::string> PgRunStore::attempt_worker_ids(
   std::vector<std::string> out;
   if (r.ok && r.res) {
     const int rows = PQntuples(r.res);
+    for (int i = 0; i < rows; ++i) {
+      out.emplace_back(PQgetvalue(r.res, i, 0));
+    }
+  }
+  if (r.res) PQclear(r.res);
+  return out;
+}
+
+// --- Milestone 35: reconstruction readers -----------------------------------
+
+std::vector<NodeRunRecord> PgRunStore::list_node_runs(
+    const std::string& run_id) {
+  auto r = exec_params(
+      "SELECT node_id, node_type, status, attempt_count, "
+      "COALESCE(output::text, ''), COALESCE(failure_reason, ''), "
+      "COALESCE(extract(epoch FROM retry_wait_until) * 1000, 0)::bigint, "
+      "COALESCE(retry_reason, '') "
+      "FROM node_runs WHERE run_id = $1 ORDER BY node_id",
+      {run_id});
+  std::vector<NodeRunRecord> out;
+  if (r.ok && r.res) {
+    const int rows = PQntuples(r.res);
+    out.reserve(rows);
+    for (int i = 0; i < rows; ++i) {
+      NodeRunRecord rec;
+      rec.node_id = PQgetvalue(r.res, i, 0);
+      rec.node_type = PQgetvalue(r.res, i, 1);
+      rec.status = PQgetvalue(r.res, i, 2);
+      rec.attempt_count = std::atoi(PQgetvalue(r.res, i, 3));
+      rec.output_json = PQgetvalue(r.res, i, 4);
+      rec.failure_reason = PQgetvalue(r.res, i, 5);
+      rec.retry_wait_until = std::atoll(PQgetvalue(r.res, i, 6));
+      rec.retry_reason = PQgetvalue(r.res, i, 7);
+      out.push_back(std::move(rec));
+    }
+  }
+  if (r.res) PQclear(r.res);
+  return out;
+}
+
+std::vector<std::string> PgRunStore::list_active_evo_run_ids() {
+  auto r = exec_params(
+      "SELECT id FROM workflow_runs "
+      "WHERE engine = 'evo' AND status IN ('queued', 'running') "
+      "ORDER BY id",
+      {});
+  std::vector<std::string> out;
+  if (r.ok && r.res) {
+    const int rows = PQntuples(r.res);
+    out.reserve(rows);
     for (int i = 0; i < rows; ++i) {
       out.emplace_back(PQgetvalue(r.res, i, 0));
     }

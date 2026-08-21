@@ -83,6 +83,11 @@ class RedisTransport final : public TaskTransport {
   bool ack(const std::string& stream_key, const std::string& group,
            const std::string& message_id) override;
 
+  std::optional<TransportMessage> read_pending(
+      const std::string& stream_key, const std::string& group,
+      const std::string& consumer,
+      std::stop_token st = std::stop_token{}) override;
+
   std::size_t pending_count(const std::string& stream_key,
                             const std::string& group) override;
 

@@ -1446,6 +1446,270 @@ int main() {
     check(saw_lease_expired, "m34: node_lease_expired emitted for browser node");
   }
 
+  // --- 20. M35: resume requested but nothing to resume -> fresh fallback -----
+  // A restarted scheduler that finds NO durable run row for its run id must
+  // fall back to fresh-run initialization (reconstruct_from_store returns
+  // false), not fail. This is the loop-level half of "restart while no work is
+  // active" (M35 step 8); the store-level list_active_evo_run_ids half is
+  // asserted here too.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    check(store.list_active_evo_run_ids().empty(),
+          "m35: no active evo runs on an empty store");
+
+    DistributedRunConfig cfg;
+    cfg.run_id = "run-m35-fresh";
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m35fresh";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.resume = true;  // resume requested, but the store has no such run yet
+
+    FakeWorker worker(transport, cfg.env_prefix, cfg.run_id);
+    worker.start();
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg);
+    const std::string status = loop.run();
+    worker.stop();
+
+    check(status == evo::run_status::kSucceeded,
+          "m35: resume with no durable state falls back to a fresh run");
+    check(store.get_run("run-m35-fresh").has_value() &&
+              store.get_run("run-m35-fresh")->status ==
+                  evo::run_status::kSucceeded,
+          "m35: fresh-fallback run persisted to a terminal success");
+    // A terminal run is not "active": it must not be listed for reconciliation.
+    check(store.list_active_evo_run_ids().empty(),
+          "m35: terminal run is not reported as active");
+  }
+
+  // --- 21. M35: restart mid-run reconstructs and resumes to success ---------
+  // Simulate a scheduler crash by hand-seeding the durable store with the
+  // exact state at crash time: start + a already succeeded, b in-flight with a
+  // lease held by a now-dead worker, c blocked. A fresh loop with resume=true
+  // must reconstruct logical state + dependency counters, must NOT re-dispatch
+  // b while its lease is still valid (M35 step 4), and must recover b via the
+  // ordinary lease-expiry -> re-dispatch path once the dead worker's lease
+  // lapses (M35 step 6), then resume dependency scheduling for c (step 5).
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    const std::string run_id = "run-m35-resume";
+    const std::string prefix = "evo:m35resume";
+
+    // Seed the crashed run's durable state.
+    evo::RunRecord run;
+    run.run_id = run_id;
+    run.org_id = "org-1";
+    run.workflow_id = "wf-1";
+    run.engine = "evo";
+    run.status = evo::run_status::kRunning;
+    run.dag_json = make_diamond().to_json_string();
+    store.create_run(run, evo::now_wall_ms());
+    for (const char* n : {"start", "a", "b", "c"}) {
+      store.create_node_run(run_id, n, "bench:echo");
+    }
+    // start + a completed before the crash (exactly one attempt each).
+    for (const char* n : {"start", "a"}) {
+      store.record_attempt(run_id, n, 1, "w-pre", evo::now_wall_ms());
+      store.finish_attempt(run_id, n, 1, "w-pre", evo::node_status::kSucceeded,
+                           "", evo::now_wall_ms());
+      store.complete_node_run(run_id, n, evo::node_status::kSucceeded,
+                              "{\"ok\":true}", "", evo::now_wall_ms());
+    }
+    // b was in-flight at crash time: attempt 1 running, lease held by a worker
+    // that is now dead (will never publish a result or renew). The lease
+    // expires shortly after resume so the reap is prompt.
+    store.set_node_status(run_id, "b", evo::node_status::kRunning);
+    store.record_attempt(run_id, "b", 1, "dead-worker", evo::now_wall_ms());
+    store.acquire_attempt_lease(run_id, "b", 1, "dead-worker",
+                                evo::now_wall_ms(), evo::now_wall_ms() + 80);
+    // c stays blocked (default).
+
+    check(store.list_active_evo_run_ids().size() == 1 &&
+              store.list_active_evo_run_ids()[0] == run_id,
+          "m35: crashed non-terminal run is listed as active for recovery");
+
+    DistributedRunConfig cfg;
+    cfg.run_id = run_id;
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = prefix;
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.resume = true;
+    // Short lease + fast scan so the dead worker's attempt is reaped promptly.
+    cfg.lease_duration = 150ms;
+    cfg.lease_initial_duration = 10s;
+    cfg.lease_scan_interval = 20ms;
+
+    // A healthy worker (renews its own leases, so it is never reaped) takes
+    // over the re-dispatched b and then runs c.
+    LeaseWorker healthy(transport, store, prefix, run_id, "m35-healthy",
+                        /*renew=*/true, /*work_ms=*/20ms,
+                        /*lease_duration=*/2000ms, /*renew_interval=*/500ms);
+    healthy.start();
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg);
+    const std::string status = loop.run();
+    healthy.stop();
+
+    check(status == evo::run_status::kSucceeded,
+          "m35: restarted run resumes to a terminal success");
+
+    // No duplicate completion of the pre-crash successes: start + a keep
+    // exactly one attempt each (they were never re-dispatched).
+    check(store.attempt_row_count(run_id, "start") == 1,
+          "m35: already-succeeded node not re-dispatched on resume");
+    check(store.attempt_row_count(run_id, "a") == 1,
+          "m35: already-succeeded node not re-dispatched on resume (2)");
+
+    // b was NOT re-dispatched while its lease was valid; it was recovered via
+    // lease expiry -> re-dispatch as attempt 2 (exactly 2 attempts total).
+    check(store.attempt_row_count(run_id, "b") == 2,
+          "m35: in-flight node recovered via lease expiry, not duplicated");
+    auto lease1 = store.get_attempt_lease(run_id, "b", 1);
+    check(lease1.has_value() &&
+              lease1->status == evo::attempt_status::kLeaseExpired &&
+              lease1->worker_id == "dead-worker",
+          "m35: dead worker's attempt reaped to lease_expired");
+    auto lease2 = store.get_attempt_lease(run_id, "b", 2);
+    check(lease2.has_value() && lease2->worker_id == "m35-healthy",
+          "m35: replacement attempt ran on the healthy worker");
+
+    // Dependency scheduling resumed: c ran exactly once after b succeeded.
+    check(store.attempt_row_count(run_id, "c") == 1,
+          "m35: downstream node dispatched once after resume");
+    for (const char* n : {"start", "a", "b", "c"}) {
+      auto nr = store.get_node_run(run_id, n);
+      check(nr.has_value() && nr->status == evo::node_status::kSucceeded,
+            "m35: node reached terminal success after restart");
+    }
+  }
+
+  // --- 22. M35: restart never resurrects an already-terminal run -------------
+  // A run that reached a terminal state before the restart must be reported as
+  // terminal without re-executing any node (M35 no-go: no resurrection).
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    const std::string run_id = "run-m35-terminal";
+
+    evo::RunRecord run;
+    run.run_id = run_id;
+    run.org_id = "org-1";
+    run.workflow_id = "wf-1";
+    run.engine = "evo";
+    run.status = evo::run_status::kSucceeded;  // already terminal
+    store.create_run(run, evo::now_wall_ms());
+    for (const char* n : {"start", "a", "b", "c"}) {
+      store.create_node_run(run_id, n, "bench:echo");
+      store.complete_node_run(run_id, n, evo::node_status::kSucceeded,
+                              "{\"ok\":true}", "", evo::now_wall_ms());
+    }
+
+    DistributedRunConfig cfg;
+    cfg.run_id = run_id;
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = "evo:m35terminal";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.resume = true;
+
+    // No worker at all: a resurrecting loop would hang/time out waiting for
+    // results. Returning immediately with the durable outcome proves no node
+    // was re-dispatched.
+    DistributedRunLoop loop(make_diamond(), transport, store, cfg);
+    const std::string status = loop.run();
+
+    check(status == evo::run_status::kSucceeded,
+          "m35: terminal run reported as-is on resume (no resurrection)");
+    check(transport.stream_length(evo::task_stream_key(cfg.env_prefix)) == 0,
+          "m35: no task re-dispatched for a terminal run");
+    for (const char* n : {"start", "a", "b", "c"}) {
+      check(store.attempt_row_count(run_id, n) == 0,
+            "m35: no attempt rows created for a terminal run on resume");
+    }
+  }
+
+  // --- 23. M35: resume drains this consumer's pending (unacked) results ------
+  // The pre-crash loop read a result off the result stream but crashed before
+  // acking it, so it sits in the consumer's pending-entry list. On resume the
+  // loop must drain it (read_pending -> apply -> ack) so the result is not
+  // lost across the restart.
+  {
+    InMemoryTransport transport;
+    InMemoryRunStore store;
+    const std::string run_id = "run-m35-pending";
+    const std::string prefix = "evo:m35pending";
+    const std::string results = evo::result_stream_key(prefix);
+
+    // Chain: start -> a.
+    std::vector<NodeSpec> nodes = {
+        {NodeId{"start"}, NodeKind::Trigger, "start"},
+        {NodeId{"a"}, NodeKind::Action, "bench:echo"},
+    };
+    std::vector<Edge> edges = {{NodeId{"start"}, NodeId{"a"}}};
+    auto br = Dag::build(nodes, edges);
+    Dag chain = std::move(*br.dag);
+
+    // Seed crashed state: start succeeded, a in-flight (its result was
+    // produced and read by the scheduler, but not yet applied/acked).
+    evo::RunRecord run;
+    run.run_id = run_id;
+    run.org_id = "org-1";
+    run.workflow_id = "wf-1";
+    run.engine = "evo";
+    run.status = evo::run_status::kRunning;
+    run.dag_json = chain.to_json_string();
+    store.create_run(run, evo::now_wall_ms());
+    store.create_node_run(run_id, "start", "bench:echo");
+    store.record_attempt(run_id, "start", 1, "w-pre", evo::now_wall_ms());
+    store.finish_attempt(run_id, "start", 1, "w-pre",
+                         evo::node_status::kSucceeded, "", evo::now_wall_ms());
+    store.complete_node_run(run_id, "start", evo::node_status::kSucceeded,
+                            "{\"ok\":true}", "", evo::now_wall_ms());
+    store.create_node_run(run_id, "a", "bench:echo");
+    store.set_node_status(run_id, "a", evo::node_status::kRunning);
+    store.record_attempt(run_id, "a", 1, "w-pre", evo::now_wall_ms());
+
+    // Publish a's result and deliver it to the scheduler's result group so it
+    // is PENDING (unacked) — then do NOT ack, simulating the crash.
+    transport.ensure_group(results, "scheduler");
+    transport.publish(results, encode_success(run_id, "a", 1, "{\"ok\":true}"));
+    auto delivered = transport.read(results, "scheduler", "scheduler-1", 200ms);
+    check(delivered.has_value(),
+          "m35: pre-crash result delivered to the scheduler (now pending)");
+    check(transport.pending_count(results, "scheduler") == 1,
+          "m35: result is pending (unacked) at crash time");
+
+    DistributedRunConfig cfg;
+    cfg.run_id = run_id;
+    cfg.org_id = "org-1";
+    cfg.workflow_id = "wf-1";
+    cfg.env_prefix = prefix;
+    cfg.result_group = "scheduler";
+    cfg.consumer_id = "scheduler-1";
+    cfg.read_block_ms = 20ms;
+    cfg.run_timeout = 15s;
+    cfg.resume = true;
+
+    // No worker needed: a's result is already on the (pending) result stream.
+    DistributedRunLoop loop(std::move(chain), transport, store, cfg);
+    const std::string status = loop.run();
+
+    check(status == evo::run_status::kSucceeded,
+          "m35: pending result drained on resume -> run succeeds");
+    auto na = store.get_node_run(run_id, "a");
+    check(na.has_value() && na->status == evo::node_status::kSucceeded,
+          "m35: in-flight node completed by the drained pending result");
+    check(store.attempt_row_count(run_id, "a") == 1,
+          "m35: drained result applied to the existing attempt (no new one)");
+    check(transport.pending_count(results, "scheduler") == 0,
+          "m35: pending result acked after drain");
+  }
+
   if (failures == 0) {
     printf("\nALL M26 DISTRIBUTED RUN LOOP TESTS PASSED!\n");
     return 0;

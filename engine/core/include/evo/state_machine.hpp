@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "evo/dag.hpp"
+#include "evo/run_store.hpp"
 #include "evo/scheduler.hpp"
 
 namespace evo {
@@ -76,6 +77,26 @@ class SchedulerState {
 
   // QUEUED → RUNNING; roots (zero-predecessor) become READY.
   void start_run();
+
+  // Milestone 35 (scheduler restart recovery): rebuild the in-memory state
+  // machine from DURABLE node-run rows after a scheduler restart. Replaces
+  // start_run() on the resume path:
+  //   - the run is set to RUNNING (a reconstructed run was already started),
+  //   - each node's logical state is restored from its persisted status
+  //     (succeeded/failed/dead_lettered/canceled are terminal; retry_wait is
+  //     parked; blocked/ready/dispatched/running are non-terminal),
+  //   - dependency counters are re-derived: a node's remaining deps = the
+  //     number of predecessors NOT yet logically succeeded,
+  //   - a non-terminal node whose predecessors are ALL succeeded becomes READY
+  //     (resume dependency scheduling, M35 step 5),
+  //   - a node persisted as dispatched/running is treated as IN-FLIGHT and
+  //     restored to RUNNING: its attempt either completes (result arrives) or
+  //     its lease expires and the ordinary lease-reap path re-dispatches it.
+  //     The loop does NOT dispatch a duplicate replacement merely because the
+  //     scheduler restarted while a valid lease still exists (M35 step 4).
+  // Nodes present in the DAG but absent from `rows` (never persisted) start
+  // BLOCKED. Returns the number of nodes restored to a non-terminal state.
+  std::size_t reconstruct(const std::vector<NodeRunRecord>& rows);
 
   // READY → DISPATCHED.
   void dispatch_node(const NodeId& id);

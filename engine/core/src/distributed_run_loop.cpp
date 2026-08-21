@@ -479,40 +479,164 @@ void DistributedRunLoop::finalize_run(const std::string& status,
   emit("run_finished", nullptr, outcome);
 }
 
+// Milestone 35 (scheduler restart recovery). Rebuilds the run's logical state
+// from the durable store so a restarted scheduler resumes an active run instead
+// of forgetting it. See distributed_run_loop.hpp for the contract.
+bool DistributedRunLoop::reconstruct_from_store() {
+  // 1. The run row must exist and be non-terminal. A terminal run has nothing
+  //    to resume (and a rerun is a NEW run id, never a resurrection).
+  auto run = store_.get_run(config_.run_id);
+  if (!run.has_value()) return false;
+  if (run->status == run_status::kSucceeded ||
+      run->status == run_status::kFailed ||
+      run->status == run_status::kCanceled) {
+    return false;
+  }
+
+  // 2. Node rows must exist (they were persisted before any dispatch, M26).
+  const std::vector<NodeRunRecord> rows =
+      store_.list_node_runs(config_.run_id);
+  if (rows.empty()) return false;
+
+  // 3. Rebuild logical node states + dependency counters from durable state.
+  state_.reconstruct(rows);
+
+  // 4. Restore per-node loop bookkeeping that is not part of SchedulerState:
+  //    current attempt numbers, retry due-times, and in-flight resource slots.
+  for (const auto& r : rows) {
+    const NodeId id{r.node_id};
+    // Attempts are numbered 1..N, so the current attempt == the row count.
+    current_attempt_[id] = static_cast<unsigned>(
+        store_.attempt_row_count(config_.run_id, r.node_id));
+    // A parked node keeps its backoff due-time (wall-clock UTC ms).
+    if (r.status == node_status::kRetryWait && r.retry_wait_until > 0) {
+      retry_due_[id] = r.retry_wait_until;
+    }
+    // An in-flight node (dispatched/running at crash) still holds its resource
+    // slot: either its attempt completes (the result frees the slot) or its
+    // lease expires and the reap path frees it. Counting it here prevents
+    // over-dispatching the affinity capacity on resume.
+    const bool in_flight = r.status == node_status::kDispatched ||
+                           r.status == node_status::kRunning;
+    if (in_flight) {
+      const ResourcePolicy pol = policy_for_node(id);
+      if (!pol.affinity_key.empty()) {
+        resource_usage_[pol.affinity_key]++;
+      }
+    }
+  }
+
+  // 5. Honor a durable cancellation request made before the crash (M30). The
+  //    main loop sees cancel_requested_ and finalizes the run as canceled.
+  if (run->cancel_requested_at != 0) {
+    std::lock_guard lock(cancel_mu_);
+    cancel_reason_ = run->cancel_reason;
+    cancel_requested_at_ = run->cancel_requested_at;
+    cancel_requested_.store(true, std::memory_order_relaxed);
+    cancel_stamped_ = true;  // already durable; do not re-stamp
+  }
+
+  // 6. Drain this consumer's pending result messages (results the pre-crash
+  //    loop read but did not ack) so no result is lost across the restart.
+  //    Must run AFTER reconstruction so applicability checks see restored
+  //    node states.
+  drain_pending_results();
+
+  emit("run_resumed", nullptr, "");
+  return true;
+}
+
+void DistributedRunLoop::drain_pending_results() {
+  const std::string result_stream = result_stream_key(config_.env_prefix);
+  while (true) {
+    if (stop_requested_.load(std::memory_order_relaxed)) return;
+    auto msg = transport_.read_pending(result_stream, config_.result_group,
+                                       config_.consumer_id,
+                                       stop_source_.get_token());
+    if (!msg.has_value()) return;  // no more pending entries for this consumer
+
+    execution::v1::ResultEnvelope result;
+    if (result.ParseFromString(msg->payload)) {
+      const bool applied = apply_result(result);
+      // Mirror the main loop: free the node's resource slot only when this
+      // result actually drove the node to a terminal state.
+      if (applied) {
+        const ResourcePolicy pol = policy_for_node(NodeId{result.node_id()});
+        if (!pol.affinity_key.empty()) {
+          auto it = resource_usage_.find(pol.affinity_key);
+          if (it != resource_usage_.end() && it->second > 0) it->second--;
+        }
+      }
+    }
+    // Ack applied AND ignored results alike: pending entries are consumed,
+    // never reprocessed (dedupe/late-result/idempotency guards already ran).
+    transport_.ack(result_stream, config_.result_group, msg->id);
+  }
+}
+
 std::string DistributedRunLoop::run() {
   const std::string task_stream = task_stream_key(config_.env_prefix);
   const std::string result_stream = result_stream_key(config_.env_prefix);
   transport_.ensure_group(result_stream, config_.result_group);
   (void)task_stream;  // workers ensure their own task-stream group
 
-  // Durable initial state (M26 step 3): run + one node_run per DAG node.
+  // Parent workflow row (FK integrity); idempotent on both fresh and resume.
   store_.ensure_workflow(config_.workflow_id, config_.org_id,
                          "workflow " + config_.workflow_id);
-  RunRecord run;
-  run.run_id = config_.run_id;
-  run.org_id = config_.org_id;
-  run.workflow_id = config_.workflow_id;
-  run.workflow_version_id = config_.workflow_version_id;
-  run.engine = "evo";
-  run.status = run_status::kRunning;
-  store_.create_run(run, now_wall_ms());
-  for (const auto& id : dag_.node_ids()) {
-    const NodeSpec* spec = dag_.node(id);
-    store_.create_node_run(config_.run_id, id.value, spec ? spec->type : "");
-  }
 
-  // If cancel() raced run() startup, the run row did not exist when the
-  // request was stamped; retry the durable stamp now that it does.
-  if (cancel_requested_.load(std::memory_order_relaxed)) {
-    std::lock_guard lock(cancel_mu_);
-    if (!cancel_stamped_) {
-      cancel_stamped_ = store_.mark_cancel_requested(
-          config_.run_id, cancel_reason_, cancel_requested_at_);
+  // Milestone 35: on resume, reconstruct logical state from the durable store.
+  // Three outcomes:
+  //   - the run is already TERMINAL: return its status without re-executing
+  //     (a restart must never resurrect a finished run),
+  //   - the run is non-terminal with durable node rows: reconstruct + resume,
+  //   - nothing to reconstruct (run/node rows absent): fall back to fresh-run
+  //     initialization.
+  bool resumed = false;
+  if (config_.resume) {
+    auto existing = store_.get_run(config_.run_id);
+    if (existing.has_value() &&
+        (existing->status == run_status::kSucceeded ||
+         existing->status == run_status::kFailed ||
+         existing->status == run_status::kCanceled)) {
+      // Already terminal before the restart: nothing to drive. Report the
+      // durable outcome; do not re-dispatch any node.
+      finalized_.store(true, std::memory_order_relaxed);
+      return existing->status;
     }
+    resumed = reconstruct_from_store();
   }
 
-  state_.start_run();
-  emit("run_started", nullptr, "");
+  if (!resumed) {
+    // Durable initial state (M26 step 3): run + one node_run per DAG node.
+    RunRecord run;
+    run.run_id = config_.run_id;
+    run.org_id = config_.org_id;
+    run.workflow_id = config_.workflow_id;
+    run.workflow_version_id = config_.workflow_version_id;
+    run.engine = "evo";
+    run.status = run_status::kRunning;
+    // M35: persist the canonical topology so a restarted scheduler can
+    // reconstruct this run from durable state (Postgres is the audit source).
+    run.dag_json = dag_.to_json_string();
+    store_.create_run(run, now_wall_ms());
+    for (const auto& id : dag_.node_ids()) {
+      const NodeSpec* spec = dag_.node(id);
+      store_.create_node_run(config_.run_id, id.value, spec ? spec->type : "");
+    }
+
+    // If cancel() raced run() startup, the run row did not exist when the
+    // request was stamped; retry the durable stamp now that it does.
+    if (cancel_requested_.load(std::memory_order_relaxed)) {
+      std::lock_guard lock(cancel_mu_);
+      if (!cancel_stamped_) {
+        cancel_stamped_ = store_.mark_cancel_requested(
+            config_.run_id, cancel_reason_, cancel_requested_at_);
+      }
+    }
+
+    state_.start_run();
+    emit("run_started", nullptr, "");
+  }
 
   const auto deadline =
       config_.run_timeout.count() > 0

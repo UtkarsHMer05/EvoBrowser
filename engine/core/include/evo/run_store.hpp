@@ -115,6 +115,10 @@ struct RunRecord {
   // idempotently, by mark_cancel_requested.
   std::int64_t cancel_requested_at = 0;
   std::string cancel_reason;
+  // Milestone 35: the canonical engine DAG (evo JSON) the run executes,
+  // persisted at submission so a restarted scheduler can reconstruct the run's
+  // topology from durable state. Empty => NULL (legacy / pre-M35 rows).
+  std::string dag_json;
 };
 
 struct NodeRunRecord {
@@ -306,6 +310,20 @@ class RunStore {
   // Worker ids recorded on the node's attempt rows (ordered by attempt).
   virtual std::vector<std::string> attempt_worker_ids(
       const std::string& run_id, const std::string& node_id) = 0;
+
+  // --- Reconstruction readers (Milestone 35: scheduler restart recovery) ---
+
+  // Every node_run row for a run (ordered by node_id). Used by a restarted
+  // scheduler to rebuild the logical node states + dependency counters from
+  // durable state. Empty when the run has no node rows (or on store failure).
+  virtual std::vector<NodeRunRecord> list_node_runs(
+      const std::string& run_id) = 0;
+
+  // The run ids of every NON-TERMINAL run owned by the Evo engine
+  // (status in queued/running, engine='evo'), ordered by run_id. Used at
+  // scheduler startup to identify active runs that must be reconciled after a
+  // restart. Terminal runs (succeeded/failed/canceled) are never returned.
+  virtual std::vector<std::string> list_active_evo_run_ids() = 0;
 };
 
 // In-memory RunStore for scheduler-core tests. Enforces the same invariants
@@ -401,6 +419,9 @@ class InMemoryRunStore final : public RunStore {
                                 const std::string& node_id) override;
   std::vector<std::string> attempt_worker_ids(
       const std::string& run_id, const std::string& node_id) override;
+
+  std::vector<NodeRunRecord> list_node_runs(const std::string& run_id) override;
+  std::vector<std::string> list_active_evo_run_ids() override;
 
  private:
   using NodeKey = std::pair<std::string, std::string>;  // (run_id, node_id)

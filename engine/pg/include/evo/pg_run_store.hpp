@@ -153,6 +153,9 @@ class PgRunStore final : public RunStore {
   std::vector<std::string> attempt_worker_ids(
       const std::string& run_id, const std::string& node_id) override;
 
+  std::vector<NodeRunRecord> list_node_runs(const std::string& run_id) override;
+  std::vector<std::string> list_active_evo_run_ids() override;
+
  private:
   // Execute a parameterized statement with bounded reconnect/backoff.
   // Returns the PGresult (caller PQclears) or nullptr on hard failure.

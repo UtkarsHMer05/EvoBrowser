@@ -268,6 +268,22 @@ if(EVO_HAVE_HIREDIS AND EVO_HAVE_LIBPQ)
 endif()
 
 # ---------------------------------------------------------------------------
+# evo-run-loop-driver — M35: single-run scheduler driver binary. Runs ONE
+# DistributedRunLoop against real Redis + Postgres so the restart-recovery
+# integration test can SIGKILL the scheduler as a real process and restart it
+# with resume=true. Requires both hiredis and libpq.
+# ---------------------------------------------------------------------------
+if(EVO_HAVE_HIREDIS AND EVO_HAVE_LIBPQ)
+  add_executable(evo-run-loop-driver app/run_loop_driver.cpp)
+  target_link_libraries(evo-run-loop-driver PRIVATE
+    evo_distributed evo_redis_transport evo_pg_run_store)
+  target_compile_options(evo-run-loop-driver PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -Wno-c99-extensions  # hiredis headers (transitive)
+  )
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests (CTest)
 # ---------------------------------------------------------------------------
 enable_testing()
@@ -494,6 +510,31 @@ if(EVO_HAVE_HIREDIS AND EVO_HAVE_LIBPQ)
   )
   add_test(NAME crash_recovery COMMAND evo_crash_recovery_test)
   set_tests_properties(crash_recovery PROPERTIES TIMEOUT 300)
+
+  # -------------------------------------------------------------------------
+  # evo_scheduler_restart_test — M35: SIGKILL the scheduler process mid-run
+  # (workers/Redis/Postgres stay alive), restart it with resume=true, and
+  # verify the run reaches a consistent terminal outcome with no lost task and
+  # no double-completion; plus restart-with-no-active-work (no resurrection).
+  # Skips at runtime when Redis/Postgres/tsx/the driver are unavailable.
+  # -------------------------------------------------------------------------
+  add_executable(evo_scheduler_restart_test tests/scheduler_restart_test.cpp)
+  target_link_libraries(evo_scheduler_restart_test PRIVATE
+    evo_distributed evo_redis_transport evo_pg_run_store)
+  target_compile_options(evo_scheduler_restart_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -Wno-c99-extensions  # hiredis headers (transitive)
+  )
+  target_compile_definitions(evo_scheduler_restart_test PRIVATE
+    EVO_REPO_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+  add_test(NAME scheduler_restart COMMAND evo_scheduler_restart_test)
+  set_tests_properties(scheduler_restart PROPERTIES TIMEOUT 300)
+  # Point the test at the real driver binary so it runs instead of skipping
+  # (the test also honors an EVO_M35_DRIVER_BIN env override).
+  set_tests_properties(scheduler_restart PROPERTIES
+    ENVIRONMENT "EVO_M35_DRIVER_BIN=$<TARGET_FILE:evo-run-loop-driver>"
+  )
 endif()
 # Point the integration test at the real server binary so it runs instead of
 # skipping (the test also honors an EVO_SCHEDULER_SERVER_BIN env override).

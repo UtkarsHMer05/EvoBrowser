@@ -122,6 +122,16 @@ struct DistributedRunConfig {
   // Seed for the deterministic backoff jitter (M32 step 4). The per-node seed
   // is derived from this + the node id, so tests are reproducible.
   std::uint64_t retry_jitter_seed = 0xC0FFEE;
+
+  // --- Scheduler restart recovery (Milestone 35) ---
+  // When true, run() RECONSTRUCTS the run's logical state from the durable
+  // store (node statuses, dependency counters, attempt numbers, retry waits)
+  // instead of starting fresh, and drains this consumer's pending result
+  // messages so no result is lost across the restart. The caller must supply
+  // the same Dag (parsed from the persisted dag_json) and the same
+  // result_group/consumer_id the pre-crash loop used, so the pending-entry
+  // list (PEL) is reclaimed by the same consumer. Default false = fresh run.
+  bool resume = false;
 };
 
 // Wall-clock UTC milliseconds since the Unix epoch — see run_store.hpp.
@@ -196,6 +206,21 @@ class DistributedRunLoop {
   // caller should run the plain fail path.
   bool handle_retryable_failure(const execution::v1::ResultEnvelope& result,
                                 std::int64_t finished_ms);
+
+  // Milestone 35 (scheduler restart recovery): reconstruct the run's logical
+  // state from the durable store. Returns true when the run had durable state
+  // and was reconstructed (the caller then resumes the main loop); false when
+  // there was nothing to reconstruct (run row or node rows absent), in which
+  // case the caller falls back to fresh-run initialization. On success this
+  // also restores attempt numbers, retry due-times, in-flight resource slots,
+  // any durable cancellation request, and drains this consumer's pending
+  // result messages so no result is lost across the restart.
+  bool reconstruct_from_store();
+  // Drain this consumer's pending (delivered, unacked) result messages by
+  // read_pending -> apply_result -> ack. Called once on resume before the main
+  // loop, so results the pre-crash loop read but did not ack are still applied.
+  void drain_pending_results();
+
   void emit(const std::string& kind, const NodeId* node,
             const std::string& detail);
   void finalize_run(const std::string& status, const std::string& outcome);
