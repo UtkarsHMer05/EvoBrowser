@@ -46,6 +46,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -53,6 +54,7 @@
 #include "evo/dag.hpp"
 #include "evo/envelope.hpp"
 #include "evo/execution_policy.hpp"
+#include "evo/quota.hpp"
 #include "evo/retry_policy.hpp"
 #include "evo/run_store.hpp"
 #include "evo/state_machine.hpp"
@@ -132,6 +134,19 @@ struct DistributedRunConfig {
   // result_group/consumer_id the pre-crash loop used, so the pending-entry
   // list (PEL) is reclaimed by the same consumer. Default false = fresh run.
   bool resume = false;
+
+  // --- Multi-tenant quotas and backpressure (Milestone 36) ---
+  // Optional shared gate enforcing the per-org in-flight task limit and the
+  // global resource-class capacities (especially browser-session capacity)
+  // ACROSS runs. nullptr => no cross-run gating (backwards compatible). The
+  // gate is caller-owned and must outlive the loop. On dispatch the loop
+  // acquire_task()s a slot for (org_id, node resource class); a full gate
+  // DEFERS the node (left READY, re-examined next iteration) rather than
+  // dispatching it. The slot is released when the node reaches a terminal
+  // state, its lease is reaped, or it is parked for retry. On resume the loop
+  // re-acquires slots for in-flight nodes so capacity accounting survives a
+  // restart.
+  TenantQuotaGate* quota_gate = nullptr;
 };
 
 // Wall-clock UTC milliseconds since the Unix epoch — see run_store.hpp.
@@ -221,6 +236,21 @@ class DistributedRunLoop {
   // loop, so results the pre-crash loop read but did not ack are still applied.
   void drain_pending_results();
 
+  // Milestone 36 (multi-tenant quotas): acquire/release a cross-run task slot
+  // on the shared quota gate. acquire_quota_slot returns true when the gate
+  // granted a slot (or there is no gate); false means the node must be DEFERRED
+  // (left READY). release_quota_slot returns the slot exactly once per node —
+  // `quota_held_` records which nodes currently hold a slot so a duplicate
+  // result, a lease reap after a terminal result, or a retry park can never
+  // double-release. Loop-thread only.
+  bool acquire_quota_slot(const NodeId& id, const ResourcePolicy& pol);
+  void release_quota_slot(const NodeId& id);
+  // Return EVERY held cross-run quota slot. Called on the run's terminal paths
+  // (cancel / timeout / stop) where in-flight nodes are force-canceled and no
+  // result will arrive to free their slots — without this, a canceled run would
+  // leak capacity on the shared gate. Idempotent. Loop-thread only.
+  void release_all_quota_slots();
+
   void emit(const std::string& kind, const NodeId* node,
             const std::string& detail);
   void finalize_run(const std::string& status, const std::string& outcome);
@@ -253,6 +283,12 @@ class DistributedRunLoop {
   // Resource accounting (M12 semantics in distributed mode), loop-thread only.
   std::map<std::string, int> resource_usage_;
   std::vector<NodeId> resource_blocked_;
+
+  // Milestone 36: nodes currently holding a cross-run quota-gate task slot
+  // (loop-thread only). release_quota_slot() consults this so a slot is
+  // returned exactly once per node, no matter which terminal/reap/retry path
+  // fires first.
+  std::set<NodeId> quota_held_;
 
   // Current attempt number per node (loop-thread only; M26 dispatches once
   // per node — retries are M32 — but the bookkeeping is attempt-aware).

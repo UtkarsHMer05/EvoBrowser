@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdio>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -375,6 +376,192 @@ class FlakyWorker {
   std::atomic<std::size_t> executed_{0};
   std::map<std::string, int> attempts_;
 };
+
+// Build a single-node run whose only node is a browser trigger ("open-url").
+// Used by the M36 global browser-capacity test: one browser node per run so the
+// CROSS-RUN global gate (not the within-run affinity key) is what serializes.
+Dag make_single_browser_run(const std::string& node) {
+  std::vector<NodeSpec> nodes = {
+      {NodeId{node}, NodeKind::Trigger, "open-url"},
+  };
+  auto br = Dag::build(nodes, {});
+  return std::move(*br.dag);
+}
+
+// Build a single-node run whose only node is a side-effect trigger
+// ("send-email" -> ExternalIo). Used by the M36 side-effect capacity test.
+Dag make_single_email_run(const std::string& node) {
+  std::vector<NodeSpec> nodes = {
+      {NodeId{node}, NodeKind::Trigger, "send-email"},
+  };
+  auto br = Dag::build(nodes, {});
+  return std::move(*br.dag);
+}
+
+// M36: worker that tracks concurrent in-flight executions of ONE resource class
+// across runs. While "executing" a task of `track` class it increments
+// `*current`, records the high-water mark in `*high_water`, and holds the task
+// for `work_ms` so that two concurrently-dispatched tasks would observably
+// overlap. With a correctly enforced global class capacity of 1, two runs'
+// tracked tasks serialize and the high-water mark stays 1; a broken (unlimited)
+// gate would let both run at once and push it to 2.
+class ConcurrencyTrackingWorker {
+ public:
+  ConcurrencyTrackingWorker(InMemoryTransport& t, std::string prefix,
+                            std::string run_id,
+                            evo::execution::v1::ResourceClass track,
+                            std::atomic<int>* current,
+                            std::atomic<int>* high_water,
+                            std::chrono::milliseconds work_ms)
+      : transport_(t),
+        prefix_(std::move(prefix)),
+        run_id_(std::move(run_id)),
+        track_(track),
+        current_(current),
+        high_water_(high_water),
+        work_ms_(work_ms) {}
+
+  void start() {
+    thread_ = std::jthread([this](std::stop_token st) { this->loop(st); });
+  }
+  void stop() {
+    thread_.request_stop();
+    if (thread_.joinable()) thread_.join();
+  }
+
+ private:
+  void loop(std::stop_token st) {
+    const std::string tasks = evo::task_stream_key(prefix_);
+    const std::string results = evo::result_stream_key(prefix_);
+    transport_.ensure_group(tasks, "workers");
+    while (!st.stop_requested()) {
+      auto msg = transport_.read(tasks, "workers", "tracking-worker", 20ms, st);
+      if (!msg) continue;
+      evo::execution::v1::TaskEnvelope task;
+      if (!task.ParseFromString(msg->payload)) {
+        transport_.ack(tasks, "workers", msg->id);
+        continue;
+      }
+      if (task.resource_class() == track_) {
+        const int now = current_->fetch_add(1) + 1;
+        int hw = high_water_->load();
+        while (now > hw &&
+               !high_water_->compare_exchange_weak(hw, now)) {
+        }
+        std::this_thread::sleep_for(work_ms_);  // hold the slot to overlap
+        current_->fetch_sub(1);
+      }
+      transport_.publish(
+          results, encode_success(run_id_, task.node_id(),
+                                  task.attempt_number(), "{\"ok\":true}"));
+      transport_.ack(tasks, "workers", msg->id);
+    }
+  }
+
+  InMemoryTransport& transport_;
+  std::string prefix_;
+  std::string run_id_;
+  evo::execution::v1::ResourceClass track_;
+  std::atomic<int>* current_;
+  std::atomic<int>* high_water_;
+  std::chrono::milliseconds work_ms_;
+  std::jthread thread_;
+};
+
+// M36: tracks concurrent in-flight executions PER ORG across runs/workers.
+// Mutex-guarded because two workers (one per run prefix) may update it
+// concurrently. Used by the tenant-isolation test to prove a noisy org's
+// in-flight task count never exceeds its per-org cap while a small org still
+// completes.
+struct OrgConcurrencyTracker {
+  std::mutex mu;
+  std::map<std::string, int> current;
+  std::map<std::string, int> high_water;
+  void enter(const std::string& org) {
+    std::lock_guard lock(mu);
+    const int now = ++current[org];
+    if (now > high_water[org]) high_water[org] = now;
+  }
+  void leave(const std::string& org) {
+    std::lock_guard lock(mu);
+    if (current[org] > 0) --current[org];
+  }
+  int peak(const std::string& org) {
+    std::lock_guard lock(mu);
+    return high_water[org];
+  }
+};
+
+// Worker that records per-org concurrency via an OrgConcurrencyTracker, holding
+// each task for `work_ms` so concurrent dispatches would observably overlap.
+class OrgTrackingWorker {
+ public:
+  OrgTrackingWorker(InMemoryTransport& t, std::string prefix,
+                    std::string run_id, OrgConcurrencyTracker* tracker,
+                    std::chrono::milliseconds work_ms)
+      : transport_(t),
+        prefix_(std::move(prefix)),
+        run_id_(std::move(run_id)),
+        tracker_(tracker),
+        work_ms_(work_ms) {}
+
+  void start() {
+    thread_ = std::jthread([this](std::stop_token st) { this->loop(st); });
+  }
+  void stop() {
+    thread_.request_stop();
+    if (thread_.joinable()) thread_.join();
+  }
+
+ private:
+  void loop(std::stop_token st) {
+    const std::string tasks = evo::task_stream_key(prefix_);
+    const std::string results = evo::result_stream_key(prefix_);
+    transport_.ensure_group(tasks, "workers");
+    while (!st.stop_requested()) {
+      auto msg = transport_.read(tasks, "workers", "org-worker", 20ms, st);
+      if (!msg) continue;
+      evo::execution::v1::TaskEnvelope task;
+      if (!task.ParseFromString(msg->payload)) {
+        transport_.ack(tasks, "workers", msg->id);
+        continue;
+      }
+      tracker_->enter(task.org_id());
+      std::this_thread::sleep_for(work_ms_);  // hold the slot to overlap
+      tracker_->leave(task.org_id());
+      transport_.publish(
+          results, encode_success(run_id_, task.node_id(),
+                                  task.attempt_number(), "{\"ok\":true}"));
+      transport_.ack(tasks, "workers", msg->id);
+    }
+  }
+
+  InMemoryTransport& transport_;
+  std::string prefix_;
+  std::string run_id_;
+  OrgConcurrencyTracker* tracker_;
+  std::chrono::milliseconds work_ms_;
+  std::jthread thread_;
+};
+
+// Build a fan-out run: start -> {n0, n1, n2}, all bench:echo (Internal class,
+// no affinity). Used by the M36 tenant-isolation test: with a per-org
+// in-flight task cap of 1, the three parallel nodes must serialize.
+Dag make_fanout_run3() {
+  std::vector<NodeSpec> nodes = {
+      {NodeId{"start"}, NodeKind::Trigger, "start"},
+      {NodeId{"n0"}, NodeKind::Action, "bench:echo"},
+      {NodeId{"n1"}, NodeKind::Action, "bench:echo"},
+      {NodeId{"n2"}, NodeKind::Action, "bench:echo"},
+  };
+  std::vector<Edge> edges = {
+      {NodeId{"start"}, NodeId{"n0"}},
+      {NodeId{"start"}, NodeId{"n1"}},
+      {NodeId{"start"}, NodeId{"n2"}},
+  };
+  auto br = Dag::build(nodes, edges);
+  return std::move(*br.dag);
+}
 
 }  // namespace
 
@@ -1708,6 +1895,192 @@ int main() {
           "m35: drained result applied to the existing attempt (no new one)");
     check(transport.pending_count(results, "scheduler") == 0,
           "m35: pending result acked after drain");
+  }
+
+  // --- 24. M36: tenant isolation — noisy org throttled, small org unaffected -
+  // A shared gate caps each org at ONE in-flight task. The noisy org runs a
+  // fan-out (start -> {n0,n1,n2}, all Internal) whose three parallel nodes
+  // would run concurrently without the cap; the gate must serialize them
+  // (per-org peak in-flight == 1). A small org's single-node run shares the
+  // gate but has its OWN per-org counter, so it completes without being blocked
+  // by the noisy org. Both runs succeed; backpressure defers, never rejects.
+  {
+    evo::QuotaConfig qcfg;
+    qcfg.max_inflight_tasks_per_org = 1;
+    evo::TenantQuotaGate gate(qcfg);
+    OrgConcurrencyTracker tracker;
+
+    // Noisy org: fan-out run on its own transport/store/worker.
+    InMemoryTransport noisy_t;
+    InMemoryRunStore noisy_s;
+    DistributedRunConfig noisy_cfg;
+    noisy_cfg.run_id = "run-m36-noisy";
+    noisy_cfg.org_id = "org-noisy";
+    noisy_cfg.workflow_id = "wf-noisy";
+    noisy_cfg.env_prefix = "evo:m36noisy";
+    noisy_cfg.read_block_ms = 10ms;
+    noisy_cfg.run_timeout = 20s;
+    noisy_cfg.quota_gate = &gate;
+    OrgTrackingWorker noisy_w(noisy_t, noisy_cfg.env_prefix, noisy_cfg.run_id,
+                              &tracker, 60ms);
+
+    // Small org: single-node run on its own transport/store/worker.
+    InMemoryTransport small_t;
+    InMemoryRunStore small_s;
+    DistributedRunConfig small_cfg;
+    small_cfg.run_id = "run-m36-small";
+    small_cfg.org_id = "org-small";
+    small_cfg.workflow_id = "wf-small";
+    small_cfg.env_prefix = "evo:m36small";
+    small_cfg.read_block_ms = 10ms;
+    small_cfg.run_timeout = 20s;
+    small_cfg.quota_gate = &gate;
+    OrgTrackingWorker small_w(small_t, small_cfg.env_prefix, small_cfg.run_id,
+                              &tracker, 10ms);
+
+    DistributedRunLoop noisy_loop(make_fanout_run3(), noisy_t, noisy_s,
+                                  noisy_cfg);
+    DistributedRunLoop small_loop(make_single_browser_run("s0"), small_t,
+                                  small_s, small_cfg);
+    noisy_w.start();
+    small_w.start();
+
+    std::thread noisy_th([&] { (void)noisy_loop.run(); });
+    std::thread small_th([&] { (void)small_loop.run(); });
+    noisy_th.join();
+    small_th.join();
+    noisy_w.stop();
+    small_w.stop();
+
+    check(noisy_loop.state().run_state() == evo::RunState::Succeeded,
+          "m36: noisy org run succeeds despite the per-org cap");
+    check(small_loop.state().run_state() == evo::RunState::Succeeded,
+          "m36: small org run succeeds (not blocked by the noisy org)");
+    check(tracker.peak("org-noisy") == 1,
+          "m36: noisy org in-flight tasks serialized to its cap (peak == 1)");
+    check(tracker.peak("org-small") == 1,
+          "m36: small org in-flight tasks within its own cap");
+    check(gate.inflight_tasks("org-noisy") == 0 &&
+              gate.inflight_tasks("org-small") == 0,
+          "m36: all per-org task slots released at terminal (no leak)");
+    check(gate.counters().deferred_tasks >= 2,
+          "m36: deferred dispatches counted (backpressure observed)");
+  }
+
+  // --- 25. M36: global browser-session capacity across runs ----------------
+  // A shared gate caps the GLOBAL Browser class at ONE in-flight session across
+  // ALL orgs/runs. Two runs, each with a single browser node, run concurrently;
+  // the gate must serialize them (browser high-water == 1). This is the
+  // cross-run global capacity, distinct from the within-run affinity key.
+  {
+    evo::QuotaConfig qcfg;
+    qcfg.global_class_capacity[evo::ResourceClass::Browser] = 1;
+    evo::TenantQuotaGate gate(qcfg);
+    std::atomic<int> current{0};
+    std::atomic<int> high_water{0};
+
+    InMemoryTransport t1, t2;
+    InMemoryRunStore s1, s2;
+    DistributedRunConfig c1, c2;
+    c1.run_id = "run-m36-browser-a";
+    c1.org_id = "org-a";
+    c1.workflow_id = "wf-a";
+    c1.env_prefix = "evo:m36browserA";
+    c1.read_block_ms = 10ms;
+    c1.run_timeout = 20s;
+    c1.quota_gate = &gate;
+    c2.run_id = "run-m36-browser-b";
+    c2.org_id = "org-b";
+    c2.workflow_id = "wf-b";
+    c2.env_prefix = "evo:m36browserB";
+    c2.read_block_ms = 10ms;
+    c2.run_timeout = 20s;
+    c2.quota_gate = &gate;
+
+    ConcurrencyTrackingWorker w1(t1, c1.env_prefix, c1.run_id,
+                                 evo::execution::v1::BROWSER, &current,
+                                 &high_water, 60ms);
+    ConcurrencyTrackingWorker w2(t2, c2.env_prefix, c2.run_id,
+                                 evo::execution::v1::BROWSER, &current,
+                                 &high_water, 60ms);
+
+    DistributedRunLoop loop1(make_single_browser_run("ba"), t1, s1, c1);
+    DistributedRunLoop loop2(make_single_browser_run("bb"), t2, s2, c2);
+    w1.start();
+    w2.start();
+    std::thread th1([&] { (void)loop1.run(); });
+    std::thread th2([&] { (void)loop2.run(); });
+    th1.join();
+    th2.join();
+    w1.stop();
+    w2.stop();
+
+    check(loop1.state().run_state() == evo::RunState::Succeeded &&
+              loop2.state().run_state() == evo::RunState::Succeeded,
+          "m36: both browser runs succeed under the global cap");
+    check(high_water.load() == 1,
+          "m36: global browser capacity serialized cross-run (high-water == 1)");
+    check(gate.inflight_class(evo::ResourceClass::Browser) == 0,
+          "m36: global browser slots released at terminal (no leak)");
+  }
+
+  // --- 26. M36: global side-effect (ExternalIo) capacity, separate pool -----
+  // The ExternalIo class has its OWN global capacity, independent of Browser.
+  // Two send-email runs serialize on the ExternalIo cap (high-water == 1),
+  // proving side-effect capacity is tracked separately from browser capacity.
+  {
+    evo::QuotaConfig qcfg;
+    qcfg.global_class_capacity[evo::ResourceClass::ExternalIo] = 1;
+    evo::TenantQuotaGate gate(qcfg);
+    std::atomic<int> current{0};
+    std::atomic<int> high_water{0};
+
+    InMemoryTransport t1, t2;
+    InMemoryRunStore s1, s2;
+    DistributedRunConfig c1, c2;
+    c1.run_id = "run-m36-email-a";
+    c1.org_id = "org-a";
+    c1.workflow_id = "wf-a";
+    c1.env_prefix = "evo:m36emailA";
+    c1.read_block_ms = 10ms;
+    c1.run_timeout = 20s;
+    c1.quota_gate = &gate;
+    c2.run_id = "run-m36-email-b";
+    c2.org_id = "org-b";
+    c2.workflow_id = "wf-b";
+    c2.env_prefix = "evo:m36emailB";
+    c2.read_block_ms = 10ms;
+    c2.run_timeout = 20s;
+    c2.quota_gate = &gate;
+
+    ConcurrencyTrackingWorker w1(t1, c1.env_prefix, c1.run_id,
+                                 evo::execution::v1::EXTERNAL_IO, &current,
+                                 &high_water, 60ms);
+    ConcurrencyTrackingWorker w2(t2, c2.env_prefix, c2.run_id,
+                                 evo::execution::v1::EXTERNAL_IO, &current,
+                                 &high_water, 60ms);
+
+    DistributedRunLoop loop1(make_single_email_run("ea"), t1, s1, c1);
+    DistributedRunLoop loop2(make_single_email_run("eb"), t2, s2, c2);
+    w1.start();
+    w2.start();
+    std::thread th1([&] { (void)loop1.run(); });
+    std::thread th2([&] { (void)loop2.run(); });
+    th1.join();
+    th2.join();
+    w1.stop();
+    w2.stop();
+
+    check(loop1.state().run_state() == evo::RunState::Succeeded &&
+              loop2.state().run_state() == evo::RunState::Succeeded,
+          "m36: both side-effect runs succeed under the ExternalIo cap");
+    check(high_water.load() == 1,
+          "m36: ExternalIo capacity serialized cross-run (high-water == 1)");
+    check(gate.inflight_class(evo::ResourceClass::ExternalIo) == 0,
+          "m36: ExternalIo slots released at terminal (no leak)");
+    // Browser pool was never touched by these email runs.
+    check(gate.inflight_class(evo::ResourceClass::Browser) == 0,
+          "m36: browser pool untouched by side-effect runs (separate pools)");
   }
 
   if (failures == 0) {

@@ -57,6 +57,7 @@
 #include "evo/concurrent_scheduler.hpp"
 #include "evo/dag.hpp"
 #include "evo/execution.grpc.pb.h"
+#include "evo/quota.hpp"
 #include "evo/scheduler.hpp"
 
 #ifdef EVO_HAVE_DISTRIBUTED
@@ -190,10 +191,23 @@ class ControlServiceImpl final
       }
     }
 
+    // M36: multi-tenant admission. The org_id is the scheduling tenant key; it
+    // originates from the authenticated server-side submission (the app resolves
+    // it from Clerk), never from a browser client (M36 step 9). When the org's
+    // active-run quota (or the global cap) is exhausted, REJECT with
+    // RESOURCE_EXHAUSTED — fail closed, never queue without bound (M36 step 4).
+    if (!quota_gate_.admit_run(req->org_id())) {
+      log_line("submit_rejected", rid, req->org_id(),
+               "quota exhausted (active-run limit)");
+      return grpc::Status(grpc::RESOURCE_EXHAUSTED,
+                          "org active-run quota exhausted");
+    }
+
     // Validate + parse the canonical DAG JSON into an engine Dag before
     // mutating any state (trust-boundary rule: validate before durable write).
     auto parse = evo::Dag::from_json_string(req->dag_json());
     if (!parse.ok() || !parse.dag.has_value()) {
+      quota_gate_.release_run(req->org_id());  // give back the admitted slot
       std::string err = "malformed or invalid DAG";
       if (!parse.errors.empty()) err += ": " + parse.errors[0].message;
       log_line("submit_rejected", rid, req->org_id(), err);
@@ -270,7 +284,11 @@ class ControlServiceImpl final
                       const evo::execution::v1::HealthRequest*,
                       evo::execution::v1::HealthResponse* resp) override {
     resp->set_ok(true);
-    resp->set_detail("SERVING");
+    // M36 step 6: expose queue depth + rejected/deferred counters. The detail
+    // carries a structured JSON snapshot of the quota gate (admitted/rejected
+    // runs, acquired/deferred/released tasks, per-org active-run depth, and
+    // per-class in-flight counts) alongside the serving state.
+    resp->set_detail("SERVING " + quota_gate_.to_json_string());
     return grpc::Status::OK;
   }
 
@@ -305,8 +323,13 @@ class ControlServiceImpl final
                             evo::Dag dag,
                             evo::execution::v1::SubmitRunResponse* resp) {
     // Default small sleep per node for the local synthetic executor.
+    // EVO_LOCAL_SLEEP_MS is a test-only override (default 3ms, unchanged) that
+    // lets the M36 admission test hold a run ACTIVE long enough to exercise the
+    // per-org active-run cap.
+    const int per_node_sleep =
+        std::atoi(env_or("EVO_LOCAL_SLEEP_MS", "3").c_str());
     std::map<evo::NodeId, int> sleep_ms;
-    for (const auto& id : dag.node_ids()) sleep_ms[id] = 3;
+    for (const auto& id : dag.node_ids()) sleep_ms[id] = per_node_sleep;
 
     auto entry = std::make_unique<ActiveRun>();
     entry->org_id = req->org_id();
@@ -342,6 +365,7 @@ class ControlServiceImpl final
         raw->outcome = outcome;
         raw->done = true;
       }
+      quota_gate_.release_run(raw->org_id);  // M36: run is terminal
       log_line("run_terminal", rid, raw->org_id,
                std::string("outcome=") +
                    evo::execution::v1::RunOutcome_Name(outcome));
@@ -396,6 +420,7 @@ class ControlServiceImpl final
     rcfg.port = std::atoi(env_or("EVO_PHASE2_REDIS_PORT", "6390").c_str());
     entry->transport = std::make_unique<evo::RedisTransport>(rcfg);
     if (!entry->transport->connect()) {
+      quota_gate_.release_run(req->org_id());  // M36: give back admitted slot
       log_line("submit_rejected", rid, req->org_id(),
                "distributed Redis unreachable");
       return grpc::Status(grpc::UNAVAILABLE,
@@ -410,6 +435,7 @@ class ControlServiceImpl final
     pcfg.dbname = env_or("EVO_PHASE2_PG_DB", "evo_phase2");
     entry->store = std::make_unique<evo::PgRunStore>(pcfg);
     if (!entry->store->connect()) {
+      quota_gate_.release_run(req->org_id());  // M36: give back admitted slot
       log_line("submit_rejected", rid, req->org_id(),
                "distributed Postgres unreachable");
       return grpc::Status(grpc::UNAVAILABLE,
@@ -426,6 +452,9 @@ class ControlServiceImpl final
     dcfg.result_group = "scheduler";
     dcfg.consumer_id = "scheduler-grpc";
     dcfg.read_block_ms = std::chrono::milliseconds(100);
+    // M36: share the service-wide quota gate so the per-org in-flight task cap
+    // and the global resource-class capacities are enforced ACROSS runs.
+    dcfg.quota_gate = &quota_gate_;
 
     // Pre-create the workers' task-stream group (mirrors the M26 E2E) so no
     // task is lost to a late "$" cursor. Idempotent (BUSYGROUP => ok).
@@ -460,6 +489,7 @@ class ControlServiceImpl final
         raw->outcome = outcome;
         raw->done = true;
       }
+      quota_gate_.release_run(raw->org_id);  // M36: run is terminal
       log_line("run_terminal", rid, raw->org_id,
                std::string("outcome=") +
                    evo::execution::v1::RunOutcome_Name(outcome));
@@ -577,6 +607,11 @@ class ControlServiceImpl final
       dcfg.consumer_id = "scheduler-grpc";
       dcfg.read_block_ms = std::chrono::milliseconds(100);
       dcfg.resume = true;  // M35: reconstruct from durable state
+      dcfg.quota_gate = &quota_gate_;  // M36: share the service-wide gate
+
+      // M36: a resumed run is EXISTING durable work, not a new submission, so
+      // it is RE-COUNTED (never rejected) against the org's active-run quota.
+      quota_gate_.readmit_run(run->org_id);
 
       const std::string worker_group = env_or("EVO_WORKER_GROUP", "workers");
       entry->transport->ensure_group(evo::task_stream_key(dcfg.env_prefix),
@@ -609,6 +644,7 @@ class ControlServiceImpl final
           raw->outcome = outcome;
           raw->done = true;
         }
+        quota_gate_.release_run(raw->org_id);  // M36: run is terminal
         log_line("run_terminal", rid, raw->org_id,
                  std::string("outcome=") +
                      evo::execution::v1::RunOutcome_Name(outcome) +
@@ -788,6 +824,37 @@ class ControlServiceImpl final
 
   std::mutex runs_mu_;
   std::map<std::string, std::unique_ptr<ActiveRun>> runs_;  // stable addresses
+
+  // M36: service-wide multi-tenant quota gate. Shared by every run loop (via
+  // DistributedRunConfig.quota_gate) and consulted at SubmitRun admission.
+  // Configured from env (0 => unlimited, backwards compatible):
+  //   EVO_QUOTA_MAX_ACTIVE_RUNS_PER_ORG   per-org active-run cap
+  //   EVO_QUOTA_MAX_ACTIVE_RUNS_GLOBAL    global active-run cap
+  //   EVO_QUOTA_MAX_INFLIGHT_TASKS_PER_ORG per-org in-flight task cap
+  //   EVO_QUOTA_BROWSER_CAPACITY          global browser-session capacity
+  //   EVO_QUOTA_EXTERNAL_IO_CAPACITY      global side-effect capacity
+  evo::TenantQuotaGate quota_gate_{make_quota_config()};
+
+  static evo::QuotaConfig make_quota_config() {
+    evo::QuotaConfig cfg;
+    cfg.max_active_runs_per_org =
+        std::atoi(env_or("EVO_QUOTA_MAX_ACTIVE_RUNS_PER_ORG", "0").c_str());
+    cfg.max_active_runs_global =
+        std::atoi(env_or("EVO_QUOTA_MAX_ACTIVE_RUNS_GLOBAL", "0").c_str());
+    cfg.max_inflight_tasks_per_org =
+        std::atoi(env_or("EVO_QUOTA_MAX_INFLIGHT_TASKS_PER_ORG", "0").c_str());
+    const int browser_cap =
+        std::atoi(env_or("EVO_QUOTA_BROWSER_CAPACITY", "0").c_str());
+    if (browser_cap > 0) {
+      cfg.global_class_capacity[evo::ResourceClass::Browser] = browser_cap;
+    }
+    const int io_cap =
+        std::atoi(env_or("EVO_QUOTA_EXTERNAL_IO_CAPACITY", "0").c_str());
+    if (io_cap > 0) {
+      cfg.global_class_capacity[evo::ResourceClass::ExternalIo] = io_cap;
+    }
+    return cfg;
+  }
 };
 
 }  // namespace evo::service

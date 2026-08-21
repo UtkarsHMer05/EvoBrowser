@@ -144,6 +144,9 @@ void DistributedRunLoop::scan_expired_leases() {
         auto it = resource_usage_.find(pol.affinity_key);
         if (it != resource_usage_.end() && it->second > 0) it->second--;
       }
+      // M36: return the cross-run quota slot too (the attempt is gone; the
+      // re-dispatch re-acquires it). Idempotent via quota_held_.
+      release_quota_slot(node_id);
     }
     emit("node_lease_expired", &node_id,
          "worker=" + lease.worker_id + " attempt=" +
@@ -293,6 +296,17 @@ void DistributedRunLoop::dispatch_ready() {
       acquired = true;
     }
 
+    // M36: cross-run quota gate (per-org in-flight task cap + global
+    // resource-class capacity). A full gate DEFERS the node — it stays READY,
+    // so dispatch_ready() re-examines it next iteration (backpressure, not
+    // rejection). Release the affinity slot grabbed above so it is not held
+    // while deferred. No resource_blocked_ bookkeeping is needed: the node is
+    // retried via ready_nodes() every iteration, paced by the blocking read.
+    if (!acquire_quota_slot(id, pol)) {
+      if (acquired) resource_usage_[pol.affinity_key]--;
+      continue;
+    }
+
     const NodeSpec* spec = dag_.node(id);
     const unsigned attempt = ++current_attempt_[id];
 
@@ -338,6 +352,7 @@ void DistributedRunLoop::dispatch_ready() {
       // A locally-built envelope that fails validation is a bug; fail the
       // node rather than publishing an invalid task.
       if (acquired) resource_usage_[pol.affinity_key]--;
+      release_quota_slot(id);  // M36: node is terminal; return the slot
       store_.complete_node_run(config_.run_id, id.value, node_status::kFailed,
                                "", "invalid task envelope: " + problems.front(),
                                now_wall_ms());
@@ -353,6 +368,7 @@ void DistributedRunLoop::dispatch_ready() {
       // Transport rejected the dispatch. Fail the node (retry policy is M32;
       // M26 does not silently re-publish) and release the resource slot.
       if (acquired) resource_usage_[pol.affinity_key]--;
+      release_quota_slot(id);  // M36: node is terminal; return the slot
       store_.complete_node_run(config_.run_id, id.value, node_status::kFailed,
                                "", "task publish failed", now_wall_ms());
       auto canceled = state_.fail_node(id, "task publish failed");
@@ -523,6 +539,14 @@ bool DistributedRunLoop::reconstruct_from_store() {
       if (!pol.affinity_key.empty()) {
         resource_usage_[pol.affinity_key]++;
       }
+      // M36: re-count the cross-run quota slot too, so capacity accounting
+      // survives the restart. Re-counted (never rejected) because this is
+      // existing durable work, not a new dispatch. quota_held_ records the
+      // holding so the eventual result/reap releases it exactly once.
+      if (config_.quota_gate) {
+        config_.quota_gate->reacquire_task(config_.org_id, pol.klass);
+        quota_held_.insert(id);
+      }
     }
   }
 
@@ -566,12 +590,50 @@ void DistributedRunLoop::drain_pending_results() {
           auto it = resource_usage_.find(pol.affinity_key);
           if (it != resource_usage_.end() && it->second > 0) it->second--;
         }
+        // M36: return the (re-acquired on resume) cross-run quota slot too.
+        release_quota_slot(NodeId{result.node_id()});
       }
     }
     // Ack applied AND ignored results alike: pending entries are consumed,
     // never reprocessed (dedupe/late-result/idempotency guards already ran).
     transport_.ack(result_stream, config_.result_group, msg->id);
   }
+}
+
+// Milestone 36 (multi-tenant quotas). Acquire a cross-run task slot on the
+// shared gate for (org_id, this node's resource class). Returns true when the
+// slot was granted (or there is no gate); false means the caller must DEFER the
+// node — leave it READY so dispatch_ready() re-examines it next iteration.
+// Backpressure, not rejection (M36 step 4): a deferred node is not failed.
+bool DistributedRunLoop::acquire_quota_slot(const NodeId& id,
+                                            const ResourcePolicy& pol) {
+  if (!config_.quota_gate) return true;  // no gate => always permitted
+  if (!config_.quota_gate->acquire_task(config_.org_id, pol.klass)) {
+    return false;  // per-org task cap or global class capacity is full
+  }
+  quota_held_.insert(id);
+  return true;
+}
+
+// Return a cross-run task slot exactly once per node. `quota_held_` is the
+// guard: a duplicate result, a lease reap that races a terminal result, or a
+// retry park can never double-release (which would inflate capacity).
+void DistributedRunLoop::release_quota_slot(const NodeId& id) {
+  if (!config_.quota_gate) return;
+  auto it = quota_held_.find(id);
+  if (it == quota_held_.end()) return;  // not held => nothing to release
+  quota_held_.erase(it);
+  const ResourcePolicy pol = policy_for_node(id);
+  config_.quota_gate->release_task(config_.org_id, pol.klass);
+}
+
+// Return every held slot (cancel / timeout / stop terminal paths). In-flight
+// nodes force-canceled there produce no result, so their slots would otherwise
+// leak on the shared gate. Idempotent via quota_held_.
+void DistributedRunLoop::release_all_quota_slots() {
+  if (!config_.quota_gate) return;
+  const std::set<NodeId> held = quota_held_;  // copy: release mutates the set
+  for (const auto& id : held) release_quota_slot(id);
 }
 
 std::string DistributedRunLoop::run() {
@@ -653,6 +715,7 @@ std::string DistributedRunLoop::run() {
     if (cancel_requested_.load(std::memory_order_relaxed)) {
       auto canceled = state_.cancel_run();
       persist_canceled(canceled);
+      release_all_quota_slots();  // M36: in-flight slots leak otherwise
       finalize_run(run_status::kCanceled, "canceled");
       finalized_.store(true, std::memory_order_relaxed);
       return run_status::kCanceled;
@@ -690,6 +753,7 @@ std::string DistributedRunLoop::run() {
       // Bounded wait exceeded: cancel the run rather than hang.
       auto canceled = state_.cancel_run();
       persist_canceled(canceled);
+      release_all_quota_slots();  // M36: in-flight slots leak otherwise
       finalize_run(run_status::kCanceled, "timeout");
       finalized_.store(true, std::memory_order_relaxed);
       return run_status::kCanceled;
@@ -721,6 +785,8 @@ std::string DistributedRunLoop::run() {
         auto it = resource_usage_.find(pol.affinity_key);
         if (it != resource_usage_.end() && it->second > 0) it->second--;
       }
+      // M36: return the cross-run quota slot too (idempotent via quota_held_).
+      release_quota_slot(NodeId{result.node_id()});
     }
   }
 
@@ -728,6 +794,7 @@ std::string DistributedRunLoop::run() {
   // run canceled so durable state is terminal and consistent.
   auto canceled = state_.cancel_run();
   persist_canceled(canceled);
+  release_all_quota_slots();  // M36: in-flight slots leak otherwise
   finalize_run(run_status::kCanceled, "stopped");
   finalized_.store(true, std::memory_order_relaxed);
   return run_status::kCanceled;

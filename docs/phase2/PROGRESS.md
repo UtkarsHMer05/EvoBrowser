@@ -45,6 +45,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M33 | Implement idempotency and duplicate suppression | ✅ DONE | `2887e88` |
 | M34 | Implement worker crash recovery and failure injection | ✅ DONE | `b6cff19` |
 | M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `fb5313e` |
+| M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `M36_SHA` |
 
 ---
 
@@ -2366,3 +2367,114 @@ Commit subjects follow `phase2(mNN): <description>`.
   (`scripts/phase2/migrate-local.sh`); Neon untouched.
 - **COMMIT:** `fb5313e` — `phase2(m35): add scheduler restart recovery`
 - **NEXT:** M36 — Multi-tenant quotas and backpressure.
+
+## M36 — Add multi-tenant quotas and backpressure
+
+**Status:** ✅ DONE — one organization can no longer exhaust the scheduler's global resources. A shared `TenantQuotaGate` enforces per-org active-run admission (reject with RESOURCE_EXHAUSTED when exhausted), per-org in-flight task limits, and global resource-class capacities (browser-session and side-effect pools tracked separately). Over-capacity dispatch is DEFERRED (backpressure), never silently queued without bound.
+
+- **BASE_SHA:** `90a5079` (phase2 branch; M35 docs SHA).
+- **What was inspected:** master prompt M36 spec (steps 1–9, no-go list,
+  validation, exit criteria), `engine/core/include/evo/execution_policy.hpp`
+  (ResourceClass + ResourcePolicy), `engine/core/src/distributed_run_loop.cpp`
+  (dispatch_ready / apply_result / scan_expired_leases / reconstruct_from_store
+  / terminal paths), `engine/app/grpc_service.cpp` (SubmitRun admission,
+  submit_local/submit_distributed, reconcile_active_runs, Health),
+  `engine/core/include/evo/metrics.hpp` (counter conventions),
+  `engine/core/include/evo/retry_policy.hpp` (error taxonomy).
+- **What changed:**
+  - **`engine/core/include/evo/quota.hpp` + `engine/core/src/quota.cpp` (NEW):**
+    `TenantQuotaGate` — the single cross-run authority for quotas. Thread-safe
+    (one mutex). Two limit axes: (1) run-level ADMISSION — per-org and global
+    caps on concurrently ACTIVE runs; `admit_run` rejects when either is full,
+    `readmit_run` re-counts a resumed run without checking caps (M35 restart
+    recovery), `release_run` frees a slot at terminal. (2) task-level CAPACITY —
+    per-org in-flight task cap + global per-ResourceClass capacity;
+    `acquire_task` grants a slot only when BOTH permit (atomic: no partial
+    mutation on rejection), `release_task` returns it (clamps at zero),
+    `reacquire_task` re-counts a restored in-flight node without checking caps.
+    `QuotaCounters` tracks admitted/rejected runs, acquired/deferred/released
+    tasks, active-run depth + high-water. `to_json_string()` emits a structured
+    snapshot (per-org depth + per-class in-flight). All limits default to 0 =
+    unlimited (backwards compatible).
+  - **`engine/core/include/evo/distributed_run_loop.hpp` + `.cpp`:**
+    `DistributedRunConfig.quota_gate` (optional shared gate; nullptr => no
+    cross-run gating). `dispatch_ready()` acquires a slot after the affinity
+    check; a full gate DEFERS the node (left READY, re-examined next iteration
+    — backpressure, not rejection) and releases the affinity slot grabbed
+    first. `release_quota_slot()` returns a slot exactly once per node
+    (`quota_held_` set is the guard against double-release from duplicate
+    results / racing lease reap / retry park). Release sites: applied result
+    (main loop + M35 pending-drain), lease reap, and the two local-failure
+    dispatch paths. `release_all_quota_slots()` runs on the cancel/timeout/stop
+    terminal paths so force-canceled in-flight nodes do not leak capacity.
+    `reconstruct_from_store()` re-acquires slots for restored in-flight nodes so
+    capacity accounting survives a restart.
+  - **`engine/app/grpc_service.cpp`:** service-wide `quota_gate_` member
+    configured from env (`EVO_QUOTA_MAX_ACTIVE_RUNS_PER_ORG`,
+    `_MAX_ACTIVE_RUNS_GLOBAL`, `_MAX_INFLIGHT_TASKS_PER_ORG`,
+    `_BROWSER_CAPACITY`, `_EXTERNAL_IO_CAPACITY`; 0 => unlimited). `SubmitRun`
+    admits the org before parsing the DAG and rejects with
+    `grpc::RESOURCE_EXHAUSTED` when the cap is exhausted (the org_id originates
+    from the authenticated server-side submission — Clerk — never a browser
+    client, per M36 step 9). The admitted slot is released on every rejection
+    path (malformed DAG, unreachable infra) and on terminal in all three runner
+    threads (local, distributed, reconcile). The distributed loop + reconcile
+    loops receive `dcfg.quota_gate = &quota_gate_`. `Health` detail now carries
+    the quota gate's JSON snapshot (queue depth + rejected/deferred counters,
+    M36 step 6). `EVO_LOCAL_SLEEP_MS` test-only override (default 3ms,
+    unchanged) lets the admission test hold a run ACTIVE.
+  - **`engine/tests/quota_test.cpp` (NEW):** 12 pure unit tests — unconfigured
+    gate admits everything; per-org + global active-run caps; release/readmit;
+    per-org task cap; global class capacity (browser vs external-io separate
+    pools); release/reacquire; full counter lifecycle; double-release clamps at
+    zero; JSON snapshot parses.
+  - **`engine/tests/distributed_run_loop_test.cpp` (tests 24–26):** tenant
+    isolation (noisy org fan-out serialized to its per-org cap of 1 while a
+    small org completes unaffected; deferred dispatches counted; no slot leak);
+    global browser-session capacity across two runs (high-water == 1); global
+    ExternalIo capacity across two runs (separate pool, browser untouched).
+    New helpers: `ConcurrencyTrackingWorker` (per-class high-water),
+    `OrgTrackingWorker` + `OrgConcurrencyTracker` (per-org high-water),
+    `make_single_browser_run` / `make_single_email_run` / `make_fanout_run3`.
+  - **`engine/tests/quota_admission_test.cpp` (NEW):** gRPC integration —
+    spawns `evo-scheduler-server` with per-org cap 1 + 2s local sleep; asserts
+    org-a run #1 accepted, org-a run #2 rejected RESOURCE_EXHAUSTED, org-b run
+    accepted (own quota), Health carries the quota snapshot, and org-a run #3
+    accepted after #1 releases its slot.
+  - **`engine/CMakeLists.txt`:** `quota.cpp` in `evo_scheduler_core`;
+    `evo_quota_test` + `evo_quota_admission_test` targets (admission pointed at
+    the real server binary, 60s timeout).
+- **Concurrency/distributed correctness:** the gate is the single owner of its
+  counters; every method locks the internal mutex, so concurrent run loops
+  (one thread each) admit/acquire/release safely — TSan-clean across the full
+  suite. `acquire_task` is atomic (no partial mutation on rejection). A slot is
+  released exactly once per node (`quota_held_`), so a duplicate result, a
+  lease reap racing a terminal result, or a retry park can never double-release
+  (inflate capacity). Force-cancel terminal paths release all held slots. The
+  gate is in-process state: global capacity is enforced per scheduler process,
+  not cluster-wide (a durable cluster-wide counter is later work).
+- **Phase-1 preservation:** legacy Trigger.dev engine untouched; no Phase-1
+  default behavior changed (all limits default to 0 = unlimited); no test
+  removed; browser credentials stay server/worker-only. `EVO_LOCAL_SLEEP_MS`
+  defaults to the prior 3ms.
+- **No-go compliance:** backpressure is explicitly NOT fairness (deferral does
+  not reorder tenants; fair scheduling is M37); no unbounded per-tenant queues
+  (over-capacity submission is rejected, over-capacity dispatch is deferred and
+  re-examined); no performance numbers invented; no future component marked
+  implemented; no secret/credential committed.
+- **Validation:**
+  - CMake build → ✅ clean; `ctest` (Release) → ✅ 23/23 (incl. quota,
+    quota_admission 5.0s, distributed_run_loop incl. tests 24–26)
+  - ASan+UBSan → ✅ 23/23; TSan → ✅ 23/23 (no data races in the shared-gate
+    concurrency tests)
+  - `npm test` → ✅ exit 0 (all prior suites green; M29 parity 9/9)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅ (0 errors, 0 warnings)
+- **Known limitations:** the quota gate is per-process; a multi-scheduler
+  deployment would need a durable cluster-wide counter (later work). Backpressure
+  defers but does not reorder — a saturated org's deferred nodes are re-examined
+  each iteration but not prioritized against other tenants (fairness is M37).
+  The per-org in-flight task cap is enforced at dispatch, so a node may wait
+  READY until its org's in-flight count drops.
+- **Human action:** none (no new migration; no schema change; Neon untouched).
+- **COMMIT:** `M36_SHA` — `phase2(m36): add tenant quotas and backpressure`
+- **NEXT:** M37 — Fair scheduling and starvation resistance.

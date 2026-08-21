@@ -78,6 +78,7 @@ add_library(evo_scheduler_core STATIC
   core/src/concurrent_scheduler.cpp
   core/src/transport.cpp
   core/src/run_store.cpp
+  core/src/quota.cpp
 )
 target_include_directories(evo_scheduler_core PUBLIC core/include)
 target_compile_features(evo_scheduler_core PUBLIC cxx_std_20)
@@ -316,6 +317,15 @@ target_compile_options(evo_state_test PRIVATE
 )
 add_test(NAME state COMMAND evo_state_test)
 
+# evo_quota_test — M36: multi-tenant quota gate (admission + task capacity +
+# counters). Pure scheduler-core; no transport/store/threads.
+add_executable(evo_quota_test tests/quota_test.cpp)
+target_link_libraries(evo_quota_test PRIVATE evo_scheduler_core)
+target_compile_options(evo_quota_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME quota COMMAND evo_quota_test)
+
 add_executable(evo_ready_queue_test tests/ready_queue_test.cpp)
 target_link_libraries(evo_ready_queue_test PRIVATE evo_scheduler_core)
 target_compile_options(evo_ready_queue_test PRIVATE
@@ -385,6 +395,23 @@ target_compile_options(evo_grpc_integration_test PRIVATE
   -Wno-deprecated-declarations
 )
 add_test(NAME grpc_integration COMMAND evo_grpc_integration_test)
+
+# ---------------------------------------------------------------------------
+# evo_quota_admission — M36 multi-tenant admission control over the real gRPC
+# ControlService. Spawns evo-scheduler-server with a per-org active-run cap and
+# asserts RESOURCE_EXHAUSTED rejection + per-org isolation + Health counters.
+# Skipped when EVO_SCHEDULER_SERVER_BIN is unset.
+# ---------------------------------------------------------------------------
+add_executable(evo_quota_admission_test tests/quota_admission_test.cpp)
+target_link_libraries(evo_quota_admission_test PRIVATE evo_proto evo_scheduler_core)
+target_compile_options(evo_quota_admission_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+  -Wno-nullability-extension -Wno-gcc-compat
+  -Wno-gnu-anonymous-struct -Wno-nested-anon-types
+  -Wno-deprecated-declarations
+)
+add_test(NAME quota_admission COMMAND evo_quota_admission_test)
+set_tests_properties(quota_admission PROPERTIES TIMEOUT 60)
 
 # ---------------------------------------------------------------------------
 # evo_transport — in-memory transport fake unit tests (M21). Always built;
@@ -539,5 +566,9 @@ endif()
 # Point the integration test at the real server binary so it runs instead of
 # skipping (the test also honors an EVO_SCHEDULER_SERVER_BIN env override).
 set_tests_properties(grpc_integration PROPERTIES
+  ENVIRONMENT "EVO_SCHEDULER_SERVER_BIN=$<TARGET_FILE:evo-scheduler-server>"
+)
+# Same for the M36 admission test.
+set_tests_properties(quota_admission PROPERTIES
   ENVIRONMENT "EVO_SCHEDULER_SERVER_BIN=$<TARGET_FILE:evo-scheduler-server>"
 )
