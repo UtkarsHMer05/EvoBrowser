@@ -44,7 +44,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `dcad613` |
 | M33 | Implement idempotency and duplicate suppression | ✅ DONE | `2887e88` |
 | M34 | Implement worker crash recovery and failure injection | ✅ DONE | `b6cff19` |
-| M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `M35_SHA` |
+| M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `fb5313e` |
 
 ---
 
@@ -2364,5 +2364,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   (evidence-grade recovery benchmarking is M39).
 - **Human action:** migration 0006 applied to the LOCAL Phase-2 Postgres only
   (`scripts/phase2/migrate-local.sh`); Neon untouched.
-- **COMMIT:** `M35_SHA` — `phase2(m35): add scheduler restart recovery`
+- **COMMIT:** `fb5313e` — `phase2(m35): add scheduler restart recovery`
 - **NEXT:** M36 — Multi-tenant quotas and backpressure.
