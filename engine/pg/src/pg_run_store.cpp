@@ -480,6 +480,38 @@ std::optional<WorkerRecord> PgRunStore::get_worker(const std::string& worker_id)
   return out;
 }
 
+// --- Milestone 33: idempotency ledger ---------------------------------------
+
+bool PgRunStore::claim_idempotency_key(const std::string& key,
+                                       const std::string& run_id,
+                                       const std::string& response_json) {
+  if (key.empty()) return false;
+  // First claim wins: idempotency_records.key is the PRIMARY KEY, so a
+  // duplicate claim hits the unique constraint and affects 0 rows (M33
+  // step 2: durable idempotency record with unique constraint).
+  auto r = exec_params(
+      "INSERT INTO idempotency_records (key, run_id, response) "
+      "VALUES ($1, NULLIF($2, ''), NULLIF($3, '')::jsonb) "
+      "ON CONFLICT (key) DO NOTHING",
+      {key, run_id, response_json});
+  if (r.res) PQclear(r.res);
+  return r.ok && r.rows_affected == 1;
+}
+
+std::optional<std::string> PgRunStore::get_idempotency_response(
+    const std::string& key) {
+  auto r = exec_params(
+      "SELECT COALESCE(response::text, '') FROM idempotency_records "
+      "WHERE key = $1",
+      {key});
+  std::optional<std::string> out;
+  if (r.ok && r.res && PQntuples(r.res) == 1) {
+    out = std::string(PQgetvalue(r.res, 0, 0));
+  }
+  if (r.res) PQclear(r.res);
+  return out;
+}
+
 std::optional<RunRecord> PgRunStore::get_run(const std::string& run_id) {
   auto r = exec_params(
       "SELECT id, org_id, workflow_id::text, "

@@ -277,6 +277,26 @@ class RunStore {
   virtual std::optional<WorkerRecord> get_worker(
       const std::string& worker_id) = 0;
 
+  // --- Idempotency ledger (Milestone 33) ---
+
+  // Claim a logical operation key durably. Backed by idempotency_records,
+  // whose `key` column is the PRIMARY KEY, so a second claim with the same
+  // key is a no-op conflict (INSERT ... ON CONFLICT DO NOTHING). Returns true
+  // only when THIS call created the row (first claim wins); a duplicate
+  // delivery returns false and the caller must reuse the stored response
+  // instead of re-applying the operation. `response_json` is the committed
+  // output of the operation (empty => NULL), readable via
+  // get_idempotency_response. `run_id` is recorded for audit (empty => NULL).
+  virtual bool claim_idempotency_key(const std::string& key,
+                                     const std::string& run_id,
+                                     const std::string& response_json) = 0;
+
+  // Read the committed response for a previously claimed idempotency key.
+  // nullopt when the key was never claimed. Used to reuse a previously
+  // committed successful output when a duplicate delivery arrives (M33 step 4).
+  virtual std::optional<std::string> get_idempotency_response(
+      const std::string& key) = 0;
+
   // --- Audit readers (tests / observability) ---
   virtual std::optional<RunRecord> get_run(const std::string& run_id) = 0;
   virtual std::optional<NodeRunRecord> get_node_run(
@@ -369,6 +389,11 @@ class InMemoryRunStore final : public RunStore {
 
   std::optional<WorkerRecord> get_worker(const std::string& worker_id) override;
 
+  bool claim_idempotency_key(const std::string& key, const std::string& run_id,
+                             const std::string& response_json) override;
+  std::optional<std::string> get_idempotency_response(
+      const std::string& key) override;
+
   std::optional<RunRecord> get_run(const std::string& run_id) override;
   std::optional<NodeRunRecord> get_node_run(
       const std::string& run_id, const std::string& node_id) override;
@@ -395,6 +420,10 @@ class InMemoryRunStore final : public RunStore {
   // Milestone 31: attempt lease evidence + worker registry.
   std::map<AttemptKey, AttemptLeaseRecord> attempt_leases_;
   std::map<std::string, WorkerRecord> workers_;
+  // Milestone 33: idempotency ledger. key -> committed response JSON. The
+  // map key is the unique constraint: a second claim with the same key is a
+  // no-op (mirrors idempotency_records.key PRIMARY KEY).
+  std::map<std::string, std::string> idempotency_;
 };
 
 }  // namespace evo

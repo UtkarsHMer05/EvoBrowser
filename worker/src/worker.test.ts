@@ -31,6 +31,8 @@ import {
 } from "./redis-streams";
 import { Worker } from "./worker";
 import { syntheticExecutor } from "./synthetic-executor";
+import type { NodeType } from "@/features/workflows/nodes/node-registry";
+import type { WorkflowGraph } from "@/lib/db/schema";
 
 const endpoint = process.env.EVO_PHASE2_REDIS ?? "127.0.0.1:6390";
 const [host, portStr] = endpoint.split(":");
@@ -672,6 +674,92 @@ async function main() {
     assert.equal(executedHeld, false, "held-lease task never executed");
     ok("m31: unacquirable lease -> task skipped + acked, not executed");
     await wHeld.stop();
+  }
+
+  // --- M33: duplicate task delivery -> exactly one side effect -------------
+  // Redis Streams is at-least-once: the SAME task envelope can be delivered
+  // twice (redelivery after a lost ack / crash). The worker executes both
+  // deliveries, but the node-executor-adapter derives a deterministic
+  // idempotency key from the logical operation (run + node) and the email sink
+  // (mirroring Resend's provider-side dedup) returns the cached result on a
+  // repeated key WITHOUT a new send. So a duplicate delivery of a side-effecting
+  // node produces exactly ONE actual side effect. This is the M33 step 8
+  // "duplicate task delivery" scenario with a fake side-effect count (step 7).
+  {
+    const { createNodeExecutorAdapter } = await import(
+      "./node-executor-adapter"
+    );
+    const { createEmailTestSink } = await import("./email-test-sink");
+
+    const graph: WorkflowGraph = {
+      nodes: [
+        {
+          id: "send_email_1",
+          type: "step",
+          position: { x: 0, y: 0 },
+          data: {
+            type: "send-email",
+            kind: "action",
+            title: "send_email_1",
+            values: {
+              to: "ops@example.com",
+              subject: "Digest",
+              body: "hello",
+            },
+          },
+        },
+      ],
+      edges: [],
+    };
+
+    const emailSink = createEmailTestSink();
+    const adapter = createNodeExecutorAdapter({
+      loadVersion: async () => ({ workflowVersionId: "wfv-m33", graph }),
+      loadPredecessorOutputs: async () => ({}),
+      executorOverrides: {
+        "send-email": emailSink.executor,
+      } as Partial<Record<NodeType, typeof emailSink.executor>>,
+    });
+
+    const w = new Worker({
+      redis: redisCfg,
+      envPrefix,
+      group,
+      workerId: "w-m33",
+      executor: adapter,
+      heartbeatIntervalMs: 60_000,
+      log: silent,
+    });
+    await w.start();
+
+    // Publish the SAME task envelope twice (duplicate delivery of attempt 1).
+    const dupTask = await encodeTaskEnvelope({
+      runId: "run-m33-dup",
+      orgId: "org_m23",
+      nodeId: "send_email_1",
+      attemptNumber: 1,
+      nodeType: "send-email",
+      nodePayloadJson: "{}",
+    });
+    const resultsBefore = await publisher.streamLength(resultStream);
+    await publisher.publish(taskStream, dupTask);
+    await publisher.publish(taskStream, dupTask);
+
+    // Both deliveries hand off a result (at-least-once; the scheduler dedupes
+    // results by attempt id), but the side effect happens exactly once.
+    await waitFor(
+      async () =>
+        (await publisher.streamLength(resultStream)) >= resultsBefore + 2,
+      5000,
+      "m33: both duplicate deliveries handed off results",
+    );
+    assert.equal(
+      emailSink.sent.length,
+      1,
+      "m33: duplicate task delivery sends exactly ONE email",
+    );
+    ok("m33: duplicate task delivery -> exactly one side effect (fake sink count)");
+    await w.stop();
   }
 
   await publisher.disconnect();

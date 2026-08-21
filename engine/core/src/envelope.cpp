@@ -52,6 +52,14 @@ AttemptKey attempt_key_of(const execution::v1::ResultEnvelope& env) {
   return AttemptKey{env.run_id(), env.node_id(), env.attempt_number()};
 }
 
+std::string result_idempotency_key(const execution::v1::ResultEnvelope& env) {
+  // Milestone 33: logical operation key = operation semantics + attempt
+  // identity. Deterministic, so a duplicate delivery of the same result claims
+  // the same key and is suppressed by the idempotency ledger's unique key.
+  return "result:" + env.run_id() + ":" + env.node_id() + ":" +
+         std::to_string(env.attempt_number());
+}
+
 bool ResultDedupe::first_time(const AttemptKey& key) {
   std::lock_guard lock(mu_);
   return seen_.insert(key).second;

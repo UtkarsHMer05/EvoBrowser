@@ -74,6 +74,13 @@ struct AttemptKey {
 
 AttemptKey attempt_key_of(const execution::v1::ResultEnvelope& env);
 
+// Milestone 33: the DURABLE logical operation key for applying a result.
+// Derived from the attempt identity (run_id + node_id + attempt_number) plus
+// the operation semantics ("result application"), so a duplicate delivery of
+// the same result claims the same key and is suppressed by the idempotency
+// ledger's unique constraint. Deterministic: same envelope => same key.
+std::string result_idempotency_key(const execution::v1::ResultEnvelope& env);
+
 // Dedupe repeated result events by attempt id. Thread-safe. `first_time`
 // returns true exactly once per attempt id; repeated events return false and
 // must be ignored by the caller.

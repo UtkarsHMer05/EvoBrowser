@@ -412,6 +412,45 @@ int main() {
           "m32: retry run finalized");
   }
 
+  // --- M33: idempotency ledger (unique constraint + response reuse) ---------
+  {
+    const std::string key =
+        "result:m33-pgtest:node-a:1-" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+
+    // First claim creates the record and reports applied.
+    check(store.claim_idempotency_key(key, "m33-run", "{\"ok\":true}"),
+          "m33: first claim creates the idempotency record");
+
+    // Duplicate claim hits the PRIMARY KEY unique constraint: no-op, reports
+    // not-applied. This is the durable duplicate-suppression gate (M33 step 2).
+    check(!store.claim_idempotency_key(key, "m33-run", "{\"other\":1}"),
+          "m33: duplicate claim suppressed by unique constraint");
+
+    // The committed response of the FIRST claim is reusable (M33 step 4):
+    // a duplicate delivery reads back the original output, never the later one.
+    auto resp = store.get_idempotency_response(key);
+    check(resp.has_value() && resp->find("\"ok\"") != std::string::npos &&
+              resp->find("other") == std::string::npos,
+          "m33: duplicate reuses the first committed response");
+
+    // Unknown key has no response.
+    check(!store.get_idempotency_response(key + "-missing").has_value(),
+          "m33: unknown key has no stored response");
+
+    // Empty key is rejected (invalid identifier, M33 adversarial).
+    check(!store.claim_idempotency_key("", "m33-run", "{}"),
+          "m33: empty key rejected");
+
+    // A claim with no response (failure result) still claims the key.
+    const std::string fkey = key + "-fail";
+    check(store.claim_idempotency_key(fkey, "m33-run", ""),
+          "m33: failure claim (empty response) still claims the key");
+    auto fresp = store.get_idempotency_response(fkey);
+    check(fresp.has_value() && fresp->empty(),
+          "m33: failure claim stores an empty response");
+  }
+
   if (failures == 0) {
     printf("\nALL M26 PG RUN STORE TESTS PASSED!\n");
     return 0;

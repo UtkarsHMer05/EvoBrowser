@@ -140,6 +140,11 @@ class PgRunStore final : public RunStore {
 
   std::optional<WorkerRecord> get_worker(const std::string& worker_id) override;
 
+  bool claim_idempotency_key(const std::string& key, const std::string& run_id,
+                             const std::string& response_json) override;
+  std::optional<std::string> get_idempotency_response(
+      const std::string& key) override;
+
   std::optional<RunRecord> get_run(const std::string& run_id) override;
   std::optional<NodeRunRecord> get_node_run(
       const std::string& run_id, const std::string& node_id) override;

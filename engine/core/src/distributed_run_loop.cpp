@@ -401,8 +401,22 @@ bool DistributedRunLoop::apply_result(
   const NodeState ns = state_.node_state(node_id);
   if (ns != NodeState::Running) return false;
 
-  // 3. Dedupe by attempt id (M22): repeated results are ignored.
+  // 3. Dedupe by attempt id (M22): repeated results are ignored. This is the
+  //    fast path for same-process redelivery (no durable round-trip).
   if (!dedupe_.first_time(attempt_key_of(result))) return false;
+
+  // 3b. Durable idempotency claim (M33 step 3): the in-memory dedupe above is
+  //    lost on a scheduler restart, so the authoritative duplicate-suppression
+  //    gate is the durable ledger. The logical operation key is derived from
+  //    the attempt identity; the ledger's unique constraint makes a second
+  //    claim a no-op. A duplicate delivery (e.g. redelivered after a restart)
+  //    therefore never re-applies the result. The claim records the committed
+  //    output for successes so a duplicate can reuse it (M33 step 4).
+  if (!store_.claim_idempotency_key(result_idempotency_key(result),
+                                    config_.run_id,
+                                    result.completed() ? result.output() : "")) {
+    return false;  // already applied (duplicate suppressed)
+  }
 
   // 4. Late-result rule (M22): an older attempt never overwrites newer
   // logical state (attempt-aware; retries are M32).

@@ -321,6 +321,27 @@ std::optional<WorkerRecord> InMemoryRunStore::get_worker(
   return it->second;
 }
 
+// --- Milestone 33: idempotency ledger ---------------------------------------
+
+bool InMemoryRunStore::claim_idempotency_key(const std::string& key,
+                                             const std::string& run_id,
+                                             const std::string& response_json) {
+  (void)run_id;  // audit-only in the durable store
+  std::lock_guard lock(mu_);
+  if (key.empty()) return false;
+  // First claim wins (mirrors INSERT ... ON CONFLICT DO NOTHING on the key's
+  // PRIMARY KEY); a duplicate claim is a no-op that reports not-applied.
+  return idempotency_.emplace(key, response_json).second;
+}
+
+std::optional<std::string> InMemoryRunStore::get_idempotency_response(
+    const std::string& key) {
+  std::lock_guard lock(mu_);
+  auto it = idempotency_.find(key);
+  if (it == idempotency_.end()) return std::nullopt;
+  return it->second;
+}
+
 std::optional<RunRecord> InMemoryRunStore::get_run(
     const std::string& run_id) {
   std::lock_guard lock(mu_);

@@ -14,6 +14,14 @@ import { sendEmail } from "./send-email";
 export type NodeContext = {
   values: Record<string, string>;
   getStagehand: () => Promise<Stagehand>;
+  /**
+   * Milestone 33: a deterministic per-attempt idempotency key derived by the
+   * distributed worker from the attempt identity (run + node + attempt). Only
+   * side-effecting executors consume it (send-email forwards it to the
+   * provider so a duplicate delivery cannot double-send). Undefined on the
+   * legacy Trigger.dev path, which keeps its existing behavior unchanged.
+   */
+  idempotencyKey?: string;
 };
 
 export type NodeExecutor = (ctx: NodeContext) => Promise<unknown>;
@@ -35,6 +43,11 @@ export const nodeExecutors: Partial<Record<NodeType, NodeExecutor>> = {
     }),
   agent: async ({ values, getStagehand }) =>
     agent({ stagehand: await getStagehand(), instruction: values.instruction }),
-  "send-email": async ({ values }) =>
-    sendEmail({ to: values.to, subject: values.subject, body: values.body }),
+  "send-email": async ({ values, idempotencyKey }) =>
+    sendEmail({
+      to: values.to,
+      subject: values.subject,
+      body: values.body,
+      idempotencyKey,
+    }),
 } satisfies Record<ActionNodeType, NodeExecutor>;

@@ -133,8 +133,21 @@ export function createNodeExecutorAdapter(
             );
           };
 
+    // Milestone 33: deterministic idempotency key for side-effecting
+    // executors. Derived from the LOGICAL OPERATION identity (run + node), NOT
+    // the attempt number, so it is stable across re-dispatches. This is what
+    // closes the crash window: if a worker performs the side effect and dies
+    // before the result is durably applied, the scheduler may reap the lease
+    // and re-dispatch the node as a NEW attempt — but the re-execution reuses
+    // the SAME key, so the provider (Resend) returns the original effect
+    // instead of performing it twice. A whole-workflow re-run is a NEW run id
+    // => a new key (intended fresh send). Only side-effecting executors consume
+    // it (send-email forwards it to the provider); pure/read executors ignore
+    // it, so the key never changes their behavior.
+    const idempotencyKey = `side-effect:${task.runId}:${task.nodeId}`;
+
     try {
-      const output = await executor({ values, getStagehand });
+      const output = await executor({ values, getStagehand, idempotencyKey });
       // 6. Opaque JSON output through the result envelope.
       return { completed: true, output: JSON.stringify(output ?? null) };
     } catch (err) {

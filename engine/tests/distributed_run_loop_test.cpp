@@ -452,6 +452,27 @@ int main() {
     auto nr = store.get_node_run("run-dup", "a");
     check(nr.has_value() && nr->status == evo::node_status::kSucceeded,
           "node a terminal succeeded exactly once");
+
+    // M33: the durable idempotency ledger holds EXACTLY ONE claim for node a's
+    // applied result, and the committed output is reusable. The dup storm
+    // published the same result many times; the ledger's unique key collapsed
+    // them all to the first application. Whichever result won the race (the
+    // injected dup or the worker's legitimate one), the ledger must store
+    // exactly the output the node persisted — the first committed output.
+    const std::string akey =
+        evo::result_idempotency_key([] {
+          evo::execution::v1::ResultEnvelope e;
+          e.set_run_id("run-dup");
+          e.set_node_id("a");
+          e.set_attempt_number(1);
+          return e;
+        }());
+    auto aresp = store.get_idempotency_response(akey);
+    check(aresp.has_value(),
+          "m33: applied result claimed a durable idempotency key");
+    check(aresp.has_value() && nr.has_value() &&
+              *aresp == nr->output_json,
+          "m33: ledger stores the first committed output (reusable)");
   }
 
   // --- 3. Identity validation: unknown node / wrong run ignored -------------

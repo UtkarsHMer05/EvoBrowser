@@ -251,6 +251,69 @@ async function main() {
     ok("unknown node id -> permanent failure (no retry)");
   }
 
+  // --- M33: side-effect idempotency under duplicate delivery ---------------
+  // The adapter derives a deterministic idempotency key from the LOGICAL
+  // operation (run + node), stable across attempts. The email sink mirrors
+  // Resend's provider-side dedup: a repeated key returns the cached result
+  // WITHOUT a new send. So a duplicate delivery / crash-recovery re-dispatch
+  // of the same node produces exactly ONE actual side effect.
+  {
+    emailSink.reset();
+    const mkTask = (attemptNumber: number): TaskEnvelopeView => ({
+      runId: "run-m33",
+      workflowVersionId: "wfv-test",
+      orgId: "org",
+      nodeId: "send_email_1",
+      attemptNumber,
+      resourceClass: 0,
+      affinityKey: "",
+      traceId: "",
+      spanId: "",
+      nodeType: "send-email",
+      nodePayloadJson: "",
+    });
+
+    // First delivery: one real send.
+    const r1 = await adapter(mkTask(1), abort);
+    assert.equal(r1.completed, true, "m33: first delivery completes");
+    assert.equal(emailSink.sent.length, 1, "m33: first delivery sends once");
+
+    // Duplicate delivery of the SAME attempt (at-least-once redelivery): the
+    // same logical key is reused -> provider dedupes -> no second send.
+    const r2 = await adapter(mkTask(1), abort);
+    assert.equal(r2.completed, true, "m33: duplicate delivery completes");
+    assert.equal(r2.output, r1.output, "m33: duplicate reuses committed output");
+    assert.equal(
+      emailSink.sent.length,
+      1,
+      "m33: duplicate delivery does NOT double-send",
+    );
+
+    // Crash-recovery re-dispatch as a NEW attempt (lease reap, M31): the key is
+    // derived from run+node (not attempt), so it is STILL the same key -> the
+    // provider returns the original effect instead of sending again. This is
+    // what closes the crash window between side effect and durable commit.
+    const r3 = await adapter(mkTask(2), abort);
+    assert.equal(r3.completed, true, "m33: re-dispatched attempt completes");
+    assert.equal(r3.output, r1.output, "m33: re-dispatch reuses committed output");
+    assert.equal(
+      emailSink.sent.length,
+      1,
+      "m33: crash-recovery re-dispatch does NOT double-send",
+    );
+
+    // A whole-workflow re-run is a NEW run id => a NEW key => a fresh send.
+    const rerunTask = { ...mkTask(1), runId: "run-m33-rerun" };
+    const r4 = await adapter(rerunTask, abort);
+    assert.equal(r4.completed, true, "m33: re-run completes");
+    assert.equal(
+      emailSink.sent.length,
+      2,
+      "m33: a new run (re-run) sends a fresh email",
+    );
+    ok("m33: side-effect idempotency — dup/re-dispatch dedupe, re-run re-sends");
+  }
+
   console.log(
     `\nALL M24 WORKER-EXECUTOR COMPATIBILITY TESTS PASSED! (${passed}/${passed})`,
   );

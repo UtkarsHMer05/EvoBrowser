@@ -42,7 +42,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M30 | Implement end-to-end cancellation across app, scheduler, queue, worker, and browser | ✅ DONE | `200386a` |
 | M31 | Implement worker registry, leases, and heartbeats | ✅ DONE | `4543443` |
 | M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `dcad613` |
-| M33 | Implement idempotency and duplicate suppression | 🚧 IN PROGRESS (claimed by session B) | — |
+| M33 | Implement idempotency and duplicate suppression | ✅ DONE | `RECORD_AFTER_COMMIT` |
 
 ---
 
@@ -1995,3 +1995,131 @@ Commit subjects follow `phase2(mNN): <description>`.
   requires explicit approval).
 - **COMMIT:** `dcad613` — `phase2(m32): add node retries backoff and dead lettering`
 - **NEXT:** M33 — Implement idempotency and duplicate suppression.
+
+## M33 — Implement idempotency and duplicate suppression
+
+**Status:** ✅ DONE — at-least-once delivery is now safe to discuss honestly: duplicate result application is suppressed by a durable ledger, and duplicate/crash-recovered side-effecting deliveries produce exactly one external effect via provider-side idempotency.
+
+- **BASE_SHA:** `f67b93b` (phase2 branch; M32 SHA recorded).
+- **What was inspected:** master prompt M33 spec (steps 1–19, no-go list,
+  validation, exit criteria), the existing dedup landscape —
+  `engine/core/src/distributed_run_loop.cpp` (`apply_result`, in-memory
+  `ResultDedupe`, late-result rule), `engine/core/{include,src}/evo/envelope.*`
+  (attempt identity + dedupe), `engine/core/{include,src}/run_store.*` +
+  `engine/pg/{include,src}/pg_run_store.*` (at-most-once completion,
+  parameterized SQL), `lib/db/schema.ts` + migration 0001 (the pre-existing
+  `idempotency_records` table), `worker/src/{worker,node-executor-adapter,
+  email-test-sink}.ts`, `features/workflows/nodes/{node-executors,send-email}.ts`,
+  the installed Resend SDK 6.17.2 (`idempotencyKey` option) + Resend
+  send-email docs (Idempotency-Key header confirmed supported),
+  `engine/tests/{distributed_run_loop_test,pg_run_store_test}.cpp`,
+  `worker/src/{worker,node-executor-adapter}.test.ts`,
+  `docs/phase2/DECISIONS.md`.
+- **What changed:**
+  - **Logical operation key (M33 step 1):** `result_idempotency_key()` in
+    `envelope.{hpp,cpp}` derives `result:{run_id}:{node_id}:{attempt_number}`
+    from the attempt identity — deterministic, so a duplicate delivery of the
+    same result claims the same key.
+  - **Durable idempotency ledger (M33 step 2):** `claim_idempotency_key` +
+    `get_idempotency_response` added to the `RunStore` interface and both
+    implementations. Backed by the EXISTING `idempotency_records` table
+    (M19; `key` is the PRIMARY KEY) — `INSERT ... ON CONFLICT (key) DO
+    NOTHING`, so first claim wins and a duplicate affects 0 rows. NO new
+    migration was needed. The committed response is stored and readable for
+    reuse.
+  - **Scheduler duplicate-result suppression (M33 step 3):** `apply_result`
+    now claims the durable ledger AFTER the in-memory `ResultDedupe` fast path
+    and BEFORE the late-result rule. The in-memory set stays the same-process
+    fast path; the durable ledger is the authoritative gate that survives a
+    scheduler restart. A duplicate result never re-applies, never
+    double-unlocks successors, never double-frees a resource slot.
+  - **Reuse committed output (M33 step 4):** a duplicate SUCCESS delivery's
+    output is stored in the ledger; `get_idempotency_response` returns the
+    first committed output (asserted equal to the node's persisted output).
+  - **send-email provider-side idempotency (M33 step 5):** Resend's send-email
+    endpoint supports an `Idempotency-Key` header (confirmed in the installed
+    SDK 6.17.2 `idempotencyKey` option + Resend docs). `sendEmail` now accepts
+    an optional `idempotencyKey` and forwards it; `NodeContext` carries it;
+    the node-executor-adapter derives a deterministic key
+    `side-effect:{run_id}:{node_id}` from the LOGICAL OPERATION (run + node),
+    NOT the attempt number. Undefined key (legacy Trigger.dev path) => Resend's
+    default behavior, unchanged.
+  - **Crash window closed by design (M33 step 6):** because the side-effect key
+    is stable across attempts, a worker that performs the effect and dies before
+    the result is durably applied gets its lease reaped (M31) and the node
+    re-dispatched as a NEW attempt — but the re-execution reuses the SAME key,
+    so the provider returns the original effect instead of sending twice. The
+    residual ambiguity (a single in-flight provider call whose outcome is not
+    locally knowable, e.g. timeout after provider commit) is documented, not
+    hidden; retrying with the same key is safe.
+  - **Deterministic fake email sink (M33 step 7):** `createEmailTestSink` now
+    mirrors Resend's provider-side dedup — a repeated `idempotencyKey` returns
+    the cached result WITHOUT recording a new send. Tests count ACTUAL side
+    effects via `sent.length`. Output shape unchanged (M24 parity preserved).
+  - **Duplicate classes injected (M33 step 8):** duplicate task delivery
+    (worker executes both, provider dedupes => 1 send), duplicate result
+    delivery (ledger suppresses => 1 application), crash-after-result /
+    lease-reap re-dispatch (same side-effect key => 1 send), lost-ack
+    redelivery (dup-storm + at-least-once transport).
+  - **Tests added:**
+    - C++ `distributed_run_loop_test`: extended the dup-storm test with durable
+      ledger evidence (exactly one claim for the applied result; ledger response
+      == node's persisted output).
+    - C++ `pg_run_store_test`: M33 ledger section — first claim creates,
+      duplicate claim suppressed by the PK unique constraint, duplicate reuses
+      the first committed response, unknown key has none, empty key rejected,
+      failure claim (empty response) still claims. vs live PG.
+    - TS `node-executor-adapter.test`: M33 side-effect idempotency — first
+      delivery sends once, duplicate delivery does NOT double-send (reuses
+      output), crash-recovery re-dispatch (new attempt) does NOT double-send,
+      a new run (re-run) sends a fresh email.
+    - TS `worker.test`: M33 duplicate task delivery over real Redis — the SAME
+      task envelope published twice hands off two results (at-least-once) but
+      the fake sink records exactly ONE send.
+- **Evidence table (M33 step 9) — suppressed vs. remaining ambiguity:**
+  - SUPPRESSED: duplicate result application (durable ledger, survives
+    restart); duplicate successor unlock; duplicate resource-slot free;
+    duplicate task-delivery side effect (provider key); crash-recovery
+    re-dispatch side effect (same logical key).
+  - REMAINING AMBIGUITY: a single ambiguous in-flight provider call (e.g. a
+    network timeout after the provider committed but before the worker saw the
+    response) — the outcome is not locally knowable. Retrying with the same key
+    is safe (provider dedupes). This is inherent to at-least-once + external
+    side effects; we do NOT claim exactly-once (M33 no-go).
+- **Concurrency/distributed correctness:** the run loop is single-threaded and
+  owns result application; the ledger claim is a single conditional INSERT
+  (unique constraint is the invariant guard). Two workers cannot both apply the
+  same result (the ledger admits one). The side-effect key is derived
+  deterministically from the envelope, so any worker re-executing the same
+  logical operation uses the same key. Duplicate deliveries are acked (consumed,
+  never reprocessed). A late result is still bounded by the late-result rule.
+- **Timestamps:** no new timestamps introduced by M33; `idempotency_records.
+  created_at` is DB `now()` (wall-clock). Result/side-effect keys carry no
+  timestamps.
+- **Phase-1 preservation:** legacy Trigger.dev engine untouched; `sendEmail`
+  without a key keeps Resend's default behavior; no Phase-1 default behavior
+  changed; no test removed; browser credentials stay server/worker-only. No new
+  migration; the reused table is additive from M19 and local-only.
+- **No-go compliance:** never claim exactly-once (evidence table states the
+  residual ambiguity); the ledger alone does not eliminate every external
+  side-effect ambiguity (documented); no performance numbers invented; no future
+  component marked implemented; no secret/credential committed.
+- **Validation:**
+  - CMake build → ✅ clean; `ctest` (Release) → ✅ 19/19
+  - ASan+UBSan → ✅ 19/19; TSan → ✅ 19/19 (no data races)
+  - `npm test` → ✅ exit 0 across 13 suites (worker 13/13 incl. 1 new M33,
+    adapter 5/5 incl. 1 new M33, all prior suites green)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅ (0 errors, 0 warnings)
+  - Postgres audit assertions → ✅ (pg_run_store M33 ledger checks vs live PG)
+- **Known limitations:** `grpc_integration` uses `pick_free_port()` (pre-existing
+  M17 TOCTOU pattern) — passes consistently on re-run, not M33-related. The
+  single ambiguous in-flight provider call remains inherently ambiguous
+  (documented above). Provider-side idempotency is wired for `send-email` only
+  (the sole external side-effect node); browser/pure nodes are idempotent by
+  nature or read-only. Duplicate-suppression throughput benchmarking deferred to
+  M39. Live Resend idempotency (a real API call) is covered by the mocked-sink
+  suites; live E2E deferred to the final campaign.
+- **Human action:** none (no new migration; reused the M19 local table; Neon
+  untouched).
+- **COMMIT:** `RECORD_AFTER_COMMIT` — `phase2(m33): add idempotency and duplicate suppression`
+- **NEXT:** M34 — Implement worker crash recovery and failure injection.
