@@ -47,6 +47,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `fb5313e` |
 | M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `d490b7b` |
 | M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `02cc98e` |
+| M38 | Add observability, service security, and CI quality gates | 🚧 IN PROGRESS (claimed by session B) | — |
 
 ---
 
