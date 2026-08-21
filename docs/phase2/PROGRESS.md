@@ -44,6 +44,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M32 | Implement node-level retry policy, backoff, jitter, dead-lettering | ✅ DONE | `dcad613` |
 | M33 | Implement idempotency and duplicate suppression | ✅ DONE | `2887e88` |
 | M34 | Implement worker crash recovery and failure injection | ✅ DONE | `b6cff19` |
+| M35 | Implement scheduler restart recovery and durable reconciliation | 🚧 IN PROGRESS (claimed by session B) | — |
 
 ---
 
