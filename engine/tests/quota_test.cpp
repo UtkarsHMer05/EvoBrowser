@@ -16,9 +16,19 @@
 //  10. Counters track admitted/rejected/acquired/deferred/released.
 //  11. Double-release clamps at zero (never negative).
 //  12. to_json_string emits a parseable snapshot.
+//
+// M37 (fair scheduling):
+//  13. Fairness off => first-come-first-served (backwards compatible).
+//  14. Fairness on, equal weights => least-served org wins a free slot.
+//  15. Weighted fairness => a weight-2 org earns 2 grants per 1 for weight-1.
+//  16. Starvation resistance => a waiting org is served within bounded grants.
+//  17. Demand cleared on grant + stale demand dropped (no hostage slot).
+//  18. Fairness applies only to capped classes (uncapped unaffected).
 
+#include <chrono>
 #include <cstdio>
 #include <string>
+#include <thread>
 
 #include "evo/json.hpp"
 #include "evo/quota.hpp"
@@ -230,6 +240,161 @@ int main() {
               "json snapshot tracks per-org depth");
       }
     }
+  }
+
+  // ===========================================================================
+  // M37: fair scheduling (weighted least-served-first over fresh demand).
+  // All scenarios are deterministic: single-threaded, no sleeps except where a
+  // demand-timeout must elapse (test 17).
+  // ===========================================================================
+
+  // --- 13. Fairness OFF => first-come-first-served (backwards compatible) ---
+  {
+    QuotaConfig cfg;
+    cfg.global_class_capacity[ResourceClass::Browser] = 1;
+    cfg.fair_scheduling = false;  // default M36 behavior
+    TenantQuotaGate gate(cfg);
+    check(gate.acquire_task("org-a", ResourceClass::Browser),
+          "fair off: org-a acquires the only slot");
+    check(!gate.acquire_task("org-b", ResourceClass::Browser),
+          "fair off: org-b deferred (class full)");
+    gate.release_task("org-a", ResourceClass::Browser);
+    check(gate.acquire_task("org-b", ResourceClass::Browser),
+          "fair off: org-b acquires after release (FCFS)");
+    check(gate.counters().fair_order_deferrals == 0,
+          "fair off: no fair-order deferrals counted");
+  }
+
+  // --- 14. Fairness ON, equal weights => least-served org wins --------------
+  {
+    QuotaConfig cfg;
+    cfg.global_class_capacity[ResourceClass::Browser] = 1;
+    cfg.fair_scheduling = true;
+    TenantQuotaGate gate(cfg);
+    // org-a takes the slot first (it is the only demand => recipient).
+    check(gate.acquire_task("org-a", ResourceClass::Browser),
+          "fair eq: org-a acquires (only demand)");
+    // org-b registers demand while the class is full (deferred, tracked).
+    check(!gate.acquire_task("org-b", ResourceClass::Browser),
+          "fair eq: org-b deferred while full (demand registered)");
+    check(gate.demand_count(ResourceClass::Browser) == 1,
+          "fair eq: org-b demand tracked (org-a cleared on grant)");
+    // org-a releases and re-polls (re-registers demand). Now both wait; org-b
+    // is least-served (0 vs 1) so it must win the free slot.
+    gate.release_task("org-a", ResourceClass::Browser);
+    check(!gate.acquire_task("org-a", ResourceClass::Browser),
+          "fair eq: org-a deferred in favor of least-served org-b");
+    check(gate.acquire_task("org-b", ResourceClass::Browser),
+          "fair eq: least-served org-b wins the free slot");
+    check(gate.counters().fair_order_deferrals == 1,
+          "fair eq: one fair-order deferral counted");
+  }
+
+  // --- 15. Weighted fairness => weight-2 earns 2 grants per 1 for weight-1 --
+  {
+    QuotaConfig cfg;
+    cfg.global_class_capacity[ResourceClass::Browser] = 1;
+    cfg.fair_scheduling = true;
+    cfg.org_weights["org-a"] = 2;  // explicit non-equal weight (M37 step 4)
+    cfg.org_weights["org-b"] = 1;
+    TenantQuotaGate gate(cfg);
+    check(gate.weight_for("org-a") == 2 && gate.weight_for("org-b") == 1,
+          "weighted: explicit weights read back");
+    check(gate.weight_for("org-c") == 1, "weighted: absent org defaults to 1");
+
+    // Both orgs register demand; org-a (weight 2) should earn the first two
+    // grants, org-b the third (served/weight: a=0/2, b=0/1 -> tie, a wins by
+    // id; then a=1/2 < b=0/1? 1*1 < 0*2 false -> b wins; then a=1/2 vs b=1/1
+    // -> 1*1 < 1*2 true -> a wins). Sequence: a, b, a.
+    check(gate.acquire_task("org-a", ResourceClass::Browser),
+          "weighted: grant 1 -> org-a");
+    check(!gate.acquire_task("org-b", ResourceClass::Browser),
+          "weighted: org-b registers demand (deferred, full)");
+    gate.release_task("org-a", ResourceClass::Browser);
+    // Re-poll both: org-a served=1 weight=2 (0.5), org-b served=0 weight=1 (0).
+    // org-b is least-served => wins grant 2.
+    check(!gate.acquire_task("org-a", ResourceClass::Browser),
+          "weighted: grant 2 defers org-a (org-b least-served)");
+    check(gate.acquire_task("org-b", ResourceClass::Browser),
+          "weighted: grant 2 -> org-b");
+    gate.release_task("org-b", ResourceClass::Browser);
+    // Re-poll both: org-a served=1 weight=2 (0.5), org-b served=1 weight=1 (1).
+    // org-a is least-served => wins grant 3.
+    check(gate.acquire_task("org-a", ResourceClass::Browser),
+          "weighted: grant 3 -> org-a (0.5 < 1.0)");
+    check(gate.served_count("org-a", ResourceClass::Browser) == 2 &&
+              gate.served_count("org-b", ResourceClass::Browser) == 1,
+          "weighted: served counts a=2 b=1 over 3 grants");
+  }
+
+  // --- 16. Starvation resistance: waiting org served within bounded grants --
+  // A large tenant (org-a) with a deep backlog must not indefinitely starve a
+  // small tenant (org-b). With equal weights and capacity 1, org-b must be
+  // served at least once within the first 2 grants after it registers demand.
+  {
+    QuotaConfig cfg;
+    cfg.global_class_capacity[ResourceClass::Browser] = 1;
+    cfg.fair_scheduling = true;
+    TenantQuotaGate gate(cfg);
+    // org-a burns through several grants alone (deep backlog).
+    for (int i = 0; i < 5; ++i) {
+      check(gate.acquire_task("org-a", ResourceClass::Browser),
+            "starve: org-a acquires while alone");
+      gate.release_task("org-a", ResourceClass::Browser);
+    }
+    check(gate.served_count("org-a", ResourceClass::Browser) == 5,
+          "starve: org-a served 5 times before org-b arrives");
+    // org-b registers demand (deferred: class full from org-a's next acquire).
+    check(gate.acquire_task("org-a", ResourceClass::Browser),
+          "starve: org-a holds the slot");
+    check(!gate.acquire_task("org-b", ResourceClass::Browser),
+          "starve: org-b registers demand (deferred)");
+    gate.release_task("org-a", ResourceClass::Browser);
+    // org-a re-polls, but org-b (served 0) is now least-served vs org-a (5).
+    check(!gate.acquire_task("org-a", ResourceClass::Browser),
+          "starve: org-a deferred despite its backlog");
+    check(gate.acquire_task("org-b", ResourceClass::Browser),
+          "starve: org-b served within bounded grants (no starvation)");
+  }
+
+  // --- 17. Demand cleared on grant + stale demand dropped -------------------
+  {
+    QuotaConfig cfg;
+    cfg.global_class_capacity[ResourceClass::Browser] = 1;
+    cfg.fair_scheduling = true;
+    cfg.fair_demand_timeout_ms = 1;  // tiny window so staleness elapses fast
+    TenantQuotaGate gate(cfg);
+    check(gate.acquire_task("org-a", ResourceClass::Browser),
+          "demand: org-a acquires (demand cleared on grant)");
+    check(gate.demand_count(ResourceClass::Browser) == 0,
+          "demand: no waiting demand after a grant");
+    // org-b registers demand, then goes silent (stops polling). After the
+    // timeout its demand is stale and must be dropped, so org-a (re-polling)
+    // is not deferred in favor of the absent org-b.
+    check(!gate.acquire_task("org-b", ResourceClass::Browser),
+          "demand: org-b registers demand (deferred, full)");
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));  // > 1ms timeout
+    gate.release_task("org-a", ResourceClass::Browser);
+    check(gate.acquire_task("org-a", ResourceClass::Browser),
+          "demand: stale org-b demand dropped; org-a not held hostage");
+    check(gate.demand_count(ResourceClass::Browser) == 0,
+          "demand: stale entry removed from the demand map");
+  }
+
+  // --- 18. Fairness applies only to CAPPED classes --------------------------
+  {
+    QuotaConfig cfg;
+    cfg.global_class_capacity[ResourceClass::Browser] = 1;  // capped
+    // ExternalIo intentionally uncapped.
+    cfg.fair_scheduling = true;
+    TenantQuotaGate gate(cfg);
+    // Uncapped class: both orgs acquire freely (no starvation possible).
+    check(gate.acquire_task("org-a", ResourceClass::ExternalIo),
+          "capped-only: org-a acquires uncapped ExternalIo");
+    check(gate.acquire_task("org-b", ResourceClass::ExternalIo),
+          "capped-only: org-b acquires uncapped ExternalIo (no deferral)");
+    check(gate.counters().fair_order_deferrals == 0,
+          "capped-only: no fair-order deferrals on uncapped class");
   }
 
   if (failures == 0) {

@@ -1,0 +1,9 @@
+{
+  "metric": "Jain fairness index",
+  "workload_equal_jain_span": 0.993837,
+  "workload_equal_jain_served": 1,
+  "workload_unequal_jain_span": 0.997744,
+  "workload_unequal_jain_served": 1,
+  "tenants": 3,
+  "tasks_per_tenant": 4
+}

@@ -833,6 +833,10 @@ class ControlServiceImpl final
   //   EVO_QUOTA_MAX_INFLIGHT_TASKS_PER_ORG per-org in-flight task cap
   //   EVO_QUOTA_BROWSER_CAPACITY          global browser-session capacity
   //   EVO_QUOTA_EXTERNAL_IO_CAPACITY      global side-effect capacity
+  // M37 fair scheduling (opt-in; default off = M36 first-come-first-served):
+  //   EVO_FAIR_SCHEDULING                 "1" => weighted fair tenant selection
+  //   EVO_ORG_WEIGHTS                     "org-a:2,org-b:1" explicit weights
+  //   EVO_FAIR_DEMAND_TIMEOUT_MS          demand-freshness window (default 5000)
   evo::TenantQuotaGate quota_gate_{make_quota_config()};
 
   static evo::QuotaConfig make_quota_config() {
@@ -852,6 +856,28 @@ class ControlServiceImpl final
         std::atoi(env_or("EVO_QUOTA_EXTERNAL_IO_CAPACITY", "0").c_str());
     if (io_cap > 0) {
       cfg.global_class_capacity[evo::ResourceClass::ExternalIo] = io_cap;
+    }
+    // M37: fair scheduling is an explicit opt-in (default off preserves the
+    // M36 first-come-first-served behavior).
+    cfg.fair_scheduling = env_or("EVO_FAIR_SCHEDULING", "0") == "1";
+    cfg.fair_demand_timeout_ms =
+        std::atoll(env_or("EVO_FAIR_DEMAND_TIMEOUT_MS", "0").c_str());
+    // Explicit per-org weights: "org-a:2,org-b:1". Absent orgs default to 1.
+    const std::string weights = env_or("EVO_ORG_WEIGHTS", "");
+    std::size_t pos = 0;
+    while (pos < weights.size()) {
+      const std::size_t comma = weights.find(',', pos);
+      const std::string pair =
+          weights.substr(pos, comma == std::string::npos ? std::string::npos
+                                                         : comma - pos);
+      const std::size_t colon = pair.find(':');
+      if (colon != std::string::npos && colon > 0 && colon + 1 < pair.size()) {
+        const std::string org = pair.substr(0, colon);
+        const int w = std::atoi(pair.substr(colon + 1).c_str());
+        if (w >= 1) cfg.org_weights[org] = w;
+      }
+      if (comma == std::string::npos) break;
+      pos = comma + 1;
     }
     return cfg;
   }

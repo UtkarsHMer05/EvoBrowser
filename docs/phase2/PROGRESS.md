@@ -46,6 +46,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M34 | Implement worker crash recovery and failure injection | ✅ DONE | `b6cff19` |
 | M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `fb5313e` |
 | M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `d490b7b` |
+| M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `M37_SHA` |
 
 ---
 
@@ -2478,3 +2479,125 @@ Commit subjects follow `phase2(mNN): <description>`.
 - **Human action:** none (no new migration; no schema change; Neon untouched).
 - **COMMIT:** `d490b7b` — `phase2(m36): add tenant quotas and backpressure`
 - **NEXT:** M37 — Fair scheduling and starvation resistance.
+
+## M37 — Implement fair scheduling and starvation resistance
+
+**Status:** ✅ DONE — one tenant's backlog can no longer monopolize a contended
+resource class. Fair scheduling is an OPT-IN mode on the shared `TenantQuotaGate`
+(`fair_scheduling = true`): when a capped resource class has more demand than
+capacity, the gate grants the next slot to the least-served tenant (weighted
+least-served-first, a pull-based weighted-round-robin analog), so a small tenant
+is served within a bounded number of grants instead of waiting behind a large
+tenant's whole backlog. Default remains M36 FCFS (backwards compatible).
+
+- **BASE_SHA:** `91c5df2` (phase2 branch; M36 docs SHA).
+- **What was inspected:** master prompt M37 spec (steps 1–18, no-go list,
+  validation, exit criteria), `engine/core/include/evo/quota.hpp` +
+  `engine/core/src/quota.cpp` (M36 gate), `engine/core/src/distributed_run_loop.cpp`
+  (dispatch_ready / acquire_quota_slot / main-loop re-examination),
+  `engine/core/src/execution_policy.cpp` (ResourceClass mapping + browser
+  affinity key), `engine/app/grpc_service.cpp` (make_quota_config env wiring),
+  `engine/tests/distributed_run_loop_test.cpp` (tests 24–27 helpers),
+  `engine/proto/evo/execution.proto` (TaskEnvelope.became_ready_at),
+  `docs/phase2/BENCHMARK_METHODOLOGY.md` (Jain's index + artifact format).
+- **What changed:**
+  - **`engine/core/include/evo/quota.hpp` + `engine/core/src/quota.cpp`:**
+    `QuotaConfig` gains `fair_scheduling` (opt-in; default false = M36 FCFS),
+    `org_weights` (absent => weight 1), `fair_demand_timeout_ms` (0 => default
+    5000ms). `acquire_task` (fair path, capped classes only): registers/refreshes
+    the org's demand FIRST, then — if the class still has a free slot — picks the
+    recipient via `fair_recipient_locked`: drop stale demand (older than the
+    timeout), then choose min `served/weight` via cross-multiplication
+    (`served * best_weight < best_served * weight`), ties broken by org-id
+    iteration order. If the chosen recipient is not the caller, the caller is
+    DEFERRED (`fair_order_deferrals` counted) and re-examines next loop iteration.
+    On grant the org's `served_` count increments and its demand is cleared
+    (liveness: a granted tenant stops blocking others). `served_count`,
+    `demand_count`, `weight_for` accessors; `QuotaCounters.fair_order_deferrals`;
+    `to_json_string` includes fair_scheduling, per-org weight, served_by_class.
+  - **`engine/app/grpc_service.cpp`:** `make_quota_config` parses
+    `EVO_FAIR_SCHEDULING` (bool), `EVO_FAIR_DEMAND_TIMEOUT_MS`, and
+    `EVO_ORG_WEIGHTS` (`"org-a:2,org-b:1"` format; absent => weight 1).
+  - **`engine/tests/quota_test.cpp` (tests 13–18):** fairness off = FCFS; equal
+    weights least-served wins; weighted (weight-2 earns 2 per 1; sequence a,b,a);
+    starvation resistance (org-a served 5x, org-b then served within bounded
+    grants); demand cleared on grant + stale demand dropped (1ms timeout + 5ms
+    sleep); fairness applies only to capped classes.
+  - **`engine/tests/distributed_run_loop_test.cpp` (test 27):** end-to-end
+    starvation resistance — a large tenant's 5-node sequential browser backlog
+    (30ms each) does not starve a small tenant's single browser node; with fair
+    scheduling ON + global browser capacity 1, the small tenant's run reaches a
+    terminal state BEFORE the large tenant's backlog completes, and the gate
+    granted the small tenant exactly one browser slot (deterministic proof it was
+    served, not skipped). Helpers: `make_browser_chain_n`, `OrderRecordingWorker`.
+  - **`engine/tests/fairness_bench_test.cpp` (NEW):** M37 fairness benchmark
+    (steps 6–7). K tenants × T browser fan-out tasks against a global browser
+    capacity of 1, fair scheduling ON. Workload A (equal duration): asserts
+    Jain(span) ≥ 0.90 and Jain(served) == 1.0 (equal slot grants). Workload B
+    (unequal duration, tenant 0 is 3x slower): asserts every tenant completes
+    (no starvation) + slot grants stay equal (Jain(served) == 1.0) + the slow
+    tenant holds the slot longer in aggregate (durations exercised). Reports
+    per-org queue-wait max/median. Emits manifest.json / samples.jsonl /
+    summary.json / command.txt when `EVO_M37_ARTIFACT_DIR` is set.
+  - **`engine/CMakeLists.txt`:** `evo_fairness_bench_test` target (links
+    `evo_distributed`, 120s timeout).
+- **Concurrency/distributed correctness:** the gate remains the single owner of
+  its counters; every method locks the internal mutex, so concurrent run loops
+  acquire/defer/release safely — TSan-clean across the full suite. Demand
+  registration precedes the capacity check (no lost-wakeup ordering bug); demand
+  is cleared on grant (a granted tenant cannot keep blocking others). Fairness is
+  enforced at the shared gate, which is the only cross-org arbiter in the
+  pull-based architecture (each run loop dispatches independently). The gate is
+  in-process state (same as M36): fairness is per scheduler process, not
+  cluster-wide.
+- **Where browser affinity legitimately reduces ideal fairness (M37 step 8):**
+  within a run, all browser nodes share a capacity-1 affinity key (one browser
+  session per run), so a tenant presents ONE browser task at a time to the global
+  pool regardless of how many browser nodes it has ready. Fairness is therefore
+  guaranteed at the level of SLOT GRANTS (Jain(served) == 1.0), not completion
+  SPANS: a tenant with a deep browser backlog cannot parallelize its own tasks,
+  so its end-to-end span is proportional to (tasks × duration) even under perfect
+  grant fairness. Under round-robin fair scheduling the slow/large tenant's last
+  task can be granted before a fast tenant's last task, so span ordering is NOT a
+  fairness property — the benchmark asserts grant counts + no starvation, and
+  reports Jain(span) as info. This is the intended, documented interaction
+  between per-run browser affinity (M12) and cross-tenant fairness (M37).
+- **Phase-1 preservation:** legacy Trigger.dev engine untouched; no Phase-1
+  default behavior changed (fair_scheduling defaults to false = M36 FCFS); no
+  test removed; browser credentials stay server/worker-only.
+- **No-go compliance:** the algorithm is a simple explainable weighted
+  least-served-first (documented tradeoff vs deficit/weighted round robin in
+  DECISIONS.md); dependency readiness / resource affinity kept separate from
+  tenant selection (only the cross-tenant SELECTION order changes); fairness
+  tests use deterministic workloads (fixed tenant/task counts, fixed work_ms, no
+  randomness); no performance numbers invented (benchmark timings labeled
+  diagnostic, not evidence-grade — that is M39); no future component marked
+  implemented; no secret/credential committed.
+- **Validation:**
+  - CMake build → ✅ clean; `ctest` (Release) → ✅ 24/24 (incl. quota tests
+    13–18, distributed_run_loop test 27, fairness_bench)
+  - ASan+UBSan → ✅ 24/24; TSan → ✅ 24/24 (no data races in the shared-gate
+    fairness concurrency)
+  - `npm test` → ✅ exit 0 (all prior suites green; M29 parity 9/9)
+  - `npm run typecheck` → ✅; `npm run lint` → ✅ (0 errors, 0 warnings)
+- **Benchmark (diagnostic, single local stack — not evidence-grade):**
+  - Command: `EVO_M37_ARTIFACT_DIR=engine/bench-results/m37 ./build/evo_fairness_bench_test`
+  - Workload A (3 tenants × 4 tasks, equal 15ms): Jain(span)=0.994,
+    Jain(served)=1.000, deferrals=31; per-org max_wait 37–77ms, median ~35–38ms.
+  - Workload B (tenant 0 = 45ms, others 15ms): Jain(span)=0.998,
+    Jain(served)=1.000; slow tenant busy time 190ms vs fast 66ms (durations
+    exercised); every tenant completed.
+  - Artifacts: `engine/bench-results/m37/{manifest.json,samples.jsonl,summary.json,command.txt}`
+    (24 raw per-task dispatch/complete samples; commit + hardware + build-mode
+    provenance in manifest).
+- **Known limitations:** fairness is per scheduler process (in-process gate); a
+  multi-scheduler deployment would need a durable cluster-wide served/demand
+  ledger (later work). Fairness applies only to CAPPED resource classes (an
+  uncapped class has no contention to arbitrate). Weighted fairness is configured
+  via `EVO_ORG_WEIGHTS` but not yet surfaced in any product UI. The demand-timeout
+  default (5000ms) means a tenant that stops refreshing demand is dropped from
+  arbitration after 5s (liveness), which is correct for pull-based dispatch but
+  worth noting for very long idle windows.
+- **Human action:** none (no new migration; no schema change; Neon untouched).
+- **COMMIT:** `M37_SHA` — `phase2(m37): add fair multi-tenant scheduling`
+- **NEXT:** M38 — Observability, service security, CI quality gates.

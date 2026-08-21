@@ -563,6 +563,77 @@ Dag make_fanout_run3() {
   return std::move(*br.dag);
 }
 
+// M37: build a CHAIN of browser nodes: trig -> n1 -> n2 -> ... (all "open-url",
+// so they share the run's capacity-1 affinity key and form a sequential
+// browser backlog). Used by the starvation test: the large tenant's chain is a
+// deep backlog of browser demand competing with the small tenant.
+Dag make_browser_chain_n(const std::string& trig, int extra) {
+  std::vector<NodeSpec> nodes = {
+      {NodeId{trig}, NodeKind::Trigger, "open-url"},
+  };
+  std::vector<Edge> edges;
+  std::string prev = trig;
+  for (int i = 1; i <= extra; ++i) {
+    const std::string id = trig + "-n" + std::to_string(i);
+    nodes.push_back({NodeId{id}, NodeKind::Action, "open-url"});
+    edges.push_back({NodeId{prev}, NodeId{id}});
+    prev = id;
+  }
+  auto br = Dag::build(nodes, edges);
+  return std::move(*br.dag);
+}
+
+// M37: worker that records the ORDER in which browser tasks are dispatched, by
+// org. It reads a SHARED task stream (both tenants' loops publish to it), and
+// for each BROWSER task appends the task's org_id to `order` (mutex-guarded),
+// then completes the task immediately. Because the global browser capacity is
+// 1, browser tasks are dispatched one at a time, so the order recorded is the
+// cross-tenant dispatch order. Completes every task (browser and internal).
+class OrderRecordingWorker {
+ public:
+  OrderRecordingWorker(InMemoryTransport& t, std::string prefix,
+                       std::mutex* mu, std::vector<std::string>* order)
+      : transport_(t), prefix_(std::move(prefix)), mu_(mu), order_(order) {}
+
+  void start() {
+    thread_ = std::jthread([this](std::stop_token st) { this->loop(st); });
+  }
+  void stop() {
+    thread_.request_stop();
+    if (thread_.joinable()) thread_.join();
+  }
+
+ private:
+  void loop(std::stop_token st) {
+    const std::string tasks = evo::task_stream_key(prefix_);
+    const std::string results = evo::result_stream_key(prefix_);
+    transport_.ensure_group(tasks, "workers");
+    while (!st.stop_requested()) {
+      auto msg = transport_.read(tasks, "workers", "order-worker", 20ms, st);
+      if (!msg) continue;
+      evo::execution::v1::TaskEnvelope task;
+      if (!task.ParseFromString(msg->payload)) {
+        transport_.ack(tasks, "workers", msg->id);
+        continue;
+      }
+      if (task.resource_class() == evo::execution::v1::BROWSER) {
+        std::lock_guard lock(*mu_);
+        order_->push_back(task.org_id());
+      }
+      transport_.publish(
+          results, encode_success(task.run_id(), task.node_id(),
+                                  task.attempt_number(), "{\"ok\":true}"));
+      transport_.ack(tasks, "workers", msg->id);
+    }
+  }
+
+  InMemoryTransport& transport_;
+  std::string prefix_;
+  std::mutex* mu_;
+  std::vector<std::string>* order_;
+  std::jthread thread_;
+};
+
 }  // namespace
 
 int main() {
@@ -2081,6 +2152,107 @@ int main() {
     // Browser pool was never touched by these email runs.
     check(gate.inflight_class(evo::ResourceClass::Browser) == 0,
           "m36: browser pool untouched by side-effect runs (separate pools)");
+  }
+
+  // --- 27. M37: starvation resistance — large backlog does not starve small -
+  // A large tenant (org-big) submits a SEQUENTIAL browser backlog (a chain of 5
+  // open-url nodes, each taking ~30ms). A small tenant (org-small) submits ONE
+  // browser node. With fair scheduling ON and a global browser capacity of 1,
+  // the small tenant's node must NOT wait for the large tenant's entire backlog:
+  // it is served as soon as one slot frees (it is the least-served waiter), so
+  // its run reaches a terminal state BEFORE the large tenant's run does. This is
+  // the end-to-end starvation guarantee (M37 step 5), on top of the gate-level
+  // unit tests. Dependency readiness / resource affinity are untouched — only
+  // the cross-tenant SELECTION order changes (M37 step 2).
+  {
+    evo::QuotaConfig qcfg;
+    qcfg.global_class_capacity[evo::ResourceClass::Browser] = 1;
+    qcfg.fair_scheduling = true;  // M37 opt-in
+    evo::TenantQuotaGate gate(qcfg);
+    std::atomic<int> cur_dummy{0}, hw_dummy{0};
+
+    InMemoryTransport big_t, small_t;
+    InMemoryRunStore big_s, small_s;
+    DistributedRunConfig big_cfg, small_cfg;
+    big_cfg.run_id = "run-m37-big";
+    big_cfg.org_id = "org-big";
+    big_cfg.workflow_id = "wf-big";
+    big_cfg.env_prefix = "evo:m37big";
+    big_cfg.read_block_ms = 5ms;
+    big_cfg.run_timeout = 20s;
+    big_cfg.quota_gate = &gate;
+    small_cfg.run_id = "run-m37-small";
+    small_cfg.org_id = "org-small";
+    small_cfg.workflow_id = "wf-small";
+    small_cfg.env_prefix = "evo:m37small";
+    small_cfg.read_block_ms = 5ms;
+    small_cfg.run_timeout = 20s;
+    small_cfg.quota_gate = &gate;
+
+    // org-big's browser tasks each hold the slot ~30ms (a real backlog); the
+    // small tenant's task completes immediately.
+    ConcurrencyTrackingWorker big_w(big_t, big_cfg.env_prefix, big_cfg.run_id,
+                                    evo::execution::v1::BROWSER, &cur_dummy,
+                                    &hw_dummy, 30ms);
+    ConcurrencyTrackingWorker small_w(small_t, small_cfg.env_prefix,
+                                      small_cfg.run_id,
+                                      evo::execution::v1::BROWSER, &cur_dummy,
+                                      &hw_dummy, 0ms);
+
+    // org-big: a chain of 5 browser nodes (deep sequential backlog).
+    // org-small: a single browser node.
+    DistributedRunLoop big_loop(make_browser_chain_n("bt", 4), big_t, big_s,
+                                big_cfg);
+    DistributedRunLoop small_loop(make_single_browser_run("s0"), small_t,
+                                  small_s, small_cfg);
+    big_w.start();
+    small_w.start();
+
+    const auto t0 = std::chrono::steady_clock::now();
+    // Start the LARGE tenant first and wait until it holds the browser slot
+    // (its first chain node is in-flight). This makes the small tenant's
+    // deferral deterministic: when it starts, the class is already full.
+    std::thread big_th([&] { (void)big_loop.run(); });
+    {
+      const auto deadline = std::chrono::steady_clock::now() + 5s;
+      while (std::chrono::steady_clock::now() < deadline &&
+             gate.inflight_class(evo::ResourceClass::Browser) == 0) {
+        std::this_thread::sleep_for(1ms);
+      }
+    }
+    std::thread small_th([&] { (void)small_loop.run(); });
+    small_th.join();
+    const auto small_done = std::chrono::steady_clock::now();
+    big_th.join();
+    const auto big_done = std::chrono::steady_clock::now();
+    big_w.stop();
+    small_w.stop();
+
+    const auto small_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(small_done - t0)
+            .count();
+    const auto big_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(big_done - t0)
+            .count();
+
+    check(big_loop.state().run_state() == evo::RunState::Succeeded &&
+              small_loop.state().run_state() == evo::RunState::Succeeded,
+          "m37: both tenants' runs succeed");
+    check(small_done < big_done,
+          "m37: small tenant finishes BEFORE the large tenant's backlog "
+          "(no starvation)");
+    // Deterministic proof the small tenant was actually SERVED (not skipped):
+    // the gate granted it exactly one browser slot. (The fair_order_deferrals
+    // counter itself is exercised deterministically by the gate-level unit
+    // tests 14–16; here it is timing-dependent, so it is reported as info.)
+    check(gate.served_count("org-small", evo::ResourceClass::Browser) == 1,
+          "m37: small tenant was granted its browser slot (served once)");
+    check(gate.inflight_class(evo::ResourceClass::Browser) == 0,
+          "m37: browser slots released at terminal (no leak)");
+    printf("  info m37 small_done=%lldms big_done=%lldms "
+           "fair_order_deferrals=%zu (5-node backlog)\n",
+           static_cast<long long>(small_ms), static_cast<long long>(big_ms),
+           gate.counters().fair_order_deferrals);
   }
 
   if (failures == 0) {

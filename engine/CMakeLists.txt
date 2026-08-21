@@ -326,6 +326,18 @@ target_compile_options(evo_quota_test PRIVATE
 )
 add_test(NAME quota COMMAND evo_quota_test)
 
+# evo_fairness_bench_test — M37: per-tenant wait distributions + Jain's fairness
+# index on controlled workloads (equal + unequal task durations). Scheduler-core
+# only (InMemoryTransport + InMemoryRunStore); emits raw samples when
+# EVO_M37_ARTIFACT_DIR is set. Diagnostic timings, not evidence-grade (M39).
+add_executable(evo_fairness_bench_test tests/fairness_bench_test.cpp)
+target_link_libraries(evo_fairness_bench_test PRIVATE evo_distributed)
+target_compile_options(evo_fairness_bench_test PRIVATE
+  -Wall -Wextra -Wpedantic -Werror
+)
+add_test(NAME fairness_bench COMMAND evo_fairness_bench_test)
+set_tests_properties(fairness_bench PROPERTIES TIMEOUT 120)
+
 add_executable(evo_ready_queue_test tests/ready_queue_test.cpp)
 target_link_libraries(evo_ready_queue_test PRIVATE evo_scheduler_core)
 target_compile_options(evo_ready_queue_test PRIVATE

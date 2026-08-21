@@ -1,0 +1,13 @@
+{
+  "slug": "m37_fair_scheduling",
+  "workload": "K tenants x T browser fan-out tasks, global browser capacity 1, fair scheduling on",
+  "resource_class": "BROWSER (global capacity 1)",
+  "build_mode": "Release",
+  "commit": "91c5df2",
+  "hardware": "Darwin arm64",
+  "tenants": 3,
+  "tasks_per_tenant": 4,
+  "clock": "wall-clock UTC ms",
+  "note": "diagnostic fairness samples on a single local stack; not evidence-grade benchmark numbers (M39)",
+  "generated_at_wall_ms": 1787332891087
+}

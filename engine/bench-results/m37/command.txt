@@ -1,0 +1,2 @@
+ctest --test-dir engine/build -R fairness_bench --output-on-failure
+# (or directly) EVO_M37_TENANTS=3 EVO_M37_TASKS=4 EVO_M37_ARTIFACT_DIR=/Users/utkarshkhajuria/Desktop/evo builder/engine/bench-results/m37 engine/build/evo_fairness_bench_test

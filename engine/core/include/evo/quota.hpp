@@ -29,7 +29,10 @@
 //
 // Timestamps: the gate keeps counters only; it emits no timestamps.
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -37,6 +40,10 @@
 #include "evo/execution_policy.hpp"
 
 namespace evo {
+
+// Wall-clock UTC milliseconds since the Unix epoch (same function as
+// run_store.hpp; redeclared here so the gate needs no run_store dependency).
+std::int64_t now_wall_ms();
 
 // Configurable limits. A value of 0 means "unlimited" (backwards compatible:
 // an unconfigured gate admits everything).
@@ -53,6 +60,40 @@ struct QuotaConfig {
   // Absent key or 0 => unlimited. Browser is the constrained class in
   // production; ExternalIo (side effects) is tracked separately (M36 step 8).
   std::map<ResourceClass, int> global_class_capacity;
+
+  // --- Fair scheduling (Milestone 37) ---
+  // When true AND a resource class has a finite global capacity, grants of that
+  // class's slots are ordered by WEIGHTED FAIR scheduling across the orgs with
+  // current demand, instead of first-come-first-served. This prevents a large
+  // tenant's backlog from indefinitely starving a small tenant (M37 step 5).
+  // Default false = M36 first-come-first-served (backwards compatible; fairness
+  // is an explicit opt-in, M37 step 13).
+  //
+  // Algorithm (documented tradeoff, M37 step 1): least-normalized-service-first,
+  // the pull-based analog of weighted round robin / deficit round robin. Each
+  // grant to org O for class C increments served_[C][O]. When a class slot is
+  // free and several orgs have fresh demand, the slot goes to the org with the
+  // smallest served/weight (ties broken by org id for determinism). An org that
+  // is not the current recipient is DEFERRED (its node stays READY and its run
+  // loop re-polls, refreshing its demand). Because a waiting org's served count
+  // stays constant while recipients' counts grow, every live waiting org becomes
+  // the minimum within bounded time => no starvation. Chosen over strict WRR
+  // because a fixed rotation needs a central dispatcher; this architecture is
+  // pull-based (each run loop dispatches its own org's nodes), so the decision
+  // must be a pure function of shared state that any caller can evaluate.
+  bool fair_scheduling = false;
+  // Explicit per-org weights (M37 step 4: equal weights first; non-equal
+  // weights must be explicit configuration). An org absent from the map has
+  // weight 1. Weight w entitles the org to w-times the service of a weight-1
+  // org before it yields (via the served/weight normalization).
+  std::map<std::string, int> org_weights;
+  // Demand freshness window (wall-clock ms). An org counts as having demand for
+  // a class only if it refreshed that demand within this window (it refreshes
+  // every time its run loop re-polls a deferred node). Entries that go stale —
+  // e.g. the node was canceled but the run continues with other classes — are
+  // ignored and dropped, so an absent org can never hold a class slot hostage.
+  // 0 => use the default (5000ms).
+  std::int64_t fair_demand_timeout_ms = 0;
 };
 
 // Observable counters (M36 step 6): queue depth and rejected/deferred totals.
@@ -62,6 +103,10 @@ struct QuotaCounters {
   std::size_t acquired_tasks = 0;    // task slots granted at dispatch
   std::size_t deferred_tasks = 0;    // dispatches deferred due to capacity
   std::size_t released_tasks = 0;    // task slots returned
+  // M37: dispatches deferred specifically because it was not the caller's turn
+  // in the weighted round robin (a subset of deferred_tasks, only when fair
+  // scheduling is on). Distinguishes fairness ordering from raw capacity.
+  std::size_t fair_order_deferrals = 0;
   int active_runs_now = 0;           // current active runs across all orgs
   int max_active_runs = 0;           // high-water mark of active runs
 };
@@ -116,10 +161,25 @@ class TenantQuotaGate {
   int inflight_class(ResourceClass klass) const;
   const QuotaConfig& config() const { return cfg_; }
 
+  // --- Fair scheduling observability (M37 step 6) ---
+  // Number of class slots granted to this org since construction (the fairness
+  // accounting used to pick the least-served recipient).
+  std::int64_t served_count(const std::string& org_id, ResourceClass klass) const;
+  // Number of orgs with FRESH demand for a class right now (diagnostic/test).
+  int demand_count(ResourceClass klass) const;
+  // The org's configured weight (1 when absent from org_weights).
+  int weight_for(const std::string& org_id) const;
+
   // Structured JSON snapshot of counters + per-org depth (for the Health RPC).
   std::string to_json_string() const;
 
  private:
+  // M37: pick the fair recipient for a class among orgs with fresh demand —
+  // the org with the smallest served/weight (cross-multiplied to stay integral),
+  // ties broken by org id for determinism. Returns "" when no org has fresh
+  // demand. Caller must hold mu_.
+  std::string fair_recipient_locked(ResourceClass klass, std::int64_t now_ms);
+
   QuotaConfig cfg_;
   mutable std::mutex mu_;
   std::map<std::string, int> active_runs_;       // org -> active run count
@@ -127,6 +187,9 @@ class TenantQuotaGate {
   std::map<ResourceClass, int> inflight_class_;  // class -> global in-flight
   QuotaCounters counters_;
   int total_active_runs_ = 0;
+  // M37 fairness state (guarded by mu_).
+  std::map<ResourceClass, std::map<std::string, std::int64_t>> served_;  // grants
+  std::map<ResourceClass, std::map<std::string, std::int64_t>> demand_;  // last refresh wall ms
 };
 
 }  // namespace evo
