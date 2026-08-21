@@ -45,7 +45,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M33 | Implement idempotency and duplicate suppression | ✅ DONE | `2887e88` |
 | M34 | Implement worker crash recovery and failure injection | ✅ DONE | `b6cff19` |
 | M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `fb5313e` |
-| M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `M36_SHA` |
+| M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `d490b7b` |
 
 ---
 
@@ -2476,5 +2476,5 @@ Commit subjects follow `phase2(mNN): <description>`.
   The per-org in-flight task cap is enforced at dispatch, so a node may wait
   READY until its org's in-flight count drops.
 - **Human action:** none (no new migration; no schema change; Neon untouched).
-- **COMMIT:** `M36_SHA` — `phase2(m36): add tenant quotas and backpressure`
+- **COMMIT:** `d490b7b` — `phase2(m36): add tenant quotas and backpressure`
 - **NEXT:** M37 — Fair scheduling and starvation resistance.
