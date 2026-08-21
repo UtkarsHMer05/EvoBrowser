@@ -46,7 +46,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M34 | Implement worker crash recovery and failure injection | ✅ DONE | `b6cff19` |
 | M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `fb5313e` |
 | M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `d490b7b` |
-| M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `M37_SHA` |
+| M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `02cc98e` |
 
 ---
 
@@ -2599,5 +2599,5 @@ tenant's whole backlog. Default remains M36 FCFS (backwards compatible).
   arbitration after 5s (liveness), which is correct for pull-based dispatch but
   worth noting for very long idle windows.
 - **Human action:** none (no new migration; no schema change; Neon untouched).
-- **COMMIT:** `M37_SHA` — `phase2(m37): add fair multi-tenant scheduling`
+- **COMMIT:** `02cc98e` — `phase2(m37): add fair multi-tenant scheduling`
 - **NEXT:** M38 — Observability, service security, CI quality gates.
