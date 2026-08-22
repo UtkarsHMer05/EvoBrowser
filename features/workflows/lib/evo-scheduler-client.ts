@@ -9,6 +9,12 @@
 // (EVO_SCHEDULER_ADDR, 127.0.0.1:50051) with insecure credentials — the M17
 // no-go forbids unauthenticated non-local exposure, so this client uses an
 // insecure channel to match.
+//
+// M38 service-to-service auth: when EVO_ENGINE_TOKEN is set, every RPC carries
+// `authorization: Bearer <token>` metadata and the scheduler rejects calls
+// without it. The token is read from this server process's environment only —
+// it never reaches a browser (M38 no-go). When unset, auth is disabled
+// (backwards compatible with the loopback-only default).
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,20 +43,36 @@ const INCLUDE_DIRS = [
 interface ControlServiceClient {
   SubmitRun(
     req: Record<string, unknown>,
+    md: grpc.Metadata,
     cb: grpc.requestCallback<Record<string, unknown>>,
   ): grpc.ClientUnaryCall;
   CancelRun(
     req: Record<string, unknown>,
+    md: grpc.Metadata,
     cb: grpc.requestCallback<Record<string, unknown>>,
   ): grpc.ClientUnaryCall;
   GetRun(
     req: Record<string, unknown>,
+    md: grpc.Metadata,
     cb: grpc.requestCallback<Record<string, unknown>>,
   ): grpc.ClientUnaryCall;
   Health(
     req: Record<string, unknown>,
+    md: grpc.Metadata,
     cb: grpc.requestCallback<Record<string, unknown>>,
   ): grpc.ClientUnaryCall;
+}
+
+// M38: build the per-call metadata. When EVO_ENGINE_TOKEN is set, attach the
+// bearer token so the scheduler's engine-token auth accepts the call. Read
+// once per call (cheap) so a token set after module load is still honored.
+function buildMetadata(): grpc.Metadata {
+  const md = new grpc.Metadata();
+  const token = process.env.EVO_ENGINE_TOKEN;
+  if (token) {
+    md.set("authorization", `Bearer ${token}`);
+  }
+  return md;
 }
 
 let cachedClient: ControlServiceClient | null = null;
@@ -82,12 +104,13 @@ function loadServiceClient(addr: string): ControlServiceClient {
 function unary<T>(
   call: (
     req: Record<string, unknown>,
+    md: grpc.Metadata,
     cb: grpc.requestCallback<Record<string, unknown>>,
   ) => grpc.ClientUnaryCall,
   req: Record<string, unknown>,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
-    call(req, (err, resp) => {
+    call(req, buildMetadata(), (err, resp) => {
       if (err) {
         reject(err);
         return;
@@ -124,7 +147,7 @@ export function createGrpcEvoSchedulerClient(addr: string): EvoSchedulerClient {
   return {
     async submitRun(args) {
       const resp = await unary<Record<string, unknown>>(
-        (req, cb) => getClient().SubmitRun(req, cb),
+        (req, md, cb) => getClient().SubmitRun(req, md, cb),
         {
           orgId: args.orgId,
           workflowVersionId: args.workflowVersionId,
@@ -154,7 +177,7 @@ export function createGrpcEvoSchedulerClient(addr: string): EvoSchedulerClient {
         };
       }
       const resp = await unary<Record<string, unknown>>(
-        (r, cb) => getClient().CancelRun(r, cb),
+        (r, md, cb) => getClient().CancelRun(r, md, cb),
         req,
       );
       return { ok: Boolean(resp.ok) };
@@ -162,7 +185,7 @@ export function createGrpcEvoSchedulerClient(addr: string): EvoSchedulerClient {
 
     async getRun(runId) {
       const resp = await unary<Record<string, unknown>>(
-        (req, cb) => getClient().GetRun(req, cb),
+        (req, md, cb) => getClient().GetRun(req, md, cb),
         { runId },
       );
       return {
@@ -174,7 +197,7 @@ export function createGrpcEvoSchedulerClient(addr: string): EvoSchedulerClient {
 
     async getRunDetail(runId): Promise<EvoRunDetail> {
       const resp = await unary<Record<string, unknown>>(
-        (req, cb) => getClient().GetRun(req, cb),
+        (req, md, cb) => getClient().GetRun(req, md, cb),
         { runId },
       );
       const rawNodes = Array.isArray(resp.nodes)
@@ -202,7 +225,7 @@ export function createGrpcEvoSchedulerClient(addr: string): EvoSchedulerClient {
 
     async health() {
       const resp = await unary<Record<string, unknown>>(
-        (req, cb) => getClient().Health(req, cb),
+        (req, md, cb) => getClient().Health(req, md, cb),
         {},
       );
       return { ok: Boolean(resp.ok), detail: String(resp.detail ?? "") };

@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <spawn.h>
 #include <string>
 #include <sys/wait.h>
@@ -37,6 +38,8 @@
 #include "evo/redis_transport.hpp"
 #include "evo/run_store.hpp"
 #include "evo/transport.hpp"
+
+#include "spawn_chdir.hpp"
 
 extern char** environ;
 
@@ -116,11 +119,25 @@ ChildProc spawn_worker(const std::string& repo_root, const std::string& prefix,
 
   posix_spawn_file_actions_t actions;
   posix_spawn_file_actions_init(&actions);
-  posix_spawn_file_actions_addchdir(&actions, repo_root.c_str());
+  evo_spawn_addchdir(&actions, repo_root.c_str());
+  // M38 CI (Linux): `npx tsx` spawns a child that outlives a SIGTERM to the
+  // wrapper pid and keeps CTest's output pipe open, wedging the test on pipe
+  // EOF. Redirect the workers' stdout/stderr to /dev/null and spawn them in
+  // their own process group so shutdown can kill the whole tree (same pattern
+  // as the M34 crash_recovery test).
+  posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null",
+                                   O_WRONLY, 0);
+  posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null",
+                                   O_WRONLY, 0);
 
-  const int rc = posix_spawnp(&out.pid, "npx", &actions, nullptr, argv.data(),
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+
+  const int rc = posix_spawnp(&out.pid, "npx", &actions, &attr, argv.data(),
                               envp.data());
   posix_spawn_file_actions_destroy(&actions);
+  posix_spawnattr_destroy(&attr);
   if (rc != 0) out.pid = -1;
   return out;
 }
@@ -191,7 +208,7 @@ int main() {
     if (w.pid < 0) {
       printf("SKIP: M26 distributed E2E (failed to spawn worker %d; is "
              "node/npx available?)\n", i);
-      for (auto& k : workers) kill(k.pid, SIGTERM);
+      for (auto& k : workers) kill(-k.pid, SIGTERM);
       return 0;
     }
     workers.push_back(w);
@@ -246,8 +263,11 @@ int main() {
   injector.request_stop();
   injector.join();
 
-  // --- Shutdown the worker fleet (graceful SIGTERM) ---------------------------
-  for (auto& w : workers) kill(w.pid, SIGTERM);
+  // --- Shutdown the worker fleet (graceful SIGTERM to the whole process group)
+  // Workers run in their own process group (POSIX_SPAWN_SETPGROUP) so the
+  // `npx` wrapper + its `node` child are both signalled; killing only the
+  // wrapper pid leaves the child running on Linux (M38 CI).
+  for (auto& w : workers) kill(-w.pid, SIGTERM);
   for (auto& w : workers) {
     int wstatus = 0;
     waitpid(w.pid, &wstatus, 0);
@@ -314,8 +334,18 @@ int main() {
         "event stream carries normalized run events incl. run_finished");
 
   // Task stream fully consumed: no pending work left for the worker group.
-  check(transport.pending_count(evo::task_stream_key(prefix), "workers") == 0,
-        "no pending tasks left (all acked by workers)");
+  // The last worker's ack can land a moment after run_finished is observed, so
+  // poll briefly for the PEL to drain. The assertion still requires 0 pending —
+  // this only tolerates async ack propagation, it does not weaken the check.
+  {
+    long long pending = transport.pending_count(evo::task_stream_key(prefix),
+                                                "workers");
+    for (int i = 0; i < 100 && pending != 0; ++i) {  // up to ~10s
+      std::this_thread::sleep_for(100ms);
+      pending = transport.pending_count(evo::task_stream_key(prefix), "workers");
+    }
+    check(pending == 0, "no pending tasks left (all acked by workers)");
+  }
 
   if (failures == 0) {
     printf("\nALL M26 DISTRIBUTED E2E TESTS PASSED!\n");

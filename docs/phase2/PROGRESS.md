@@ -47,7 +47,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `fb5313e` |
 | M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `d490b7b` |
 | M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `02cc98e` |
-| M38 | Add observability, service security, and CI quality gates | 🚧 IN PROGRESS (claimed by session B) | — |
+| M38 | Add observability, service security, and CI quality gates | ✅ DONE | `M38_SHA` |
 
 ---
 
@@ -2602,3 +2602,118 @@ tenant's whole backlog. Default remains M36 FCFS (backwards compatible).
 - **Human action:** none (no new migration; no schema change; Neon untouched).
 - **COMMIT:** `02cc98e` — `phase2(m37): add fair multi-tenant scheduling`
 - **NEXT:** M38 — Observability, service security, CI quality gates.
+
+---
+
+## M38 — Add observability, service security, and CI quality gates
+
+- **Status:** ✅ DONE (session B)
+- **Objective:** Make the distributed engine diagnosable and continuously
+  verifiable without live secrets.
+- **What was implemented:**
+  - **Structured JSON logging (C++ + TS) with secret redaction.**
+    `engine/core/src/log.cpp` (`evo::log::emit`) and `worker/src/logger.ts`
+    (`createWorkerLogger`) both emit one JSON line per event to stderr with
+    correlation fields (run/node/attempt/org/worker/trace ids). Any field whose
+    KEY matches a secret-like pattern (password/secret/token/credential/
+    authorization/api_key/private_key) has its value replaced with `[REDACTED]`;
+    the TS logger also redacts Bearer tokens and URL-embedded credentials.
+    Redaction is defense in depth — callers must not pass secrets in the first
+    place. Verified by `engine/tests/log_test.cpp` + `worker/src/logger.test.ts`.
+  - **Trace/correlation id propagation.** `DistributedRunConfig.trace_id` is set
+    from the SubmitRun request (defaulting to the run id) and copied into every
+    dispatched TaskEnvelope (`env.set_trace_id(...)`), so one id follows a run
+    across scheduler→Redis→worker. OpenTelemetry was NOT added (no exporter/trace
+    path proven this milestone, per M38 step 4); correlation is via explicit ids.
+  - **Prometheus metrics.** `MetricsRegistry` (thread-safe counter/gauge) +
+    `prometheus.cpp` text formatter, exposed by a minimal loopback HTTP server
+    (`engine/app/metrics_http.hpp`) on `EVO_METRICS_PORT` (default 9090, `0`
+    disables). Binds `INADDR_LOOPBACK` only. `GET /metrics` returns
+    `text/plain; version=0.0.4`.
+  - **Service-to-service engine-token auth.** When `EVO_ENGINE_TOKEN` is set,
+    every RPC must carry `authorization: Bearer <token>` (constant-time compare,
+    `engine/core/src/auth_token.cpp`) else `UNAUTHENTICATED`; when unset, auth is
+    disabled (backwards compatible; default binds loopback only). The server-only
+    TS client (`features/workflows/lib/evo-scheduler-client.ts`) reads the token
+    from its own env and attaches it as call metadata — it never reaches a
+    browser. Verified by `auth_token_test.cpp` (17) + `auth_integration_test.cpp`
+    (negative + positive + backwards-compat).
+  - **Input size limits + identifier validation at the gRPC trust boundary**
+    (`engine/core/src/input_limits.cpp`): ids must be `[A-Za-z0-9._-]` ≤256
+    bytes; DAG JSON ≤8 MiB. Validated BEFORE quota admission and any durable
+    write. 18 unit tests.
+  - **GitHub Actions CI** (`.github/workflows/ci.yml`): secret-scan, node
+    (test/typecheck/lint/build), cpp-gcc, cpp-clang, cpp-asan, cpp-tsan,
+    distributed (Redis+Postgres+gRPC service containers), bench-smoke. Requires
+    NO Browserbase/Resend/Clerk/Neon/paid keys (M38 step 8): Node suites skip
+    cleanly without live services, the production build succeeds without
+    `SENTRY_AUTH_TOKEN`/`.env.local`, and the distributed job uses the synthetic
+    `bench:*` executor (never a real browser).
+  - **`scripts/secret-scan.sh`** — scans git-tracked files for high-signal secret
+    patterns with a documented allowlist; runs as the `secret-scan` CI job.
+  - **`scripts/phase2/bench-smoke.sh`** — benchmark HARNESS smoke: asserts the
+    manifest is well-formed (header + commit/build metadata + raw + summary
+    samples) and NEVER asserts timing on shared runners (M38 step 9).
+  - **`docs/phase2/SECURITY.md`** — trust boundaries, implemented controls,
+    threat-model table (T1–T10), explicit no-go items, and honest "not covered"
+    limitations.
+- **CI-enabling engine changes (all surfaced by actually building on GCC/Linux):**
+  - **Proto layer split + graceful degradation.** `evo_proto` is now
+    MESSAGES-ONLY (`execution.pb.cc`); a separate `evo_proto_grpc` holds the gRPC
+    stubs. Both protobuf and gRPC are OPTIONAL in CMake (`EVO_HAVE_PROTO` /
+    `EVO_HAVE_GRPC`), mirroring the hiredis/libpq pattern. The distributed runtime
+    needs only protobuf messages, so the distributed CI job builds with just
+    `libprotobuf-dev`; core-only jobs skip the proto layer entirely.
+  - **CI regenerates gencode** against the runner's own protobuf
+    (`engine/proto/generate.sh`, now platform-aware with `--messages-only`),
+    because the committed gencode is pinned to the exact protobuf runtime it was
+    generated with (`PROTOBUF_VERSION` guard) which stock runners lack.
+  - **macOS dual-Homebrew guard:** on Apple Silicon, `CMAKE_PREFIX_PATH` is
+    prepended with `/opt/homebrew` so protobuf/gRPC/absl resolve to the
+    native-arch prefix (a hintless `find_package` otherwise picks the x86_64
+    `/usr/local` protobuf while pkg-config's grpc++ resolves arm64 → link failure).
+  - **Cross-platform portability fixes:** (a) `bench_runner.cpp` `#ifdef __APPLE__`
+    left a dangling `<<` on non-Apple (syntax error) — now emits
+    apple/linux/unknown; (b) `posix_spawn_file_actions_addchdir` is macOS/BSD-only
+    (Linux glibc names it `..._np`) — added `tests/spawn_chdir.hpp` shim used by
+    the 3 spawn-based tests; (c) `build-hiredis.sh` word-split `ARCHFLAGS` into a
+    bogus make target and called `file` (absent on minimal images) — now exports
+    ARCHFLAGS and guards `file`; (d) `bench.cpp` `volatile` compound assignment
+    (`acc +=`) is deprecated in C++20 — replaced with simple assignment.
+  - **distributed_e2e Linux pipe-wedge fix:** the test now spawns workers with
+    stdout/stderr→`/dev/null` + `POSIX_SPAWN_SETPGROUP` and kills the whole
+    process group on shutdown (same pattern as M34/M35), so the `npx` wrapper's
+    child can't outlive SIGTERM and hold CTest's output pipe open on Linux. The
+    final "no pending tasks" check became a bounded poll (still requires 0
+    pending) to tolerate async ack propagation. Timeout bumped 180s→300s.
+  - **`tsconfig.json` + `eslint.config.mjs` exclude `engine/`** — CMake's Makefile
+    generator emits `compiler_depend.ts` files under `engine/build/` that the
+    `**/*.ts` glob otherwise picked up, breaking `npm run build`/`tsc`/`eslint` on
+    a Linux runner. The engine is pure C++ the app never type-checks/lints.
+  - **`scripts/phase2/migrate-local.sh`** gained a direct-TCP mode (auto-detected,
+    or forced via `EVO_PHASE2_MIGRATE_DIRECT=1`) for CI, where Postgres runs as a
+    service container and the runner connects over TCP instead of `docker exec`.
+- **Validation (measured, not copied):**
+  - macOS Release `ctest` → ✅ 29/29 (incl. all M38 tests + distributed e2e/crash/
+    restart). ASan+UBSan → ✅ 29/29. TSan → ✅ 29/29.
+  - Linux (ubuntu-24.04, GCC 13) core-only build → ✅ 16/16 (proto layer skipped;
+    libpq absent). Linux distributed (proto layer, protoc 3.21) → ✅ 5/5
+    (envelope, retry_policy, distributed_run_loop, redis_transport, pg_run_store).
+    Linux distributed_e2e (full repo + Node 20 + real Redis/Postgres) → ✅ PASS
+    (4.18s) after the pipe-wedge fix.
+  - `npm test` → ✅ exit 0 (all suites green; M29 parity 9/9). `npm run typecheck`
+    → ✅ exit 0. `npm run lint` → ✅ exit 0 (0 errors). `npm run build` (no
+    `.env.local`, no `SENTRY_AUTH_TOKEN`) → ✅ exit 0, all routes compiled.
+  - `scripts/secret-scan.sh` → ✅ clean (patterns verified to fire on known-bad
+    samples). `scripts/phase2/bench-smoke.sh` → ✅ PASS (raw=240 summary=24;
+    timings diagnostic only, not asserted).
+  - `.github/workflows/ci.yml` → YAML valid (parsed).
+- **Known limitations:** the engine token is a single shared service secret, not
+  per-org (tenant isolation is the app's Clerk auth + per-org quota). No TLS on
+  the gRPC channel (loopback today). Redis has no auth by default (loopback
+  binding). Secret scanning is a repo-tuned heuristic, not a dedicated scanner.
+  Metrics carry no auth (loopback only). All documented in SECURITY.md §5.
+- **Human action:** none (no new migration; no schema change; Neon untouched; no
+  secrets committed).
+- **COMMIT:** `M38_SHA` — `phase2(m38): add observability security and ci gates`
+- **NEXT:** M39 — Final reproducible performance, scaling, and chaos campaign.

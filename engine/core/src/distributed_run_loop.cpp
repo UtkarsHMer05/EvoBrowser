@@ -340,6 +340,9 @@ void DistributedRunLoop::dispatch_ready() {
     env.set_resource_class(to_proto_resource(pol.klass));
     env.set_affinity_key(pol.affinity_key);
     env.set_node_type(spec ? spec->type : "");
+    // M38: correlation id so workers can tie their logs/results back to this
+    // run across the scheduler -> worker boundary. Empty => unset.
+    if (!config_.trace_id.empty()) env.set_trace_id(config_.trace_id);
     auto payload = config_.node_payloads.find(id.value);
     env.set_node_payload_json(payload != config_.node_payloads.end()
                                   ? payload->second

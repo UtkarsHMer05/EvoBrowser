@@ -17,6 +17,9 @@ const eslintConfig = defineConfig([
     ".trigger/**",
     // Legacy course template files — not imported anywhere.
     "templates/**",
+    // Phase-2 C++ engine — pure C++, never linted by ESLint. Its CMake build
+    // trees emit compiler_depend.ts files that would otherwise trip the parser.
+    "engine/**",
   ]),
 ]);
 

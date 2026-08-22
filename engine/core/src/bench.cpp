@@ -32,7 +32,10 @@ TaskFn burn_task(const std::map<NodeId, unsigned long long>& iters_per_node) {
     const unsigned long long n = it == iters.end() ? 0 : it->second;
     volatile unsigned long long acc = 0;
     for (unsigned long long i = 0; i < n; ++i) {
-      acc += i * kMix;
+      // Simple assignment (not `+=`): compound assignment on a volatile operand
+      // is deprecated in C++20 (-Wvolatile). The volatile read+write still
+      // defeats dead-code elimination.
+      acc = acc + i * kMix;
     }
     (void)acc;
     return TaskResult{true, "burned " + std::to_string(n) + " iters"};
@@ -73,7 +76,9 @@ ConcurrentTaskFn burn_task_cooperative(
     // without running the full CPU loop to completion.
     constexpr unsigned long long kCheckEvery = 256;
     for (unsigned long long i = 0; i < n; ++i) {
-      acc += i * kMix;
+      // Simple assignment (not `+=`): compound assignment on a volatile operand
+      // is deprecated in C++20 (-Wvolatile).
+      acc = acc + i * kMix;
       if ((i % kCheckEvery) == 0 && st.stop_requested()) {
         return TaskResult{false, "canceled during burn"};
       }

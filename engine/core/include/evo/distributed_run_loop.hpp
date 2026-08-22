@@ -147,6 +147,13 @@ struct DistributedRunConfig {
   // re-acquires slots for in-flight nodes so capacity accounting survives a
   // restart.
   TenantQuotaGate* quota_gate = nullptr;
+
+  // --- Observability correlation (Milestone 38) ---
+  // Correlation id stamped into every dispatched TaskEnvelope (trace_id field)
+  // so workers can echo it back on results and logs, tying scheduler -> worker
+  // -> result together. Empty => envelopes carry no trace id (backwards
+  // compatible). The app sets this to the run id at submission.
+  std::string trace_id;
 };
 
 // Wall-clock UTC milliseconds since the Unix epoch — see run_store.hpp.

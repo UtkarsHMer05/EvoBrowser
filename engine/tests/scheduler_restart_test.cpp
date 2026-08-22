@@ -48,6 +48,8 @@
 #include "evo/redis_transport.hpp"
 #include "evo/run_store.hpp"
 
+#include "spawn_chdir.hpp"
+
 extern char** environ;
 
 using evo::PgRunStore;
@@ -115,7 +117,7 @@ ChildProc spawn_worker(const std::string& repo_root, const std::string& prefix,
 
   posix_spawn_file_actions_t actions;
   posix_spawn_file_actions_init(&actions);
-  posix_spawn_file_actions_addchdir(&actions, repo_root.c_str());
+  evo_spawn_addchdir(&actions, repo_root.c_str());
   posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null",
                                    O_WRONLY, 0);
   posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null",

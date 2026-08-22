@@ -54,11 +54,17 @@
 #include <grpcpp/grpcpp.h>
 
 #include "evo/bench.hpp"
+#include "evo/auth_token.hpp"
 #include "evo/concurrent_scheduler.hpp"
 #include "evo/dag.hpp"
 #include "evo/execution.grpc.pb.h"
+#include "evo/input_limits.hpp"
+#include "evo/log.hpp"
+#include "evo/metrics_registry.hpp"
 #include "evo/quota.hpp"
 #include "evo/scheduler.hpp"
+
+#include "metrics_http.hpp"
 
 #ifdef EVO_HAVE_DISTRIBUTED
 #include "evo/distributed_run_loop.hpp"
@@ -74,11 +80,15 @@ namespace {
 
 void log_line(const std::string& event, const std::string& run_id,
               const std::string& org_id, const std::string& detail = "") {
-  // Structured, secret-free log: event + identifiers only.
-  std::fprintf(stderr, "[evo-scheduler] event=%s run_id=%s org_id=%s%s%s\n",
-               event.c_str(), run_id.empty() ? "-" : run_id.c_str(),
-               org_id.empty() ? "-" : org_id.c_str(),
-               detail.empty() ? "" : " detail=", detail.c_str());
+  // M38: structured JSON log line (one object per line, wall-clock UTC ms).
+  // Identifiers only — never secrets (the logger also redacts secret-like
+  // keys as defense in depth).
+  evo::log::info(event, {
+                            {"service", "evo-scheduler"},
+                            {"run_id", run_id.empty() ? "-" : run_id},
+                            {"org_id", org_id.empty() ? "-" : org_id},
+                            {"detail", detail},
+                        });
 }
 
 std::string env_or(const char* name, const std::string& fallback) {
@@ -170,13 +180,66 @@ struct ActiveRun {
 class ControlServiceImpl final
     : public evo::execution::v1::ControlService::Service {
  public:
-  grpc::Status SubmitRun(grpc::ServerContext*,
+  // M38: service-to-service engine-token auth. When EVO_ENGINE_TOKEN is set
+  // (non-empty), every RPC must carry `authorization: Bearer <token>` metadata
+  // matching it (constant-time compare), else UNAUTHENTICATED. When unset,
+  // auth is disabled (backwards compatible; default binds loopback only). The
+  // token is read once at construction and never logged.
+  grpc::Status authorize(const grpc::ServerContext* ctx,
+                         const char* rpc) const {
+    if (engine_token_.empty()) return grpc::Status::OK;  // auth disabled
+    std::string presented;
+    const auto& metadata = ctx->client_metadata();
+    auto it = metadata.find("authorization");
+    if (it != metadata.end()) {
+      presented = evo::auth::extract_bearer(std::string(it->second.data(),
+                                                        it->second.size()));
+    }
+    if (!evo::auth::constant_time_equals(engine_token_, presented)) {
+      evo::log::warn("rpc_unauthenticated",
+                     {{"service", "evo-scheduler"}, {"rpc", rpc}});
+      return grpc::Status(grpc::UNAUTHENTICATED,
+                          "missing or invalid engine token");
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status SubmitRun(grpc::ServerContext* ctx,
                          const evo::execution::v1::SubmitRunRequest* req,
                          evo::execution::v1::SubmitRunResponse* resp) override {
+    if (const grpc::Status st = authorize(ctx, "SubmitRun"); !st.ok()) {
+      return st;
+    }
     const std::string rid = req->run_id();
     if (rid.empty()) {
       return grpc::Status(grpc::INVALID_ARGUMENT, "run_id is required");
     }
+    // M38: validate identifiers + payload size at the trust boundary, BEFORE
+    // mutating any state. Identifiers must be bounded [A-Za-z0-9._-]; the DAG
+    // payload must be within the size limit. Reject fail-closed.
+    if (!evo::limits::is_valid_identifier(rid)) {
+      return grpc::Status(grpc::INVALID_ARGUMENT,
+                          "run_id contains invalid characters or is too long");
+    }
+    if (!req->org_id().empty() &&
+        !evo::limits::is_valid_identifier(req->org_id())) {
+      return grpc::Status(grpc::INVALID_ARGUMENT,
+                          "org_id contains invalid characters or is too long");
+    }
+    if (!req->workflow_id().empty() &&
+        !evo::limits::is_valid_identifier(req->workflow_id())) {
+      return grpc::Status(
+          grpc::INVALID_ARGUMENT,
+          "workflow_id contains invalid characters or is too long");
+    }
+    if (!evo::limits::is_dag_size_ok(req->dag_json())) {
+      return grpc::Status(grpc::INVALID_ARGUMENT,
+                          "dag_json exceeds the maximum payload size");
+    }
+    // M38: count every submission attempt (before idempotency/quota checks).
+    metrics_.counter_add("evo_scheduler_submissions_total",
+                         "SubmitRun requests received by this scheduler.", {},
+                         1.0);
 
     {
       std::lock_guard lock(runs_mu_);
@@ -199,6 +262,9 @@ class ControlServiceImpl final
     if (!quota_gate_.admit_run(req->org_id())) {
       log_line("submit_rejected", rid, req->org_id(),
                "quota exhausted (active-run limit)");
+      metrics_.counter_add(
+          "evo_scheduler_submissions_rejected_total",
+          "SubmitRun requests rejected (quota or validation).", {}, 1.0);
       return grpc::Status(grpc::RESOURCE_EXHAUSTED,
                           "org active-run quota exhausted");
     }
@@ -221,9 +287,12 @@ class ControlServiceImpl final
     return submit_distributed(rid, req, std::move(dag), resp);
   }
 
-  grpc::Status CancelRun(grpc::ServerContext*,
+  grpc::Status CancelRun(grpc::ServerContext* ctx,
                          const evo::execution::v1::CancelRunRequest* req,
                          evo::execution::v1::CancelRunResponse* resp) override {
+    if (const grpc::Status st = authorize(ctx, "CancelRun"); !st.ok()) {
+      return st;
+    }
     std::lock_guard lock(runs_mu_);
     auto it = runs_.find(req->run_id());
     if (it == runs_.end()) {
@@ -259,9 +328,12 @@ class ControlServiceImpl final
     return grpc::Status::OK;
   }
 
-  grpc::Status GetRun(grpc::ServerContext*,
+  grpc::Status GetRun(grpc::ServerContext* ctx,
                       const evo::execution::v1::GetRunRequest* req,
                       evo::execution::v1::GetRunResponse* resp) override {
+    if (const grpc::Status st = authorize(ctx, "GetRun"); !st.ok()) {
+      return st;
+    }
     std::lock_guard lock(runs_mu_);
     auto it = runs_.find(req->run_id());
     if (it == runs_.end()) {
@@ -280,9 +352,12 @@ class ControlServiceImpl final
     return fill_run_local(e, resp);
   }
 
-  grpc::Status Health(grpc::ServerContext*,
+  grpc::Status Health(grpc::ServerContext* ctx,
                       const evo::execution::v1::HealthRequest*,
                       evo::execution::v1::HealthResponse* resp) override {
+    if (const grpc::Status st = authorize(ctx, "Health"); !st.ok()) {
+      return st;
+    }
     resp->set_ok(true);
     // M36 step 6: expose queue depth + rejected/deferred counters. The detail
     // carries a structured JSON snapshot of the quota gate (admitted/rejected
@@ -366,6 +441,10 @@ class ControlServiceImpl final
         raw->done = true;
       }
       quota_gate_.release_run(raw->org_id);  // M36: run is terminal
+      metrics_.counter_add(
+          "evo_scheduler_runs_terminal_total",
+          "Runs that reached a terminal state in this scheduler.",
+          {{"outcome", evo::execution::v1::RunOutcome_Name(outcome)}}, 1.0);
       log_line("run_terminal", rid, raw->org_id,
                std::string("outcome=") +
                    evo::execution::v1::RunOutcome_Name(outcome));
@@ -374,6 +453,9 @@ class ControlServiceImpl final
     resp->set_run_id(rid);
     resp->set_accepted(true);
     resp->set_message("run accepted");
+    metrics_.counter_add("evo_scheduler_submissions_accepted_total",
+                         "SubmitRun requests accepted for execution.",
+                         {{"mode", "local"}}, 1.0);
     log_line("submit_accepted", rid, req->org_id(), "mode=local");
     return grpc::Status::OK;
   }
@@ -455,6 +537,10 @@ class ControlServiceImpl final
     // M36: share the service-wide quota gate so the per-org in-flight task cap
     // and the global resource-class capacities are enforced ACROSS runs.
     dcfg.quota_gate = &quota_gate_;
+    // M38: propagate the correlation id into every dispatched TaskEnvelope so
+    // workers can tie logs/results back to this run. The app sets traceId to
+    // the run id; fall back to the run id when the client omits it.
+    dcfg.trace_id = req->trace_id().empty() ? rid : req->trace_id();
 
     // Pre-create the workers' task-stream group (mirrors the M26 E2E) so no
     // task is lost to a late "$" cursor. Idempotent (BUSYGROUP => ok).
@@ -490,6 +576,10 @@ class ControlServiceImpl final
         raw->done = true;
       }
       quota_gate_.release_run(raw->org_id);  // M36: run is terminal
+      metrics_.counter_add(
+          "evo_scheduler_runs_terminal_total",
+          "Runs that reached a terminal state in this scheduler.",
+          {{"outcome", evo::execution::v1::RunOutcome_Name(outcome)}}, 1.0);
       log_line("run_terminal", rid, raw->org_id,
                std::string("outcome=") +
                    evo::execution::v1::RunOutcome_Name(outcome));
@@ -498,6 +588,9 @@ class ControlServiceImpl final
     resp->set_run_id(rid);
     resp->set_accepted(true);
     resp->set_message("run accepted (distributed)");
+    metrics_.counter_add("evo_scheduler_submissions_accepted_total",
+                         "SubmitRun requests accepted for execution.",
+                         {{"mode", "distributed"}}, 1.0);
     log_line("submit_accepted", rid, req->org_id(), "mode=distributed");
     return grpc::Status::OK;
   }
@@ -524,36 +617,35 @@ class ControlServiceImpl final
     pcfg.dbname = env_or("EVO_PHASE2_PG_DB", "evo_phase2");
     evo::PgRunStore lister(pcfg);
     if (!lister.connect()) {
-      std::fprintf(stderr,
-                   "[evo-scheduler] reconcile: Postgres unreachable; skipping "
-                   "active-run reconciliation\n");
+      evo::log::warn("reconcile_pg_unreachable",
+                     {{"service", "evo-scheduler"},
+                      {"detail", "skipping active-run reconciliation"}});
       return;
     }
     const std::vector<std::string> active = lister.list_active_evo_run_ids();
     if (active.empty()) {
-      std::fprintf(stderr, "[evo-scheduler] reconcile: no active evo runs\n");
+      evo::log::info("reconcile_no_active_runs",
+                     {{"service", "evo-scheduler"}});
       return;
     }
-    std::fprintf(stderr,
-                 "[evo-scheduler] reconcile: %zu active evo run(s) to resume\n",
-                 active.size());
+    evo::log::info("reconcile_start",
+                   {{"service", "evo-scheduler"},
+                    {"active_runs", std::to_string(active.size())}});
 
     for (const std::string& rid : active) {
       auto run = lister.get_run(rid);
       if (!run.has_value()) continue;
       if (run->dag_json.empty()) {
-        std::fprintf(stderr,
-                     "[evo-scheduler] reconcile: run %s has no durable dag_json "
-                     "(pre-M35); skipping\n",
-                     rid.c_str());
+        evo::log::warn("reconcile_skip_no_dag",
+                       {{"service", "evo-scheduler"},
+                        {"run_id", rid},
+                        {"detail", "no durable dag_json (pre-M35)"}});
         continue;
       }
       auto parse = evo::Dag::from_json_string(run->dag_json);
       if (!parse.ok() || !parse.dag.has_value()) {
-        std::fprintf(stderr,
-                     "[evo-scheduler] reconcile: run %s dag_json invalid; "
-                     "skipping\n",
-                     rid.c_str());
+        evo::log::warn("reconcile_skip_invalid_dag",
+                       {{"service", "evo-scheduler"}, {"run_id", rid}});
         continue;
       }
       evo::Dag dag = std::move(*parse.dag);
@@ -579,19 +671,15 @@ class ControlServiceImpl final
       rcfg.port = std::atoi(env_or("EVO_PHASE2_REDIS_PORT", "6390").c_str());
       entry->transport = std::make_unique<evo::RedisTransport>(rcfg);
       if (!entry->transport->connect()) {
-        std::fprintf(stderr,
-                     "[evo-scheduler] reconcile: run %s Redis unreachable; "
-                     "skipping\n",
-                     rid.c_str());
+        evo::log::warn("reconcile_skip_redis_unreachable",
+                       {{"service", "evo-scheduler"}, {"run_id", rid}});
         continue;
       }
 
       entry->store = std::make_unique<evo::PgRunStore>(pcfg);
       if (!entry->store->connect()) {
-        std::fprintf(stderr,
-                     "[evo-scheduler] reconcile: run %s Postgres unreachable; "
-                     "skipping\n",
-                     rid.c_str());
+        evo::log::warn("reconcile_skip_pg_unreachable",
+                       {{"service", "evo-scheduler"}, {"run_id", rid}});
         continue;
       }
 
@@ -608,6 +696,9 @@ class ControlServiceImpl final
       dcfg.read_block_ms = std::chrono::milliseconds(100);
       dcfg.resume = true;  // M35: reconstruct from durable state
       dcfg.quota_gate = &quota_gate_;  // M36: share the service-wide gate
+      // M38: the trace id is not persisted; the app sets traceId == runId, so
+      // the run id is the correct correlation id for a resumed run.
+      dcfg.trace_id = rid;
 
       // M36: a resumed run is EXISTING durable work, not a new submission, so
       // it is RE-COUNTED (never rejected) against the org's active-run quota.
@@ -645,14 +736,20 @@ class ControlServiceImpl final
           raw->done = true;
         }
         quota_gate_.release_run(raw->org_id);  // M36: run is terminal
+        metrics_.counter_add(
+            "evo_scheduler_runs_terminal_total",
+            "Runs that reached a terminal state in this scheduler.",
+            {{"outcome", evo::execution::v1::RunOutcome_Name(outcome)}}, 1.0);
         log_line("run_terminal", rid, raw->org_id,
                  std::string("outcome=") +
                      evo::execution::v1::RunOutcome_Name(outcome) +
                      " (resumed)");
       });
 
-      std::fprintf(stderr, "[evo-scheduler] reconcile: resumed run %s\n",
-                   rid.c_str());
+      evo::log::info("reconcile_resumed_run",
+                     {{"service", "evo-scheduler"},
+                      {"run_id", rid},
+                      {"org_id", run->org_id}});
     }
   }
 
@@ -839,6 +936,53 @@ class ControlServiceImpl final
   //   EVO_FAIR_DEMAND_TIMEOUT_MS          demand-freshness window (default 5000)
   evo::TenantQuotaGate quota_gate_{make_quota_config()};
 
+  // M38: service-wide metrics registry, rendered at GET /metrics (Prometheus
+  // text format) by the loopback metrics HTTP server. Counters are bumped on
+  // the submit/terminal paths below; the active-run gauge is derived from the
+  // runs_ map at render time.
+  evo::metrics::MetricsRegistry metrics_;
+
+  // M38: shared engine token for service-to-service auth. Read once from
+  // EVO_ENGINE_TOKEN at construction; empty => auth disabled (backwards
+  // compatible). Never logged, never exposed to a browser.
+  const std::string engine_token_{env_or("EVO_ENGINE_TOKEN", "")};
+
+ public:
+  // Render the full Prometheus document: service counters + quota gate
+  // counters + the current active-run gauge. Called per /metrics scrape.
+  // Public so main() can hand it to the loopback metrics HTTP server.
+  std::string render_metrics() {
+    {
+      std::lock_guard lock(runs_mu_);
+      metrics_.gauge_set("evo_scheduler_active_runs",
+                         "Runs currently active (not terminal) in this scheduler.",
+                         {}, static_cast<double>(runs_.size()));
+    }
+    const auto qc = quota_gate_.counters();
+    metrics_.counter_set(
+        "evo_quota_admitted_runs_total",
+        "Runs admitted by the tenant quota gate since process start.", {},
+        static_cast<double>(qc.admitted_runs));
+    metrics_.counter_set(
+        "evo_quota_rejected_runs_total",
+        "Runs rejected (RESOURCE_EXHAUSTED) by the tenant quota gate.", {},
+        static_cast<double>(qc.rejected_runs));
+    metrics_.counter_set(
+        "evo_quota_acquired_tasks_total",
+        "Task slots acquired from the tenant quota gate.", {},
+        static_cast<double>(qc.acquired_tasks));
+    metrics_.counter_set(
+        "evo_quota_deferred_tasks_total",
+        "Task dispatches deferred by the tenant quota gate (backpressure).", {},
+        static_cast<double>(qc.deferred_tasks));
+    metrics_.counter_set(
+        "evo_quota_fair_order_deferrals_total",
+        "Task dispatches deferred by fair-scheduling tenant ordering (M37).", {},
+        static_cast<double>(qc.fair_order_deferrals));
+    return metrics_.render();
+  }
+
+ private:
   static evo::QuotaConfig make_quota_config() {
     evo::QuotaConfig cfg;
     cfg.max_active_runs_per_org =
@@ -907,11 +1051,32 @@ int main() {
   builder.SetMaxMessageSize(64 * 1024 * 1024);  // 64MB DAG payloads
   std::shared_ptr<grpc::Server> server(builder.BuildAndStart());
   if (!server) {
-    std::fprintf(stderr, "[evo-scheduler] failed to bind %s\n", addr.c_str());
+    evo::log::error("grpc_bind_failed",
+                    {{"service", "evo-scheduler"}, {"addr", addr}});
     return 1;
   }
-  std::fprintf(stderr, "[evo-scheduler] listening on %s commit=%s\n",
-               addr.c_str(), EVO_BUILD_COMMIT);
+  evo::log::info("grpc_listening",
+                 {{"service", "evo-scheduler"},
+                  {"addr", addr},
+                  {"commit", EVO_BUILD_COMMIT}});
+
+  // M38: loopback Prometheus metrics endpoint (GET /metrics). Opt-in port via
+  // EVO_METRICS_PORT (default 9090); set EVO_METRICS_PORT=0 to disable. A bind
+  // failure is logged and non-fatal — the scheduler still serves gRPC.
+  std::unique_ptr<evo::service::MetricsHttpServer> metrics_server;
+  const char* metrics_port_env = std::getenv("EVO_METRICS_PORT");
+  const int metrics_port =
+      (metrics_port_env && *metrics_port_env) ? std::atoi(metrics_port_env) : 9090;
+  if (metrics_port > 0) {
+    metrics_server = std::make_unique<evo::service::MetricsHttpServer>(
+        metrics_port, [&service] { return service.render_metrics(); });
+    if (!metrics_server->start()) {
+      evo::log::warn("metrics_http_bind_failed",
+                     {{"service", "evo-scheduler"},
+                      {"port", std::to_string(metrics_port)}});
+      metrics_server.reset();
+    }
+  }
 
   // Block SIGINT/SIGTERM in all threads, then wait for one on a dedicated
   // thread that triggers a clean Shutdown() (async-signal-safe, no busy-spin).
@@ -923,8 +1088,12 @@ int main() {
   std::thread signal_thread([&server, &sigset]() {
     int sig = 0;
     sigwait(&sigset, &sig);  // blocks until SIGINT/SIGTERM
-    std::fprintf(stderr, "[evo-scheduler] signal %d received; shutting down\n",
-                 sig);
+    // sigwait returns in normal thread context (not a signal handler), so
+    // structured logging here is safe.
+    evo::log::info("signal_received",
+                   {{"service", "evo-scheduler"},
+                    {"signal", std::to_string(sig)},
+                    {"detail", "shutting down"}});
     server->Shutdown();
   });
 
@@ -932,6 +1101,6 @@ int main() {
   if (signal_thread.joinable()) signal_thread.join();
 
   service.shutdown();  // drain in-flight runs
-  std::fprintf(stderr, "[evo-scheduler] stopped cleanly\n");
+  evo::log::info("stopped_cleanly", {{"service", "evo-scheduler"}});
   return 0;
 }

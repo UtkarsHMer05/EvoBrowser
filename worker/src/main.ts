@@ -51,6 +51,7 @@ import {
 } from "./durable-loaders";
 import { PgTaskLeaseStore } from "./lease-store";
 import { createNodeExecutorAdapter } from "./node-executor-adapter";
+import { createWorkerLogger } from "./logger";
 import { RedisStreamsClient, eventStreamKey } from "./redis-streams";
 import { syntheticExecutor } from "./synthetic-executor";
 import { Worker, type TaskExecutor } from "./worker";
@@ -62,6 +63,12 @@ const password = process.env.EVO_PHASE2_REDIS_PASSWORD || undefined;
 const envPrefix = process.env.EVO_WORKER_ENV_PREFIX ?? "evo:dev";
 const group = process.env.EVO_WORKER_GROUP ?? "workers";
 const workerId = process.env.EVO_WORKER_ID || undefined;
+
+// M38: structured JSON logging with secret redaction. The worker's existing
+// `[workerId] ... key=value` log lines are parsed into JSON records; secret-like
+// fields (password/token/api_key/...) are redacted before emission. This is the
+// default sink for the Worker's `log` callback and for main.ts's own messages.
+const logger = createWorkerLogger({ service: "evo-worker" });
 
 // Milestone 34: lease/heartbeat cadence is env-configurable so the
 // crash-recovery failure-injection test can use short leases (fast reap) while
@@ -108,7 +115,7 @@ async function publishRunEvent(
   } catch (err) {
     // Event publishing is best-effort (M26: the durable store is
     // authoritative). Never fail the run over a missed UI event.
-    console.log(`[worker] event publish failed (${kind}): ${String(err)}`);
+    logger.log(`[worker] event publish failed kind=${kind} err=${String(err)}`);
   }
 }
 
@@ -141,7 +148,7 @@ const browserSessions = new BrowserSessionManager({
   // replay/screenshot/live-view can resolve the session from the durable
   // store even after the event stream is gone.
   onSessionOpened: (info) => {
-    console.log(
+    logger.log(
       `[worker] browser session opened run=${info.runId} key=${info.affinityKey} browserbaseSessionId=${info.browserbaseSessionId ?? "unknown"}`,
     );
     if (info.browserbaseSessionId) {
@@ -165,7 +172,7 @@ const browserSessions = new BrowserSessionManager({
   isLiveViewConnected: isEvoLiveViewConnected,
   liveViewWaitMs: LIVE_VIEW_WAIT_MS,
   liveViewPollMs: LIVE_VIEW_POLL_MS,
-  log: (msg) => console.log(msg),
+  log: (msg) => logger.log(msg),
 });
 
 // Persist a run's Browserbase session id on the run row (M29). The durable
@@ -190,8 +197,8 @@ async function saveRunBrowserbaseSession(
         ),
       );
   } catch (err) {
-    console.log(
-      `[worker] browserbase session id save failed: ${String(err)}`,
+    logger.log(
+      `[worker] browserbase session id save failed err=${String(err)}`,
     );
   }
 }
@@ -216,9 +223,9 @@ async function saveRunScreenshot(
         target: runArtifacts.runId,
         set: { screenshotBase64 },
       });
-    console.log(`[worker] screenshot saved for run=${runId}`);
+    logger.log(`[worker] screenshot saved run=${runId}`);
   } catch (err) {
-    console.log(`[worker] screenshot save failed: ${String(err)}`);
+    logger.log(`[worker] screenshot save failed run=${runId} err=${String(err)}`);
   }
 }
 
@@ -265,6 +272,8 @@ const worker = new Worker({
   group,
   workerId,
   executor: compositeExecutor,
+  // M38: structured JSON logging (secret redaction) for all worker log lines.
+  log: (msg) => logger.log(msg),
   onShutdown: () => browserSessions.closeAll(),
   // M30: a CANCEL_RUN control message aborts this worker's in-flight attempts
   // for the run (worker.ts); close the run's browser session promptly here so
@@ -282,7 +291,7 @@ let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`[worker] received ${signal}; draining...`);
+  logger.log(`[worker] received signal=${signal}; draining...`);
   await worker.stop();
   await eventPublisher.disconnect().catch(() => undefined);
   await leaseStore.close().catch(() => undefined);
@@ -296,9 +305,9 @@ worker
   .start()
   .then(async () => {
     await eventPublisher.connect().catch(() => undefined);
-    console.log(`[worker] ${worker.workerId} running (product executors)`);
+    logger.log(`[worker] ${worker.workerId} running (product executors)`);
   })
   .catch((err) => {
-    console.error("[worker] failed to start:", err);
+    logger.logEvent("error", "worker_start_failed", { err: String(err) });
     process.exit(1);
   });

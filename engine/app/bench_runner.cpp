@@ -222,9 +222,13 @@ int main(int argc, char** argv) {
   std::ofstream manifest(out_dir / "manifest.csv");
   manifest << "phase,workload,workers,seq_ms,con_ms,speedup,p50,p95,p99\n";
   manifest << "# metadata,commit=" << EVO_BUILD_COMMIT
-           << ",build=Release,arch=" <<  // build type baked into this binary
-#ifdef __APPLE__
-           "apple"
+           << ",build=Release,arch="  // build type baked into this binary
+#if defined(__APPLE__)
+           << "apple"
+#elif defined(__linux__)
+           << "linux"
+#else
+           << "unknown"
 #endif
            << "\n";
 

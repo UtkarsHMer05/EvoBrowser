@@ -1,0 +1,294 @@
+# Phase 2 — CI quality gates (Milestone 38).
+#
+# Ordinary PR CI must NOT require Browserbase / Resend / Clerk / Neon / any paid
+# external key (M38 step 8). Every job below runs on a stock GitHub runner with
+# only open-source system packages + the isolated Phase-2 Redis/Postgres stack.
+#
+# Jobs:
+#   secret-scan   — scripts/secret-scan.sh (no committed secrets)
+#   node          — Phase-1 regression gates: npm test / typecheck / lint / build
+#   cpp-gcc       — GCC core build + CTest (protobuf layer gracefully skipped)
+#   cpp-clang     — Clang core build + CTest
+#   cpp-asan      — AddressSanitizer + UBSan core build + CTest
+#   cpp-tsan      — ThreadSanitizer core build + CTest
+#   distributed   — Redis/Postgres synthetic integration + gRPC auth-negative +
+#                   distributed e2e / crash-recovery / scheduler-restart
+#   bench-smoke   — benchmark HARNESS smoke (asserts structure, never timing)
+#
+# The committed protobuf gencode is pinned to the exact protobuf runtime it was
+# generated with (see engine/proto/evo_gen/evo/execution.pb.h). Stock runners do
+# not ship that runtime, so the distributed job regenerates gencode against the
+# runner's own protobuf (engine/proto/generate.sh) before building the proto
+# layer. Core-only jobs skip the proto layer entirely (engine/CMakeLists.txt
+# degrades gracefully when protobuf is absent).
+
+name: phase2-ci
+
+on:
+  push:
+    branches: [main, phase2]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to keep shared runners free.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Isolated Phase-2 local infra defaults (NON-secret; 127.0.0.1-only). These
+  # mirror scripts/phase2/lib.sh and infra/phase2/docker-compose.yml. They never
+  # reference DATABASE_URL / Neon.
+  EVO_PHASE2_REDIS_PORT: "6390"
+  EVO_PHASE2_PG_PORT: "5433"
+  EVO_PHASE2_PG_USER: "evo"
+  EVO_PHASE2_PG_PASSWORD: "evo_dev_password"
+  EVO_PHASE2_PG_DB: "evo_phase2"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Secret scan — fail fast if any tracked file carries secret-looking content.
+  # ---------------------------------------------------------------------------
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Run secret scan
+        run: bash scripts/secret-scan.sh
+
+  # ---------------------------------------------------------------------------
+  # Phase-1 Node regression gates. No external keys required: the suites skip
+  # cleanly when the local Phase-2 stack / live services are absent, and the
+  # production build succeeds without SENTRY_AUTH_TOKEN / .env.local.
+  # ---------------------------------------------------------------------------
+  node:
+    name: Phase-1 Node gates (test/typecheck/lint/build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit / regression suites
+        run: npm test
+      - name: Type check
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Production build (no secrets)
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # C++ core build + tests — GCC. The proto layer is skipped (no protobuf on the
+  # runner); the full scheduler core + all M38 pure-core security/observability
+  # tests still build and run.
+  # ---------------------------------------------------------------------------
+  cpp-gcc:
+    name: C++ core (GCC) build + tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ cmake make
+      - name: Configure (core-only)
+        working-directory: engine
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_DISABLE_FIND_PACKAGE_protobuf=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_Protobuf=ON
+      - name: Build
+        working-directory: engine
+        run: cmake --build build -j"$(nproc)"
+      - name: CTest
+        working-directory: engine
+        run: ctest --test-dir build --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # C++ core build + tests — Clang.
+  # ---------------------------------------------------------------------------
+  cpp-clang:
+    name: C++ core (Clang) build + tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang cmake ninja-build
+      - name: Configure (core-only)
+        working-directory: engine
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_DISABLE_FIND_PACKAGE_protobuf=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_Protobuf=ON
+      - name: Build
+        working-directory: engine
+        run: cmake --build build -j"$(nproc)"
+      - name: CTest
+        working-directory: engine
+        run: ctest --test-dir build --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Sanitizer CI — AddressSanitizer + UBSan on the scheduler core. Core-only so
+  # the job stays fast and deterministic on shared runners; the concurrency-heavy
+  # core tests (concurrent_scheduler, thread_pool, stress) are the prime target.
+  # ---------------------------------------------------------------------------
+  cpp-asan:
+    name: C++ core ASan+UBSan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ cmake ninja-build
+      - name: Configure (ASan+UBSan, core-only)
+        working-directory: engine
+        run: >
+          cmake -S . -B build-asan -G Ninja
+          -DEVO_ENABLE_ASAN=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_protobuf=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_Protobuf=ON
+      - name: Build
+        working-directory: engine
+        run: cmake --build build-asan -j"$(nproc)"
+      - name: CTest
+        working-directory: engine
+        run: ctest --test-dir build-asan --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Sanitizer CI — ThreadSanitizer on the scheduler core. Mutually exclusive with
+  # ASan (separate build dir, separate job).
+  # ---------------------------------------------------------------------------
+  cpp-tsan:
+    name: C++ core TSan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ cmake ninja-build
+      - name: Configure (TSan, core-only)
+        working-directory: engine
+        run: >
+          cmake -S . -B build-tsan -G Ninja
+          -DEVO_ENABLE_TSAN=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_protobuf=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_Protobuf=ON
+      - name: Build
+        working-directory: engine
+        run: cmake --build build-tsan -j"$(nproc)"
+      - name: CTest
+        working-directory: engine
+        run: ctest --test-dir build-tsan --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Distributed synthetic integration — real Redis + real Postgres + the proto
+  # layer + gRPC ControlService. Regenerates protobuf gencode against the
+  # runner's protobuf, builds hiredis from source, migrates the isolated PG
+  # schema, then runs the transport / run-store / run-loop / e2e / crash /
+  # restart tests plus the gRPC auth-negative + quota-admission gates.
+  #
+  # No Browserbase/Resend keys: the TS workers run the synthetic "bench:*"
+  # executor, never a real browser.
+  # ---------------------------------------------------------------------------
+  distributed:
+    name: Distributed integration (Redis+Postgres+gRPC)
+    runs-on: ubuntu-24.04
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6390:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: evo
+          POSTGRES_PASSWORD: evo_dev_password
+          POSTGRES_DB: evo_phase2
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U evo -d evo_phase2"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Install system deps (protobuf, grpc, libpq, psql client)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            g++ cmake ninja-build git \
+            libprotobuf-dev protobuf-compiler protobuf-compiler-grpc \
+            libgrpc++-dev pkg-config \
+            libpq-dev postgresql-client
+      - name: Install Node deps (for `npx tsx` workers)
+        run: npm ci
+      - name: Regenerate protobuf gencode against runner protobuf
+        working-directory: engine
+        run: bash proto/generate.sh
+      - name: Build static hiredis
+        working-directory: engine
+        run: bash third_party/build-hiredis.sh
+      - name: Migrate isolated Phase-2 Postgres (direct TCP)
+        run: bash scripts/phase2/migrate-local.sh
+      - name: "Configure (full: proto + gRPC + redis + pg)"
+        working-directory: engine
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        working-directory: engine
+        run: cmake --build build -j"$(nproc)"
+      - name: CTest (distributed + gRPC auth/quota gates)
+        working-directory: engine
+        run: ctest --test-dir build --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Benchmark smoke — proves the benchmark HARNESS works end-to-end (manifest
+  # well-formed, commit/build metadata present, raw + summary samples emitted).
+  # Asserts structure only; NEVER asserts timing on shared runners (M38 step 9).
+  # Evidence-grade numbers are Milestone 39 on the reference machine.
+  # ---------------------------------------------------------------------------
+  bench-smoke:
+    name: Benchmark harness smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++ cmake ninja-build
+      - name: Configure (core-only)
+        working-directory: engine
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_DISABLE_FIND_PACKAGE_protobuf=ON
+          -DCMAKE_DISABLE_FIND_PACKAGE_Protobuf=ON
+      - name: Build evo-bench
+        working-directory: engine
+        run: cmake --build build --target evo-bench -j"$(nproc)"
+      - name: Benchmark smoke (structure only, no timing asserts)
+        run: bash scripts/phase2/bench-smoke.sh engine/build/evo-bench
