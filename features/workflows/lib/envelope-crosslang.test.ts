@@ -13,20 +13,19 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import protobuf, { Type } from "protobufjs";
 
 console.log("TEST: M22 cross-language envelope compatibility");
 
-const PROTO_PATH =
-  "/Users/utkarshkhajuria/Desktop/evo builder/engine/proto/evo/execution.proto";
-const FIXTURE_DIR =
-  "/Users/utkarshkhajuria/Desktop/evo builder/engine/tests/fixtures";
+const PROTO_PATH = fileURLToPath(
+  new URL("../../../engine/proto/evo/execution.proto", import.meta.url),
+);
+const FIXTURE_DIR = fileURLToPath(
+  new URL("../../../engine/tests/fixtures", import.meta.url),
+);
 
 const root = await protobuf.load(PROTO_PATH);
-const wellKnown = await protobuf.load(
-  "/opt/homebrew/include/google/protobuf/timestamp.proto",
-);
-root.add(wellKnown);
 
 const TaskEnvelope = root.lookupType("evo.execution.v1.TaskEnvelope") as Type;
 const ResultEnvelope = root.lookupType(
@@ -69,9 +68,7 @@ assert.equal(
 ok("TS decodes C++ TaskEnvelope fixture (all fields preserved)");
 
 // Byte-identical re-encode.
-const taskReencoded = TaskEnvelope.encode(
-  TaskEnvelope.create(task),
-).finish();
+const taskReencoded = TaskEnvelope.encode(TaskEnvelope.create(task)).finish();
 assert.deepEqual(
   Buffer.from(taskReencoded),
   taskBytes,

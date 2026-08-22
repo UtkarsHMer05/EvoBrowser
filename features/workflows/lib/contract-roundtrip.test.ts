@@ -9,20 +9,16 @@
 // Run as part of: npm test  (this file is picked up by tsx).
 
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import protobuf, { Service, Type } from "protobufjs";
 
 console.log("TEST: TS protobuf contract round-trip");
 
-const PROTO_PATH =
-  "/Users/utkarshkhajuria/Desktop/evo builder/engine/proto/evo/execution.proto";
+const PROTO_PATH = fileURLToPath(
+  new URL("../../../engine/proto/evo/execution.proto", import.meta.url),
+);
 
 const root = await protobuf.load(PROTO_PATH);
-
-// Resolve the well-known google.protobuf.Timestamp imported by the proto.
-const wellKnown = await protobuf.load(
-  "/opt/homebrew/include/google/protobuf/timestamp.proto",
-);
-root.add(wellKnown);
 
 const SubmitRunRequest = root.lookupType(
   "evo.execution.v1.SubmitRunRequest",
@@ -31,7 +27,9 @@ const TaskEnvelope = root.lookupType("evo.execution.v1.TaskEnvelope") as Type;
 const ResultEnvelope = root.lookupType(
   "evo.execution.v1.ResultEnvelope",
 ) as Type;
-const ControlServiceRaw = root.lookup("evo.execution.v1.ControlService") as Service;
+const ControlServiceRaw = root.lookup(
+  "evo.execution.v1.ControlService",
+) as Service;
 const ControlService = ControlServiceRaw as Service;
 
 interface TimestampLike {
@@ -129,7 +127,11 @@ interface ResultEnvelopeView {
     enums: String,
   }) as unknown as TaskEnvelopeView;
 
-  assert.equal(back.resourceClass, "BROWSER", "TaskEnvelope resource_class BROWSER");
+  assert.equal(
+    back.resourceClass,
+    "BROWSER",
+    "TaskEnvelope resource_class BROWSER",
+  );
   assert.equal(back.affinityKey, "run:run_X", "TaskEnvelope affinity_key");
   assert.equal(back.attemptNumber, 1, "TaskEnvelope attempt_number");
   assert.equal(
@@ -144,7 +146,9 @@ interface ResultEnvelopeView {
     1234567,
     "TaskEnvelope became_ready_at (wall-clock) round-trips",
   );
-  console.log("  ok   TaskEnvelope round-trip preserved (resource class + affinity)");
+  console.log(
+    "  ok   TaskEnvelope round-trip preserved (resource class + affinity)",
+  );
 }
 
 // --- ResultEnvelope round-trip ---
@@ -167,7 +171,11 @@ interface ResultEnvelopeView {
 
   assert.equal(back.completed, true, "ResultEnvelope completed");
   assert.equal(back.status, "OK", "ResultEnvelope status OK");
-  assert.equal(back.abandoned, false, "ResultEnvelope abandoned defaults false");
+  assert.equal(
+    back.abandoned,
+    false,
+    "ResultEnvelope abandoned defaults false",
+  );
   console.log("  ok   ResultEnvelope round-trip preserved");
 }
 
@@ -179,7 +187,9 @@ interface ResultEnvelopeView {
   assert.ok(methodNames.includes("CancelRun"), "ControlService has CancelRun");
   assert.ok(methodNames.includes("GetRun"), "ControlService has GetRun");
   assert.ok(methodNames.includes("Health"), "ControlService has Health");
-  console.log("  ok   ControlService exposes 4 RPCs (Submit/Cancel/Get/Health)");
+  console.log(
+    "  ok   ControlService exposes 4 RPCs (Submit/Cancel/Get/Health)",
+  );
 }
 
 console.log("\nALL PROTOBUF CONTRACT ROUND-TRIP TESTS PASSED! (4/4)");
