@@ -47,7 +47,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M35 | Implement scheduler restart recovery and durable reconciliation | ✅ DONE | `fb5313e` |
 | M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `d490b7b` |
 | M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `02cc98e` |
-| M38 | Add observability, service security, and CI quality gates | ✅ DONE | `M38_SHA` |
+| M38 | Add observability, service security, and CI quality gates | ✅ DONE | `f9aa65e` |
 
 ---
 
@@ -2715,5 +2715,5 @@ tenant's whole backlog. Default remains M36 FCFS (backwards compatible).
   Metrics carry no auth (loopback only). All documented in SECURITY.md §5.
 - **Human action:** none (no new migration; no schema change; Neon untouched; no
   secrets committed).
-- **COMMIT:** `M38_SHA` — `phase2(m38): add observability security and ci gates`
+- **COMMIT:** `f9aa65e` — `phase2(m38): add observability security and ci gates`
 - **NEXT:** M39 — Final reproducible performance, scaling, and chaos campaign.
