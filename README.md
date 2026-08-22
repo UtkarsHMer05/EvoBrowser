@@ -24,6 +24,7 @@
   <a href="#-key-features">Key Features</a> &nbsp;&bull;&nbsp;
   <a href="#-workflow-node-catalog">Node Catalog</a> &nbsp;&bull;&nbsp;
   <a href="#-system-architecture">Architecture</a> &nbsp;&bull;&nbsp;
+  <a href="#-phase-2--the-evo-engine">Phase 2</a> &nbsp;&bull;&nbsp;
   <a href="#-getting-started">Getting Started</a> &nbsp;&bull;&nbsp;
   <a href="#-testing">Testing</a> &nbsp;&bull;&nbsp;
   <a href="#-observability--security">Security</a>
@@ -60,10 +61,10 @@ The core loop:
 2. **Multiplayer Visual Canvas**: A drag-and-drop graph canvas built on `@xyflow/react` and `@liveblocks/react-flow`, with live cursors, presence, and organization-scoped rooms.
 3. **AI-Native Browser Engine (Stagehand V3 + Gemini 2.5 Flash)**: Natural-language `act`, `observe`, `extract`, and autonomous `agent` actions that adapt to DOM changes instead of brittle selectors.
 4. **Managed Cloud Browsers (Browserbase)**: Isolated cloud browser sessions with built-in recording, live debug view, and HLS replay.
-5. **Durable Execution (Trigger.dev v4)**: Workflows run as background tasks with topological ordering, automatic retries, manual cancellation, and real-time metadata streaming.
+5. **Dual Execution Engines**: the Phase-1 **Trigger.dev** engine (the default) and the Phase-2 **Evo engine** — a C++20 concurrent DAG scheduler with a Redis Streams + Postgres distributed worker runtime — selectable behind a fail-closed server-side feature flag.
 6. **Multi-Tenant SaaS**: Organization isolation via Clerk Auth, Pro-plan gates via Clerk Billing, and serverless Neon Postgres via Drizzle ORM.
 
-> **Scope note:** This is the **Phase-1 product**. Execution is a **single sequential durable task** that walks the DAG node-by-node and drives **one shared cloud browser session per run**. There is no distributed scheduler, no custom thread pool, and no worker fleet — those belong to a future phase.
+> **Scope note:** The **default engine is the Phase-1 Trigger.dev path**: a single sequential durable task that walks the DAG node-by-node and drives **one shared cloud browser session per run**. Phase 2 adds the **Evo engine** beside it (opt-in via `EXECUTION_ENGINE=evo`): a C++20 dependency-aware scheduler, durable run store, and TypeScript worker fleet. Nothing about Phase 2 changes Phase-1 default behavior — the flag is fail-closed, and any value other than `evo` stays on Trigger.dev. See [Phase 2 — the Evo engine](#-phase-2--the-evo-engine) and `docs/phase2/` for the full design, evidence, and limitations.
 
 ---
 
@@ -358,6 +359,57 @@ flowchart TD
 
 ---
 
+## 🚀 Phase 2 — The Evo Engine
+
+Phase 2 adds a second execution engine **beside** the Phase-1 Trigger.dev path — it does not replace it. Both engines sit behind one engine-neutral adapter interface (`start / cancel / query`) selected by a server-only, **fail-closed** feature flag:
+
+```bash
+EXECUTION_ENGINE=legacy|evo    # default: legacy (Trigger.dev)
+```
+
+Only the exact string `evo` selects the Evo engine; unset, empty, or a typo stays on Trigger.dev. Clerk authorization and the Pro-plan gate run **before** an engine is selected, so neither engine is reachable without passing auth.
+
+```mermaid
+flowchart TD
+    RunAction["runWorkflowAction (auth + plan gate first)"]
+    Flag{"EXECUTION_ENGINE"}
+    Legacy["Legacy adapter → Trigger.dev runWorkflowTask (Phase 1, unchanged)"]
+    Evo["Evo adapter → gRPC ControlService"]
+
+    subgraph EvoEngine ["Evo engine (opt-in)"]
+        Sched["C++20 scheduler service (evo-scheduler-server)<br/>DAG scheduler · state machines · leases · retries<br/>quotas · fairness · cancellation · restart recovery"]
+        Redis["Redis Streams transport<br/>(task / result / control / event)"]
+        PG[("Postgres durable run store<br/>runs · node_runs · task_attempts · leases · idempotency")]
+        Workers["TypeScript workers (worker/src/main.ts)<br/>reuse the existing node executors + interpolation"]
+    end
+
+    RunAction --> Flag
+    Flag -->|legacy (default)| Legacy
+    Flag -->|evo| Evo --> Sched
+    Sched <--> Redis
+    Sched <--> PG
+    Redis <--> Workers
+    Workers -->|Stagehand / Browserbase / Resend| BB["Cloud browser + APIs"]
+```
+
+**What the Evo engine adds:**
+
+- **Dependency-aware concurrent scheduling** — independent DAG branches run in parallel on a bounded `std::jthread` pool; browser nodes serialize on a capacity-1 affinity key (one browser session per run).
+- **Durable distributed runtime** — Redis Streams at-least-once transport + Postgres authoritative run store; a node's terminal state is persisted **before** successors unlock, so duplicate deliveries can never double-apply.
+- **Reliability** — worker leases + heartbeats, node-level retry with backoff/jitter + dead-lettering, idempotency ledger, worker crash recovery, scheduler restart recovery, and end-to-end cancellation.
+- **Multi-tenancy** — per-org quotas + backpressure and opt-in fair scheduling (weighted least-served-first).
+- **UI parity** — Evo runs use the same Run/Stop/live-view/results/replay experience (9/9 legacy-vs-evo parity scenarios regression-tested).
+
+**Measured, evidence-backed performance** (Apple M2, Release; full registry in [`docs/phase2/RESUME_EVIDENCE.md`](docs/phase2/RESUME_EVIDENCE.md)):
+
+- Near-linear speedup on **simulated I/O-bound** scheduler workloads: **8.01× at 8 threads** vs the sequential reference (parallel efficiency ~1.00); 5.57× thread-scaling on synthetic CPU workloads.
+- Worker crash recovery (SIGKILL fault injection): median **6.5s**, no lost tasks; chaos-tested resilience to mid-run Redis/Postgres outages (100% task completion).
+- **Honest limitation:** distributed worker scaling is *not* linear — 4 workers measured slower than 1 for fine-grained synthetic tasks (single-threaded result-consumption loop is the bottleneck). See the evidence registry; we do not claim linear scaling.
+
+> These are **scheduler-only synthetic** numbers and must not be read as browser-automation speedups — browser end-to-end latency is dominated by network + LLM calls. No paid Browserbase benchmark was run.
+
+---
+
 ## 📁 Project Structure
 
 ```text
@@ -432,8 +484,19 @@ flowchart TD
 │   ├── resend.ts                       # Resend API client
 │   └── utils.ts
 │
+├── engine/                             # Phase 2 — C++20 scheduler engine (separate build, never touches Phase 1)
+│   ├── core/                           # DAG model, schedulers, state machines, transport, run store
+│   ├── app/                            # evo-scheduler-server (gRPC), bench/campaign runners
+│   ├── proto/                          # shared Protobuf/gRPC execution contract
+│   ├── redis/ · pg/                    # Redis Streams transport + Postgres run-store clients
+│   └── tests/                          # 31-test CTest suite (unit → distributed E2E → chaos)
+├── worker/                             # Phase 2 — TypeScript distributed worker (reuses node executors)
+├── infra/phase2/                       # docker-compose: isolated local Redis + Postgres (127.0.0.1 only)
+├── scripts/
+│   ├── phase2/                         # infra up/down/health, migrations, bench smoke, M39 campaign
+│   └── secret-scan.sh                  # repo secret scanner (CI gate)
 ├── design/                             # UI screenshots and diagrams
-├── docs/                               # Implementation reports
+├── docs/                               # Implementation reports (incl. docs/phase2/ design + evidence)
 ├── .env.example                        # Environment variable template
 ├── trigger.config.ts                   # Trigger.dev runtime settings
 ├── drizzle.config.ts                   # Drizzle Kit migration config
@@ -456,6 +519,9 @@ flowchart TD
   - [Resend](https://resend.com/) (Email node)
   - An **OpenAI-compatible chat-completions provider** for the AI planner (see below)
   - [Sentry](https://sentry.io/) *(optional)*
+- **Only for the Phase-2 Evo engine** (optional; the default engine needs none of these):
+  - **CMake** ≥ 3.25 and a **C++20 compiler** with `std::jthread` (clang 14+ / gcc 11+; Apple clang on macOS works out of the box) — see `docs/phase2/BUILDING_ENGINE.md`
+  - **Docker** (CLI + daemon) for the isolated local Redis + Postgres stack — `brew install --cask docker` on macOS, then start Docker Desktop
 
 ### 2. Clone & Install
 
@@ -510,11 +576,38 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000), sign in, pick an organization, and click **New workflow** — you'll land on the AI planner screen.
 
+### 7. *(Optional)* Run the Phase-2 Evo Engine
+
+The Evo engine is **opt-in**; skip this entirely to stay on the default Trigger.dev path. Full build/infra docs: `docs/phase2/BUILDING_ENGINE.md` and `docs/phase2/LOCAL_INFRA.md`.
+
+```bash
+# 1. Build the C++ scheduler (Release)
+cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build engine/build
+
+# 2. Start the isolated local infra (Redis :6390, Postgres :5433 — 127.0.0.1 only)
+scripts/phase2/up.sh
+scripts/phase2/migrate-local.sh   # applies the committed Drizzle migrations to LOCAL Postgres only
+
+# 3. Start the scheduler service (gRPC on 127.0.0.1:50051, metrics on :9090)
+./engine/build/evo-scheduler-server
+
+# 4. Start one or more workers (each reuses the existing node executors)
+npx tsx worker/src/main.ts
+
+# 5. Point the app at the engine and switch engines (.env.local)
+#    EXECUTION_ENGINE=evo
+#    EVO_SCHEDULER_ADDR=127.0.0.1:50051
+#    EVO_ENGINE_TOKEN=<same value in the scheduler's env to enable service auth>
+```
+
+**Human-intervention points:** the local infra scripts never touch your Neon database (`DATABASE_URL`) — Phase-2 uses the `EVO_PHASE2_*` namespace exclusively. Applying Phase-2 migrations to a **shared/remote** database is deliberately *not* automated; it requires explicit human approval (see `docs/phase2/LOCAL_INFRA.md`). To return to the default engine at any time, unset `EXECUTION_ENGINE` (or set it to anything other than `evo`) — the flag is fail-closed.
+
 ---
 
 ## 🧪 Testing
 
-Phase 1 ships three automated suites, run together with:
+### Node suites (Phase 1 + Phase 2)
 
 ```bash
 npm test
@@ -525,6 +618,8 @@ npm test
 | Conversion & editability | `features/workflows/lib/convert-plan.test.ts` | Plan→graph conversion, deterministic layout, manual edits on generated graphs, interpolation, invalid-plan rejection, pre-flight validation |
 | Execution regression | `features/workflows/lib/integration.test.ts` | Topological execution, interpolation end-to-end, post-generation edits, invalid graphs, Stop/cancel cleanup, completion metrics, post-run editability |
 | Lifecycle regression | `features/workflows/lib/lifecycle.test.ts` | The full Phase-1 loop across 11 scenarios: manual + AI-generated + edited workflows, Run #1 → Run #2 with fresh sessions, stopped/failed runs, non-browser runs, session hygiene, Liveblocks editing, replay selection, no auto-execution, and the **live-view gate** (watched runs wait for the view; unwatched runs time out and proceed; non-browser runs skip it; every browser run captures a final screenshot artifact) |
+| Phase-2 contract & engine | `contract-roundtrip`, `workflow-versions`, `envelope-crosslang`, `execution-engine`, `evo-scheduler-client`, `run-view-model`, `run-console-parity` | Cross-language envelope round-trip, immutable workflow versions + optimistic concurrency, fail-closed engine flag, gRPC client, engine-neutral run view model, and **9/9 legacy-vs-evo UI/behavior parity scenarios** |
+| Phase-2 worker | `worker/src/*.test.ts` | Distributed worker loop, node-executor adapter, browser session manager, structured logger |
 
 Plus the standard checks:
 
@@ -533,6 +628,16 @@ npm run typecheck   # tsc --noEmit
 npm run lint        # eslint
 npm run build       # production build
 ```
+
+### C++ engine suite (Phase 2)
+
+The engine has a 31-test CTest suite — DAG model, schedulers, state machines, transport/envelope/retry, Redis + Postgres integration, distributed E2E, worker crash recovery, scheduler restart, fairness, and the M39 scaling + chaos tests. Distributed tests skip cleanly when the local infra is down.
+
+```bash
+ctest --test-dir engine/build --output-on-failure
+```
+
+The same suite also passes under **ASan+UBSan** (`engine/build-asan`) and **TSan** (`engine/build-tsan`) — see `docs/phase2/BUILDING_ENGINE.md`.
 
 ---
 
@@ -569,6 +674,18 @@ npm run build       # production build
 | `npm run db:push` | Push the schema to Neon |
 | `npm run db:studio` | Launch Drizzle Studio |
 
+**Phase-2 engine commands** (optional; see `docs/phase2/BUILDING_ENGINE.md`):
+
+| Command | Description |
+| :--- | :--- |
+| `cmake -S engine -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build engine/build` | Build the C++20 scheduler engine |
+| `ctest --test-dir engine/build --output-on-failure` | Run the 31-test C++ suite |
+| `scripts/phase2/up.sh` / `down.sh` / `health.sh` / `reset.sh` | Manage the isolated local Redis + Postgres stack |
+| `scripts/phase2/migrate-local.sh` | Apply committed migrations to the LOCAL Phase-2 Postgres only |
+| `scripts/phase2/bench-smoke.sh` | Benchmark harness smoke test |
+| `scripts/phase2/m39-campaign.sh` | Reproduce the full M39 performance/chaos evidence campaign |
+| `scripts/secret-scan.sh` | Scan tracked files for secrets (CI gate) |
+
 ---
 
 ## 🛠️ Tech Stack
@@ -582,6 +699,7 @@ npm run build       # production build
 | **Browser Automation** | @browserbasehq/stagehand v3.6, Google Gemini 2.5 Flash (via Browserbase Model Gateway) |
 | **Cloud Browsers** | @browserbasehq/sdk (sessions, live view, HLS replays) |
 | **Durable Tasks** | @trigger.dev/sdk v4 |
+| **Phase-2 Engine** | C++20 (std::jthread, CMake/Ninja), gRPC + Protobuf, Redis Streams (hiredis / ioredis), PostgreSQL (libpq / pg) |
 | **Auth & SaaS** | @clerk/nextjs (Organizations, Billing) |
 | **Database** | Neon Serverless Postgres + Drizzle ORM |
 | **UI** | Tailwind CSS v4, Radix/Base UI, Lucide |
@@ -593,9 +711,18 @@ npm run build       # production build
 
 ## 🗺️ Roadmap
 
-Phase 1 (this release) delivers the full plan → edit → run → watch → replay → rerun loop on a **single sequential durable executor**.
+**Implemented (this release):**
 
-A future phase will explore a real execution engine — e.g. a dependency-aware concurrent scheduler, distributed workers, and task-level fault tolerance — with benchmarks measured at that time. **No such system, and no performance claims, are part of this release.**
+- **Phase 1** — the full plan → edit → run → watch → replay → rerun loop on the Trigger.dev durable executor (the default engine).
+- **Phase 2** — the opt-in **Evo engine**: a C++20 concurrent DAG scheduler + distributed worker runtime (Redis Streams transport, Postgres durable run store, TypeScript workers), with leases/heartbeats, retries + dead-lettering, idempotency, crash/restart recovery, multi-tenant quotas + opt-in fair scheduling, end-to-end cancellation, observability, and service-token auth — all behind a fail-closed feature flag that leaves Phase-1 behavior untouched. Design, failure model, and evidence live in [`docs/phase2/`](docs/phase2/).
+
+**Explicitly not claimed / future work:**
+
+- **No "exactly-once" execution** — at-least-once transport with at-most-once *logical* application; side-effecting external nodes still need an idempotency strategy.
+- **No linear distributed scaling** — 4 workers measured slower than 1 for fine-grained synthetic tasks; scaling further needs a multi-threaded result-consumption path and/or batched transport.
+- **No multi-instance HA / "zero downtime"** — single scheduler process with restart recovery.
+- **No browser end-to-end performance claim** — scheduler numbers are synthetic; browser runs are dominated by network + LLM latency, and no paid Browserbase benchmark was run.
+- TLS on the gRPC channel and per-org service credentials (loopback-only bindings today; see `docs/phase2/SECURITY.md`).
 
 ---
 

@@ -49,7 +49,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `02cc98e` |
 | M38 | Add observability, service security, and CI quality gates | ✅ DONE | `f9aa65e` |
 | M39 | Run the final reproducible performance, scaling, and chaos campaign | ✅ DONE | `200b6ee` |
-| M40 | Final Phase-2 audit, documentation, release, and resume evidence registry | 🚧 IN PROGRESS (claimed by session B) | — |
+| M40 | Final Phase-2 audit, documentation, release, and resume evidence registry | ✅ DONE | `M40_SHA` |
 
 ---
 
@@ -2852,3 +2852,87 @@ captured samples.
 - **COMMIT:** `200b6ee` — `phase2(m39): capture final benchmark and chaos evidence`
 - **NEXT:** M40 — Final Phase-2 audit, documentation, release, and resume
   evidence registry.
+
+---
+
+## M40 — Final Phase-2 audit, documentation, release, and resume evidence registry
+
+**Status:** ✅ DONE (session B) — Phase 2 is complete: every gate re-run on the
+final tree, README updated to the dual-engine reality, release checklist +
+evidence registry committed, and no fabricated claim survives.
+
+- **BASE_SHA:** `80d9221` (M40 claim commit).
+- **What was inspected:** master prompt M40 spec (steps 1–24, no-go list,
+  required validation, Appendix A preservation matrix), `README.md` (still
+  Phase-1-only: "No such system... is part of this release"),
+  `features/workflows/lib/{execution-engine.ts,evo-engine-adapter.ts,
+  evo-scheduler-client.ts}` (flag + env wiring), `engine/app/grpc_service.cpp`
+  + `engine/app/run_loop_driver.cpp` + `worker/src/main.ts` (operator env
+  surface), `engine/CMakeLists.txt` (targets), `scripts/phase2/*`
+  (up/migrate/bench-smoke/campaign), `.env.example` (EVO_PHASE2_* block),
+  `docs/phase2/{BUILDING_ENGINE,LOCAL_INFRA,SECURITY,BENCHMARK_METHODOLOGY}.md`,
+  the three drafted M40 docs (implementation report, resume registry, system
+  design notes), and the M39 artifact dir.
+- **What changed:**
+  - **`README.md` (UPDATED):** scope note now states the dual-engine reality
+    (legacy default, Evo opt-in, fail-closed flag); new "Phase 2 — The Evo
+    Engine" section with a mermaid architecture diagram, what it adds,
+    measured evidence (with the honest distributed-scaling limitation), and
+    the synthetic-not-browser caveat; project structure gains engine/worker/
+    infra/scripts; Getting Started gains Phase-2 prerequisites (CMake, C++20,
+    Docker) + step 7 "Run the Phase-2 Evo Engine" (build, infra, scheduler,
+    worker, env switch) with human-intervention points; Testing section
+    documents all Node suites + the 31-test C++ suite incl. sanitizers; CLI
+    table gains Phase-2 commands; tech stack gains the Phase-2 engine row;
+    Roadmap replaced with implemented-vs-future-work (no "exactly once",
+    no "zero downtime", no "linear scaling" claims).
+  - **`docs/phase2/RELEASE_CHECKLIST.md` (NEW):** the release gate — quality
+    gates, evidence gates (incl. the benchmark-SHA-vs-release-SHA rule and the
+    banned-claims grep), Phase-1 compatibility gates, release decisions
+    (default engine + rollback, push/merge policy, remote-migration approval),
+    human-intervention table, and accepted known limitations.
+  - **`docs/phase2/PHASE-2-IMPLEMENTATION-REPORT.md` (NEW, from draft):**
+    milestone summary M01–M40, as-implemented architecture, validation table,
+    measured M39 results, explicit NOT-claimed list, Phase-1 preservation
+    checklist, known limitations, reproducibility commands.
+  - **`docs/phase2/RESUME_EVIDENCE.md` (NEW, from draft):** 15 evidence rows
+    (E1–E13 GREEN, E14–E15 RED = do-not-claim), each with command + raw
+    artifact + commit + exact caveat; candidate resume bullets generated only
+    from GREEN rows.
+  - **`docs/phase2/SYSTEM_DESIGN_NOTES.md` (NEW, from draft):** interview
+    notes over scheduler, thread pool, transport/store, leases, idempotency,
+    browser affinity, fairness, retries, crash/restart recovery, cancellation,
+    and the five measured tradeoffs to lead with.
+- **Validation (all re-run this milestone on the final tree, reference machine
+  Apple M2 / Darwin arm64 / Apple clang 21):**
+  - `npm test` → ✅ exit 0 (all suites incl. 9/9 legacy-vs-evo parity).
+  - `npm run typecheck` → ✅ exit 0. `npm run lint` → ✅ exit 0.
+  - `npm run build` → ✅ exit 0 (production build).
+  - `ctest --test-dir engine/build` (Release, rebuilt) → ✅ 31/31 (187.3s).
+  - `ctest --test-dir engine/build-asan` (ASan+UBSan) → ✅ 31/31 (188.2s).
+  - `ctest --test-dir engine/build-tsan` (TSan) → ✅ 31/31.
+  - `scripts/secret-scan.sh` → ✅ clean (tracked files).
+  - **Evidence-link audit:** M39 artifact dir present; `checksums.sha256`
+    → 27/27 files OK; headline numbers recomputed from raw `summary.json`
+    (io t8 best 8.01x, cpu t8 best 5.57x, scaling cells match E3/E4) — no
+    drift between artifacts and the resume registry.
+  - **Benchmark-SHA rule:** `git diff --stat b4b651d..HEAD` shows the only
+    code delta since the frozen benchmark SHA is the M39 harness itself
+    (m39 campaign app + 2 m39 tests + CMake targets + campaign script) and
+    docs — no engine-core change, so the frozen-SHA evidence remains valid.
+  - **Banned-claims grep** over README + docs/phase2: every "exactly once /
+    zero downtime / linear scaling" hit is a negation or a scoped internal
+    invariant (logical-commit layer / fan-in dispatch / quota-slot release),
+    never a transport or system-level claim.
+- **Phase-1 preservation:** default engine remains legacy (fail-closed flag);
+  legacy Trigger.dev task unchanged; planner explicit-Run, editability, Clerk
+  gates, live-view gate, screenshot/replay/rerun all covered by the green
+  Node suites (parity 9/9 + lifecycle 11 scenarios).
+- **Human action:** none required. Push/merge of `phase2` remains explicitly
+  unauthorized — the branch stays local until the user approves.
+- **Known limitations:** unchanged from the report §8 / registry E4,E14,E15 —
+  distributed scaling ceiling, single-process recovery (not HA), loopback
+  service bindings without TLS, no browser E2E performance claim.
+- **COMMIT:** `<M40_SHA>` — `phase2(m40): finalize evidence-backed distributed engine`
+- **NEXT:** Phase 2 complete (M01–M40). No further milestones. Push/merge of
+  the `phase2` branch is the user's decision (RELEASE_CHECKLIST.md §4).
