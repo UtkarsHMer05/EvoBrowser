@@ -48,6 +48,8 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `d490b7b` |
 | M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `02cc98e` |
 | M38 | Add observability, service security, and CI quality gates | ✅ DONE | `f9aa65e` |
+| M39 | Run the final reproducible performance, scaling, and chaos campaign | 🚧 IN PROGRESS (claimed by session B) | — |
+| M40 | Final Phase-2 audit, documentation, release, and resume evidence registry | ⬜ NOT STARTED | — |
 
 ---
 
