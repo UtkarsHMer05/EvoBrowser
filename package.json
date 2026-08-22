@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack",
+    "dev": "NODE_OPTIONS=--max-old-space-size=6144 next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",

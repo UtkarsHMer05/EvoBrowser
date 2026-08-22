@@ -13,7 +13,12 @@ export interface GenerateWorkflowPlanOptions {
 // 5xx family (a 502 "gateway error: backend" is the classic transient blip).
 // 401 is deliberately NOT retried — it's a configuration problem, not a blip.
 const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
-const MAX_ATTEMPTS = 3;
+// Free-tier upstreams behind the gateway can be down for tens of seconds at a
+// time (observed: consecutive 503s that recover on their own). Retry enough
+// times with capped exponential backoff to ride out a short outage rather
+// than failing the whole generation after a couple of seconds.
+const MAX_ATTEMPTS = 5;
+const MAX_BACKOFF_MS = 8000;
 
 // The outcome of a single provider call, so the retry loop can tell a
 // transient failure (retry) from a permanent one (surface immediately).
@@ -196,7 +201,9 @@ You MUST respond with valid JSON matching this exact structure:
       throw new Error(result.message);
     }
 
-    await new Promise((r) => setTimeout(r, 1000 * attempt));
+    // Capped exponential backoff: 1s, 2s, 4s, 8s, ...
+    const backoffMs = Math.min(1000 * 2 ** (attempt - 1), MAX_BACKOFF_MS);
+    await new Promise((r) => setTimeout(r, backoffMs));
   }
 
   if (!rawResponseText) {

@@ -34,6 +34,7 @@
 // (default 10s) before exiting, then close all live browser sessions.
 // Unfinished tasks stay pending for redelivery.
 
+import { config as loadEnv } from "dotenv";
 import { Stagehand } from "@browserbasehq/stagehand";
 import { and, eq, isNull } from "drizzle-orm";
 
@@ -56,6 +57,13 @@ import { RedisStreamsClient, eventStreamKey } from "./redis-streams";
 import { syntheticExecutor } from "./synthetic-executor";
 import { Worker, type TaskExecutor } from "./worker";
 import type { TaskEnvelopeView } from "./envelope-codec";
+
+// The worker is a standalone process (not Next.js), so it does not auto-load
+// .env.local. Load it here so product secrets (BROWSERBASE_API_KEY,
+// RESEND_API_KEY, ...) and EVO_* config are available. `override: false`
+// (the default) means explicitly-set process env vars still win, so tests and
+// the C++ harness can inject their own values.
+loadEnv({ path: ".env.local" });
 
 const host = process.env.EVO_PHASE2_REDIS_HOST ?? "127.0.0.1";
 const port = Number(process.env.EVO_PHASE2_REDIS_PORT ?? 6390);

@@ -7,6 +7,10 @@
 // executors are wired in M24 behind the same TaskExecutor interface.
 //
 // Supported synthetic node types (never added to the TS product node registry):
+//   "start"        -> trigger node: the distributed loop dispatches trigger
+//                     nodes like any other, so the worker must complete them;
+//                     they do no work and produce no meaningful output (same
+//                     semantics as the product adapter's trigger handling)
 //   "bench:sleep"  -> sleep for `ms` (default 5), honoring the AbortSignal
 //   "bench:burn"   -> spin CPU for ~`ms` (default 5), checking the signal
 //   "bench:fail"   -> always fail with a configurable error class
@@ -57,6 +61,12 @@ export const syntheticExecutor: TaskExecutor = async (task, signal) => {
   const ms = Math.max(0, payload.ms ?? 5);
 
   switch (task.nodeType) {
+    case "start": {
+      // Trigger node: the distributed loop dispatches it like any node, so
+      // complete it as a no-op success (do no work, no meaningful output) —
+      // same semantics as the product adapter's trigger handling.
+      return { completed: true, output: JSON.stringify({ skipped: true }) };
+    }
     case "bench:sleep": {
       await sleep(ms, signal);
       return { completed: true, output: JSON.stringify({ sleptMs: ms }) };

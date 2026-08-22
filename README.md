@@ -197,7 +197,7 @@ Prompt
       <h3>🛡️ Resilience & Reliability</h3>
       <ul>
         <li><strong>Auth hardening</strong>: server auth reads retry once on transient session misses (short-lived dev tokens, slow compiles) instead of failing the request.</li>
-        <li><strong>AI gateway retries</strong>: planner provider calls retry up to 3× with backoff on 408/429/5xx gateway errors; 401s fail fast.</li>
+        <li><strong>AI gateway retries</strong>: planner provider calls retry up to 5× with capped exponential backoff on 408/429/5xx gateway errors; 401s fail fast.</li>
         <li><strong>Liveblocks storage gating</strong>: generated graphs are applied only after room storage has loaded — no "mutation before storage loaded" errors.</li>
         <li>Live-view connection state and run screenshot artifacts are persisted in Postgres, surviving page reloads.</li>
       </ul>

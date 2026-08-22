@@ -3,6 +3,10 @@ import { withSentryConfig } from "@sentry/nextjs";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  // Pin the workspace root so Next.js doesn't infer it from stray lockfiles
+  // outside the repo (e.g. ~/package-lock.json) — silences the multi-lockfile
+  // inference warning without changing tracing behavior for this project.
+  outputFileTracingRoot: __dirname,
   // @grpc/grpc-js uses Node-specific features (dynamic require of subpath
   // modules) that don't survive Server Components bundling; load it via
   // native require instead. Server-side only (Evo scheduler client, M27).
