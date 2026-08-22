@@ -310,3 +310,10 @@ assert.equal(hasAgentNode, true, "Should identify Agent node for Pro plan gating
 console.log("  ✓ Pre-flight validation blocks broken graphs and identifies plan-gated nodes.");
 console.log("\nALL CONVERSION, EDITABILITY, AND EXECUTION PRE-FLIGHT TESTS PASSED! (7/7)");
 
+if (process.env.VITEST) {
+  // Registration only: every assertion in this linear script already ran at
+  // module load (collection). A failure above marks this file red; this entry
+  // gives vitest a named test to track on success.
+  const { test } = await import("vitest");
+  test("conversion, editability and execution pre-flight", () => {});
+}

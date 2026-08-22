@@ -126,3 +126,11 @@ ok("logger.log emits parseable JSON with correlation fields + redaction");
 ok("logEvent emits explicit structured events with redaction");
 
 console.log(`\nALL M38 WORKER LOGGER TESTS PASSED! (${passed}/${passed})`);
+
+if (process.env.VITEST) {
+  // Registration only: every assertion in this linear script already ran at
+  // module load (collection). A failure above marks this file red; this entry
+  // gives vitest a named test to track on success.
+  const { test } = await import("vitest");
+  test("M38 worker logger redaction", () => {});
+}

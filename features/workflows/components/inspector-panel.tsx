@@ -288,7 +288,12 @@ export function InspectorPanel({
     if (!run?.browserbaseSessionId) {
       return <Note>This recording is no longer available.</Note>;
     }
-    return <SessionReplay sessionId={run.browserbaseSessionId} />;
+    return (
+      <SessionReplay
+        sessionId={run.browserbaseSessionId}
+        runId={selection.runId}
+      />
+    );
   }
 
   const step = run?.steps.find((s) => s.nodeId === selection.nodeId);

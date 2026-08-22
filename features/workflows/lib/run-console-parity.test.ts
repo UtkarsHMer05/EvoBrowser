@@ -366,7 +366,16 @@ async function runParitySuite() {
   console.log("======================================================\n");
 }
 
+if (process.env.VITEST) {
+  // Under vitest the suite runs as one tracked test: failures attribute to
+  // this file instead of killing the worker with process.exit.
+  const { test } = await import("vitest");
+  test("M29 legacy vs Evo console parity", async () => {
+    await runParitySuite();
+  });
+} else {
 runParitySuite().catch((err) => {
   console.error("Parity regression failure:", err);
   process.exit(1);
 });
+}

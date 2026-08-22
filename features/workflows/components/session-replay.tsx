@@ -15,7 +15,17 @@ type Status = "loading" | "ready" | "error" | "unsupported";
 // is proxied through /api/replays/[sessionId] (which holds the secret key); this
 // polls that route until the recording is ready — it lags the session close —
 // then feeds the HLS playlist to hls.js.
-export function SessionReplay({ sessionId }: { sessionId: string }) {
+//
+// The run id rides along on every request so the proxy can verify the run
+// belongs to the caller's org and actually drove this session, exactly like
+// live view and screenshots do.
+export function SessionReplay({
+  sessionId,
+  runId,
+}: {
+  sessionId: string;
+  runId: string;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [status, setStatus] = useState<Status>("loading");
 
@@ -29,7 +39,7 @@ export function SessionReplay({ sessionId }: { sessionId: string }) {
   }
 
   useEffect(() => {
-    const url = `/api/replays/${sessionId}`;
+    const url = `/api/replays/${sessionId}?runId=${encodeURIComponent(runId)}`;
     let cancelled = false;
     let hls: Hls | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -82,7 +92,7 @@ export function SessionReplay({ sessionId }: { sessionId: string }) {
       if (timer) clearTimeout(timer);
       hls?.destroy();
     };
-  }, [sessionId]);
+  }, [sessionId, runId]);
 
   return (
     <div className="relative flex size-full items-center justify-center bg-black">

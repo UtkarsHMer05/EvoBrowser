@@ -3,17 +3,24 @@ import { NotFoundError } from "@browserbasehq/sdk";
 
 import { getBrowserbaseClient } from "@/lib/browserbase";
 import { readAuthWithRetry, resolveActiveOrgId } from "@/lib/auth";
+import { authorizeRunAccess } from "@/features/workflows/lib/run-authorization";
 
 // Proxies a Browserbase session's replay so the browser can play it back. The
 // retrieval needs the secret API key, so it can only happen server-side — the
 // client never sees it, only the resulting HLS playlist.
+//
+// The caller must prove it owns the session: like live view and screenshots,
+// it passes the run id that produced the session, and authorizeRunAccess
+// verifies that run belongs to the caller's org and actually drove this
+// session. Without that check, any Pro member could fetch another org's
+// recording by guessing a session id.
 //
 // The recording isn't ready the instant the session closes; Browserbase reports
 // it as not-yet-available for a short window afterwards. We pass that through as
 // 202 Accepted so the SessionReplay component knows to keep polling, and hand
 // back the `.m3u8` playlist with 200 once it exists.
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
   const { userId, has } = await readAuthWithRetry();
@@ -29,12 +36,17 @@ export async function GET(
   }
 
   const { sessionId } = await params;
+  const runId = new URL(request.url).searchParams.get("runId");
+  if (!runId) {
+    return new Response("Missing runId query parameter.", { status: 400 });
+  }
 
   Sentry.getIsolationScope().setAttributes({
     route: "GET /api/replays/[sessionId]",
     userId,
     orgId,
     sessionId,
+    runId,
   });
 
   // Session replay is a Pro feature. Gate it here, not just in the UI, so a
@@ -47,6 +59,15 @@ export async function GET(
       sessionId,
     });
     return new Response("Pro plan required", { status: 403 });
+  }
+
+  // Ownership: the run must belong to this org and have driven this session —
+  // the same bar every other per-run artifact route enforces.
+  const access = await authorizeRunAccess({ orgId, runId, sessionId });
+  if (!access.ok) {
+    return access.status === 404
+      ? new Response("Run not found.", { status: 404 })
+      : new Response("Forbidden", { status: 403 });
   }
 
   try {

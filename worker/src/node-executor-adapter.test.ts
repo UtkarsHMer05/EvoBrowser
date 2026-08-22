@@ -319,7 +319,16 @@ async function main() {
   );
 }
 
+if (process.env.VITEST) {
+  // Under vitest the suite runs as one tracked test: failures attribute to
+  // this file instead of killing the worker with process.exit.
+  const { test } = await import("vitest");
+  test("M24 worker-executor compatibility", async () => {
+    await main();
+  });
+} else {
 main().catch((err) => {
   console.error("M24 compatibility test FAILED:", err);
   process.exit(1);
 });
+}

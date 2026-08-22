@@ -1,28 +1,22 @@
 import * as Sentry from "@sentry/nextjs";
-import { runs } from "@trigger.dev/sdk";
 import { NextResponse } from "next/server";
 
 import { readAuthWithRetry, resolveActiveOrgId } from "@/lib/auth";
+import { markLiveViewConnected } from "@/features/workflows/data";
 import {
-  getWorkflow,
-  markLiveViewConnected,
-} from "@/features/workflows/data";
-import {
-  getEvoRunBrowserbaseSessionId,
-  getEvoRunOrgId,
-  markEvoLiveViewConnected,
-} from "@/features/workflows/lib/evo-run-data";
-import type { runWorkflowTask } from "@/features/workflows/tasks/run-workflow";
+  authorizeRunAccess,
+  type RunEngine,
+} from "@/features/workflows/lib/run-authorization";
+import { markEvoLiveViewConnected } from "@/features/workflows/lib/evo-run-data";
 
 // The Live Browser iframe calls this when it finishes loading. The run task
 // polls for the resulting row and holds its first browser step until it
 // appears, so the automation never races ahead of the live view.
 //
-// Same ownership checks as the GET route: the caller must pass the run id that
+// Same ownership bar as the GET route: the caller must pass the run id that
 // produced the session, and we verify the run belongs to the caller's org and
-// actually drove this session. Ownership resolution is engine-aware (M29):
-// legacy runs resolve from Trigger.dev; Evo runs resolve from the local
-// Phase-2 Postgres run row.
+// actually drove this session. The shared engine-aware check lives in
+// authorizeRunAccess; only the handshake write below is engine-specific.
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ sessionId: string }> },
@@ -56,50 +50,21 @@ export async function POST(
     runId,
   });
 
-  // Try the legacy Trigger.dev path first (Phase-1 behavior unchanged).
-  let run;
-  try {
-    run = await runs.retrieve<typeof runWorkflowTask>(runId);
-  } catch {
-    run = undefined;
+  const access: { ok: true; engine: RunEngine } | {
+    ok: false;
+    status: 403 | 404;
+  } = await authorizeRunAccess({ orgId, runId, sessionId });
+  if (!access.ok) {
+    return access.status === 404
+      ? NextResponse.json({ error: "Run not found." }, { status: 404 })
+      : NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  if (run) {
-    const runWorkflowId = run.payload?.workflowId;
-    if (run.payload?.orgId !== orgId || !runWorkflowId) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const workflow = await getWorkflow(orgId, runWorkflowId);
-    if (!workflow) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const runSessionId =
-      run.output?.browserbaseSessionId ??
-      (run.metadata?.browserbaseSessionId as string | undefined);
-    if (runSessionId !== sessionId) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    // Legacy handshake row lives in Neon (Phase-1 behavior unchanged).
+  // Write the handshake where the engine that owns the run reads it: legacy
+  // runs poll Neon, Evo runs poll the Phase-2 store.
+  if (access.engine === "legacy") {
     await markLiveViewConnected(sessionId, runId);
   } else {
-    // Evo path (M29): resolve ownership from the Phase-2 store, and write the
-    // handshake there too — the distributed worker polls the Phase-2 store.
-    const evoOrgId = await getEvoRunOrgId(runId);
-    if (!evoOrgId) {
-      return NextResponse.json({ error: "Run not found." }, { status: 404 });
-    }
-    if (evoOrgId !== orgId) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    const runSessionId = await getEvoRunBrowserbaseSessionId(orgId, runId);
-    if (runSessionId !== sessionId) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
     await markEvoLiveViewConnected(sessionId, runId);
   }
 

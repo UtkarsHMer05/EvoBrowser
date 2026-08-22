@@ -40,8 +40,10 @@ export type RunStep = {
   // the console can render a step without re-reading the graph.
   type: NodeType;
   title: string;
-  // "canceled" is only produced by the Evo engine (Phase 2, M29) when a run is
-  // stopped before a node executes; the legacy Trigger.dev task never emits it.
+  // "canceled" is produced when a run stops before a node executes: the Evo
+  // engine emits it durably (Phase 2, M29), and since the cooperative-cancel
+  // change below, this legacy task also marks not-yet-run steps "canceled"
+  // when Stop lands between two nodes (or during the live-view wait).
   status: "pending" | "running" | "done" | "failed" | "canceled";
   // Wall-clock time the executor took, set once the step leaves "running".
   durationMs?: number;
@@ -59,7 +61,7 @@ export const runWorkflowTask = task({
   id: "run-workflow",
   run: async (
     { workflowId, orgId }: { workflowId: string; orgId: string },
-    { ctx },
+    { ctx, signal },
   ) => {
     const runId = ctx.run.id;
     const workflow = await getWorkflow(orgId, workflowId);
@@ -103,6 +105,31 @@ export const runWorkflowTask = task({
       metadata.set("steps", steps as unknown as DeserializedJson[]);
 
     publishSteps();
+
+    // Cooperative cancellation: Stop cancels the Trigger.dev run, which aborts
+    // the task's abort signal. The platform kills the process on its own
+    // schedule; checking the signal at step boundaries (and inside the
+    // live-view wait) lets the task react promptly and — more importantly —
+    // paint the boundary: every step that never got to run is published as
+    // "canceled" so the console shows exactly where the run stopped instead of
+    // leaving spinners. The throw afterwards still unwinds through `finally`
+    // for screenshot/session cleanup, and the run's terminal status stays
+    // owned by Trigger.dev.
+    const throwIfCanceled = async () => {
+      if (!signal?.aborted) return;
+      let marked = 0;
+      for (const step of steps) {
+        if (step.status === "pending" || step.status === "running") {
+          step.status = "canceled";
+          marked++;
+        }
+      }
+      if (marked > 0) {
+        publishSteps();
+        await metadata.flush();
+      }
+      throw new Error("Workflow run was cancelled");
+    };
 
     // The run owns one Browserbase session, reused by every browser step so
     // the recording spans the whole flow. For graphs with browser steps it is
@@ -187,12 +214,16 @@ export const runWorkflowTask = task({
         timeoutMs: LIVE_VIEW_WAIT_MS,
       });
       while (Date.now() < deadline) {
+        // Stop while waiting for the viewer: mark the not-yet-run steps and
+        // unwind through the same cancellation path as between-node checks.
+        await throwIfCanceled();
         try {
           if (await isLiveViewConnected(browserbaseSessionId)) {
             logger.log("Live view connected — starting browser steps");
             return;
           }
         } catch (error) {
+          if (signal?.aborted) throw error;  // the cancel marker, rethrow
           logger.warn("Error polling live-view connection", {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -212,8 +243,16 @@ export const runWorkflowTask = task({
       BROWSER_NODE_TYPES.has(byId.get(id)!.data.type),
     );
     if (hasBrowserStep) {
-      await getStagehand();
-      await waitForLiveView();
+      // This window sits before the main try/finally below, so a failure here
+      // — including a Stop landing during the live-view wait — must close the
+      // freshly opened session itself.
+      try {
+        await getStagehand();
+        await waitForLiveView();
+      } catch (error) {
+        await closeStagehand();
+        throw error;
+      }
     }
 
     // Each node's result, keyed by its id, so later nodes can pull from it.
@@ -226,6 +265,12 @@ export const runWorkflowTask = task({
         const id = order[i];
         const step = steps[i];
         const node = byId.get(id)!;
+
+        // Stop landed between nodes: publish the canceled boundary, then
+        // unwind through finally for cleanup. Checked before this step is
+        // marked running so it reads as "canceled", never "running".
+        await throwIfCanceled();
+
         logger.log(`Running step: ${node.data.title}`);
 
         // A node with no executor (the start trigger) does no work and produces no

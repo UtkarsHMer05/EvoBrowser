@@ -178,3 +178,11 @@ ok("size-limit rule: oversized envelope detected and would be quarantined");
 console.log(
   `\nALL M22 CROSS-LANGUAGE ENVELOPE TESTS PASSED! (${passed}/${passed})`,
 );
+
+if (process.env.VITEST) {
+  // Registration only: every assertion in this linear script already ran at
+  // module load (collection). A failure above marks this file red; this entry
+  // gives vitest a named test to track on success.
+  const { test } = await import("vitest");
+  test("M22 cross-language envelope contract", () => {});
+}

@@ -29,6 +29,15 @@ import {
 import { listEvoRunsForWorkflow } from "@/features/workflows/lib/evo-runs";
 import type { NormalizedRunViewModel } from "@/features/workflows/lib/run-view-model";
 import { WorkflowGraph } from "@/lib/db/schema";
+import {
+  cancelRunInputSchema,
+  createWorkflowInputSchema,
+  deleteWorkflowInputSchema,
+  listEvoRunsInputSchema,
+  parseActionInput,
+  planGoalSchema,
+  runWorkflowInputSchema,
+} from "@/features/workflows/lib/action-schemas";
 import type {
   PlanWorkflowGoalInput,
   PlanWorkflowGoalResult,
@@ -36,6 +45,11 @@ import type {
 import { generateWorkflowPlan } from "@/features/workflows/lib/planner-service";
 
 export async function createWorkflowAction(name: string) {
+  const { name: safeName } = parseActionInput(
+    createWorkflowInputSchema,
+    { name },
+    "workflow name",
+  );
   const orgId = await resolveActiveOrgId();
 
   Sentry.getIsolationScope().setAttributes({
@@ -43,7 +57,7 @@ export async function createWorkflowAction(name: string) {
     orgId,
   });
 
-  const workflow = await createWorkflow(orgId, name);
+  const workflow = await createWorkflow(orgId, safeName);
 
   Sentry.logger.info("Workflow created", { workflowId: workflow.id, orgId });
 
@@ -54,28 +68,33 @@ export async function createWorkflowAction(name: string) {
 }
 
 export async function deleteWorkflowAction(id: string) {
+  const { id: safeId } = parseActionInput(
+    deleteWorkflowInputSchema,
+    { id },
+    "workflow id",
+  );
   const orgId = await resolveActiveOrgId();
 
   Sentry.getIsolationScope().setAttributes({
     action: "deleteWorkflowAction",
     orgId,
-    workflowId: id,
+    workflowId: safeId,
   });
 
-  const workflow = await deleteWorkflow(orgId, id);
+  const workflow = await deleteWorkflow(orgId, safeId);
 
   if (!workflow) {
     Sentry.logger.warn("Workflow delete skipped — not found", {
-      workflowId: id,
+      workflowId: safeId,
       orgId,
     });
     throw new Error("Workflow not found");
   }
 
   // The workflow id doubles as its Liveblocks room id — clean it up too.
-  await getLiveblocksClient().deleteRoom(id);
+  await getLiveblocksClient().deleteRoom(safeId);
 
-  Sentry.logger.info("Workflow deleted", { workflowId: id, orgId });
+  Sentry.logger.info("Workflow deleted", { workflowId: safeId, orgId });
 
   revalidatePath("/", "layout");
   redirect("/");
@@ -88,6 +107,19 @@ export async function runWorkflowAction({
   id: string;
   graph: WorkflowGraph;
 }) {
+  // Server Actions are public endpoints — validate shape before anything else
+  // touches a store or an engine (semantic validation follows in
+  // saveWorkflowGraph via validateGraph). The schema deliberately validates a
+  // loose envelope; the cast re-widens to the full React Flow node/edge types
+  // the rest of the action consumes — safe at this one audited boundary
+  // because parse just enforced the fields those consumers rely on.
+  const { id: workflowId, graph: parsedGraph } = parseActionInput(
+    runWorkflowInputSchema,
+    { id, graph },
+    "run input",
+  );
+  const safeGraph = parsedGraph as unknown as WorkflowGraph;
+
   // Resolve the org robustly — the active-org claim can be missing from a
   // session token snapshot even for a signed-in user with an active org, so
   // fall back to the verified membership list rather than failing the run.
@@ -100,23 +132,23 @@ export async function runWorkflowAction({
   Sentry.getIsolationScope().setAttributes({
     action: "runWorkflowAction",
     orgId,
-    workflowId: id,
+    workflowId,
   });
 
-  const hasAgentNode = graph.nodes.some((node) => node.data.type === "agent");
+  const hasAgentNode = safeGraph.nodes.some((n) => n.data.type === "agent");
   if (hasAgentNode && !has?.({ plan: "pro" })) {
     Sentry.logger.warn("Workflow run denied — Agent node requires Pro plan", {
-      workflowId: id,
+      workflowId,
       orgId,
     });
     throw new Error("The Agent node requires the Pro plan.");
   }
 
   try {
-    await saveWorkflowGraph({ orgId, id, graph });
+    await saveWorkflowGraph({ orgId, id: workflowId, graph: safeGraph });
   } catch (error) {
     Sentry.logger.warn("Workflow run blocked — graph validation failed", {
-      workflowId: id,
+      workflowId,
       orgId,
     });
     throw error;
@@ -140,17 +172,17 @@ export async function runWorkflowAction({
     // The Phase-2 workflows table is separate from Neon's; ensure the FK row
     // exists before the version/run rows reference it (mirrors the C++
     // ensure_workflow).
-    const wf = await getWorkflow(orgId, id);
+    const wf = await getWorkflow(orgId, workflowId);
     await ensurePhase2Workflow(phase2Db, {
-      id,
+      id: workflowId,
       orgId,
       name: wf?.name ?? "workflow",
     });
     try {
       const version = await createWorkflowVersion({
         orgId,
-        workflowId: id,
-        graph,
+        workflowId,
+        graph: safeGraph,
         db: phase2Db,
       });
       workflowVersionId = version.id;
@@ -160,7 +192,7 @@ export async function runWorkflowAction({
       Sentry.logger.error(
         "Evo run blocked — workflow version snapshot failed",
         {
-          workflowId: id,
+          workflowId,
           orgId,
           error: error instanceof Error ? error.message : String(error),
         },
@@ -171,15 +203,15 @@ export async function runWorkflowAction({
     try {
       const version = await createWorkflowVersion({
         orgId,
-        workflowId: id,
-        graph,
+        workflowId,
+        graph: safeGraph,
       });
       workflowVersionId = version.id;
     } catch (error) {
       Sentry.logger.warn(
         "Workflow version snapshot skipped (Phase-2 tables unavailable) — legacy run continues",
         {
-          workflowId: id,
+          workflowId,
           orgId,
           error: error instanceof Error ? error.message : String(error),
         },
@@ -201,24 +233,24 @@ export async function runWorkflowAction({
     await createWorkflowRunRecord({
       runId,
       orgId,
-      workflowId: id,
+      workflowId,
       workflowVersionId,
       engine: "evo",
       db: getPhase2Db(),
     });
     const handle = await adapter.startRun({
       orgId,
-      workflowId: id,
+      workflowId,
       workflowVersionId,
-      graph,
+      graph: safeGraph,
       runId,
     });
     Sentry.logger.info("Evo workflow run submitted", {
-      workflowId: id,
+      workflowId,
       orgId,
       runId: handle.runId,
       workflowVersionId,
-      nodeCount: graph.nodes.length,
+      nodeCount: safeGraph.nodes.length,
       hasAgentNode,
     });
     return handle;
@@ -228,15 +260,15 @@ export async function runWorkflowAction({
   // (fail-open) so Phase-1 runs never depend on the Phase-2 tables.
   const handle = await adapter.startRun({
     orgId,
-    workflowId: id,
+    workflowId,
     workflowVersionId,
-    graph,
+    graph: safeGraph,
   });
   try {
     await createWorkflowRunRecord({
       runId: handle.runId,
       orgId,
-      workflowId: id,
+      workflowId,
       workflowVersionId,
       engine: "legacy",
     });
@@ -244,7 +276,7 @@ export async function runWorkflowAction({
     Sentry.logger.warn(
       "Legacy run record skipped (Phase-2 tables unavailable)",
       {
-        workflowId: id,
+        workflowId,
         orgId,
         runId: handle.runId,
         error: error instanceof Error ? error.message : String(error),
@@ -253,11 +285,11 @@ export async function runWorkflowAction({
   }
 
   Sentry.logger.info("Workflow run triggered", {
-    workflowId: id,
+    workflowId,
     orgId,
     runId: handle.runId,
     workflowVersionId,
-    nodeCount: graph.nodes.length,
+    nodeCount: safeGraph.nodes.length,
     hasAgentNode,
   });
 
@@ -265,23 +297,32 @@ export async function runWorkflowAction({
 }
 
 export async function cancelWorkflowRunAction(runId: string) {
+  const { runId: safeRunId } = parseActionInput(
+    cancelRunInputSchema,
+    { runId },
+    "run id",
+  );
   const orgId = await resolveActiveOrgId();
 
   Sentry.getIsolationScope().setAttributes({
     action: "cancelWorkflowRunAction",
     orgId,
-    runId,
+    runId: safeRunId,
   });
 
   // Phase 2 (M27/M29): route the cancel to the engine that owns the run. Evo
   // run rows live in the local Phase-2 Postgres; legacy rows in Neon. Runs
   // without a workflow_runs row in either store (legacy Trigger.dev runs
   // predating the run table) resolve to legacy.
-  const engine = (await resolveRunEngine(runId)) ?? "legacy";
+  const engine = (await resolveRunEngine(safeRunId)) ?? "legacy";
   const adapter = getExecutionEngineAdapter(engine);
-  await adapter.cancelRun(runId);
+  await adapter.cancelRun(safeRunId);
 
-  Sentry.logger.info("Workflow run cancelled", { runId, orgId, engine });
+  Sentry.logger.info("Workflow run cancelled", {
+    runId: safeRunId,
+    orgId,
+    engine,
+  });
 }
 
 // Phase 2 (M29): list a workflow's Evo runs for the UI console/history. Reads
@@ -293,15 +334,20 @@ export async function listEvoRunsAction(workflowId: string): Promise<
     Omit<NormalizedRunViewModel, "createdAt"> & { createdAt?: string }
   >
 > {
+  const safeInput = parseActionInput(
+    listEvoRunsInputSchema,
+    { workflowId },
+    "workflow id",
+  );
   const orgId = await resolveActiveOrgId();
 
   Sentry.getIsolationScope().setAttributes({
     action: "listEvoRunsAction",
     orgId,
-    workflowId,
+    workflowId: safeInput.workflowId,
   });
 
-  const runs = await listEvoRunsForWorkflow(orgId, workflowId);
+  const runs = await listEvoRunsForWorkflow(orgId, safeInput.workflowId);
   return runs.map((r) => ({
     ...r,
     createdAt: r.createdAt ? r.createdAt.toISOString() : undefined,
@@ -311,21 +357,17 @@ export async function listEvoRunsAction(workflowId: string): Promise<
 export async function planWorkflowAction({
   workflowId,
   goal,
-}: PlanWorkflowGoalInput): Promise<PlanWorkflowGoalResult> {  const orgId = await resolveActiveOrgId();
-
-  const trimmedGoal = goal.trim();
-  if (!trimmedGoal) {
-    throw new Error("Goal prompt cannot be empty.");
-  }
-
-  if (trimmedGoal.length > 2000) {
-    throw new Error("Goal prompt exceeds maximum length of 2000 characters.");
-  }
+}: PlanWorkflowGoalInput): Promise<PlanWorkflowGoalResult> {
+  // Shape + bounds at the boundary (empty goal, runaway prompts); the planner
+  // service owns everything downstream of that.
+  const safeInput = parseActionInput(planGoalSchema, { workflowId, goal }, "planner input");
+  const trimmedGoal = safeInput.goal;
+  const orgId = await resolveActiveOrgId();
 
   Sentry.getIsolationScope().setAttributes({
     action: "planWorkflowAction",
     orgId,
-    workflowId,
+    workflowId: safeInput.workflowId,
     goalLength: trimmedGoal.length,
   });
 
@@ -333,7 +375,7 @@ export async function planWorkflowAction({
     const plan = await generateWorkflowPlan({ goal: trimmedGoal });
 
     Sentry.logger.info("Workflow plan generated", {
-      workflowId,
+      workflowId: safeInput.workflowId,
       orgId,
       canBuild: plan.canBuild,
       nodeCount: plan.nodes.length,
@@ -352,7 +394,7 @@ export async function planWorkflowAction({
       error instanceof Error ? error.message : "Failed to plan workflow.";
 
     Sentry.logger.error("Workflow planning failed", {
-      workflowId,
+      workflowId: safeInput.workflowId,
       orgId,
       error: errorMessage,
     });

@@ -15,6 +15,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Trigger.dev build artifacts.
     ".trigger/**",
+    // Vitest coverage output.
+    "coverage/**",
     // Legacy course template files — not imported anywhere.
     "templates/**",
     // Phase-2 C++ engine — pure C++, never linted by ESLint. Its CMake build

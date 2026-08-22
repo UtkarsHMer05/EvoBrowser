@@ -137,8 +137,9 @@ works by changing the two optional variables.
   the requested session id matches the session the run actually published. Cross-org session
   viewing is rejected with 403.
 - **Replay authorization** (`/api/replays/[sessionId]`): Clerk auth + server-side Pro-plan
-  check (`has({ plan: "pro" })`); the Browserbase secret key never leaves the server; the
-  HLS manifest is served `no-store`.
+  check (`has({ plan: "pro" })`) + run/session ownership via the shared `authorizeRunAccess`
+  helper (the run must belong to the caller's org and have driven the requested session);
+  the Browserbase secret key never leaves the server; the HLS manifest is served `no-store`.
 - **Multi-tenancy.** Liveblocks rooms are created with `groupsAccesses: { [orgId]: ["room:write"] }`
   and auth tokens are minted with `groupIds: [orgId]`. All workflow queries filter by
   `orgId` from the Clerk session.

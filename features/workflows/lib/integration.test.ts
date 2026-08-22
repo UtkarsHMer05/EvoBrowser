@@ -566,8 +566,17 @@ async function runIntegrationSuite() {
   console.log("=================================================\n");
 }
 
+if (process.env.VITEST) {
+  // Under vitest the suite runs as one tracked test: failures attribute to
+  // this file instead of killing the worker with process.exit.
+  const { test } = await import("vitest");
+  test("Phase-1 planning + execution integration", async () => {
+    await runIntegrationSuite();
+  });
+} else {
 runIntegrationSuite().catch((err) => {
   console.error("Integration test failure:", err);
   process.exit(1);
 });
+}
 

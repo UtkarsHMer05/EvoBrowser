@@ -25,7 +25,11 @@
 //  - Run entries are heap-stable (std::map of std::unique_ptr<ActiveRun>) so a
 //    runner thread holding a raw pointer is never invalidated.
 //  - The runner thread publishes its result under runs_mu_; GetRun/CancelRun
-//    read under the same lock, so there is no data race.
+//    read under the same lock, so there is no data race. Terminal entries are
+//    pruned oldest-first past a retention bound; a pruned entry's runner is
+//    JOINED before its ActiveRun is destroyed (the lambdas touch raw->org_id
+//    and metrics after publishing done=true), which keeps that pointer rule
+//    intact for the whole lifetime of an entry.
 //  - Distributed node state for GetRun is derived from the loop's normalized
 //    run events, collected under a per-run mutex by the on_event callback —
 //    the gRPC thread never touches the loop's internal scheduling state.
@@ -43,6 +47,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -95,6 +100,30 @@ std::string env_or(const char* name, const std::string& fallback) {
   const char* v = std::getenv(name);
   return (v && *v) ? std::string(v) : fallback;
 }
+
+#ifdef EVO_HAVE_DISTRIBUTED
+// Single source of truth for the distributed-infra endpoints this process
+// talks to. Every call site used to re-read the same five/six variables with
+// inline dev defaults; centralizing them keeps the loopback-only fallbacks
+// documented once and makes an env-only production deployment a matter of
+// setting the variables (no code edits, no divergent defaults).
+evo::RedisTransportConfig phase2_redis_config_from_env() {
+  evo::RedisTransportConfig cfg;
+  cfg.host = env_or("EVO_PHASE2_REDIS_HOST", "127.0.0.1");
+  cfg.port = std::atoi(env_or("EVO_PHASE2_REDIS_PORT", "6390").c_str());
+  return cfg;
+}
+
+evo::PgRunStoreConfig phase2_pg_config_from_env() {
+  evo::PgRunStoreConfig cfg;
+  cfg.host = env_or("EVO_PHASE2_PG_HOST", "127.0.0.1");
+  cfg.port = std::atoi(env_or("EVO_PHASE2_PG_PORT", "5433").c_str());
+  cfg.user = env_or("EVO_PHASE2_PG_USER", "evo");
+  cfg.password = env_or("EVO_PHASE2_PG_PASSWORD", "evo_dev_password");
+  cfg.dbname = env_or("EVO_PHASE2_PG_DB", "evo_phase2");
+  return cfg;
+}
+#endif
 
 // Synthetic local executor registry. Only bench tasks run here; unknown real
 // node types (act/send-email/...) are intentionally absent so they surface as
@@ -422,7 +451,7 @@ class ControlServiceImpl final
     ActiveRun* raw = entry.get();  // heap-stable (map of unique_ptr)
     {
       std::lock_guard lock(runs_mu_);
-      runs_.emplace(rid, std::move(entry));
+      register_run_locked(rid, std::move(entry));
     }
 
     // Execute asynchronously so the gRPC thread returns immediately.
@@ -497,9 +526,7 @@ class ControlServiceImpl final
       entry->node_id_type.emplace_back(id.value, spec ? spec->type : "");
     }
 
-    evo::RedisTransportConfig rcfg;
-    rcfg.host = env_or("EVO_PHASE2_REDIS_HOST", "127.0.0.1");
-    rcfg.port = std::atoi(env_or("EVO_PHASE2_REDIS_PORT", "6390").c_str());
+    evo::RedisTransportConfig rcfg = phase2_redis_config_from_env();
     entry->transport = std::make_unique<evo::RedisTransport>(rcfg);
     if (!entry->transport->connect()) {
       quota_gate_.release_run(req->org_id());  // M36: give back admitted slot
@@ -509,13 +536,8 @@ class ControlServiceImpl final
                           "distributed infra (Redis) unreachable");
     }
 
-    evo::PgRunStoreConfig pcfg;
-    pcfg.host = env_or("EVO_PHASE2_PG_HOST", "127.0.0.1");
-    pcfg.port = std::atoi(env_or("EVO_PHASE2_PG_PORT", "5433").c_str());
-    pcfg.user = env_or("EVO_PHASE2_PG_USER", "evo");
-    pcfg.password = env_or("EVO_PHASE2_PG_PASSWORD", "evo_dev_password");
-    pcfg.dbname = env_or("EVO_PHASE2_PG_DB", "evo_phase2");
-    entry->store = std::make_unique<evo::PgRunStore>(pcfg);
+    entry->store =
+        std::make_unique<evo::PgRunStore>(phase2_pg_config_from_env());
     if (!entry->store->connect()) {
       quota_gate_.release_run(req->org_id());  // M36: give back admitted slot
       log_line("submit_rejected", rid, req->org_id(),
@@ -558,7 +580,7 @@ class ControlServiceImpl final
 
     {
       std::lock_guard lock(runs_mu_);
-      runs_.emplace(rid, std::move(entry));
+      register_run_locked(rid, std::move(entry));
     }
 
     raw->runner = std::thread([this, raw, rid]() {
@@ -609,12 +631,7 @@ class ControlServiceImpl final
   // them, and it must not guess. This is the documented small restart window
   // that is not recoverable (M35 no-go).
   void reconcile_active_runs() {
-    evo::PgRunStoreConfig pcfg;
-    pcfg.host = env_or("EVO_PHASE2_PG_HOST", "127.0.0.1");
-    pcfg.port = std::atoi(env_or("EVO_PHASE2_PG_PORT", "5433").c_str());
-    pcfg.user = env_or("EVO_PHASE2_PG_USER", "evo");
-    pcfg.password = env_or("EVO_PHASE2_PG_PASSWORD", "evo_dev_password");
-    pcfg.dbname = env_or("EVO_PHASE2_PG_DB", "evo_phase2");
+    evo::PgRunStoreConfig pcfg = phase2_pg_config_from_env();
     evo::PgRunStore lister(pcfg);
     if (!lister.connect()) {
       evo::log::warn("reconcile_pg_unreachable",
@@ -666,9 +683,7 @@ class ControlServiceImpl final
         entry->node_id_type.emplace_back(id.value, spec ? spec->type : "");
       }
 
-      evo::RedisTransportConfig rcfg;
-      rcfg.host = env_or("EVO_PHASE2_REDIS_HOST", "127.0.0.1");
-      rcfg.port = std::atoi(env_or("EVO_PHASE2_REDIS_PORT", "6390").c_str());
+      evo::RedisTransportConfig rcfg = phase2_redis_config_from_env();
       entry->transport = std::make_unique<evo::RedisTransport>(rcfg);
       if (!entry->transport->connect()) {
         evo::log::warn("reconcile_skip_redis_unreachable",
@@ -718,7 +733,7 @@ class ControlServiceImpl final
 
       {
         std::lock_guard lock(runs_mu_);
-        runs_.emplace(rid, std::move(entry));
+        register_run_locked(rid, std::move(entry));
       }
 
       raw->runner = std::thread([this, raw, rid]() {
@@ -921,6 +936,48 @@ class ControlServiceImpl final
 
   std::mutex runs_mu_;
   std::map<std::string, std::unique_ptr<ActiveRun>> runs_;  // stable addresses
+  // Submission-order index backing bounded retention (register_run_locked).
+  std::deque<std::string> run_order_;
+
+  // Retention bound. GetRun serves in-memory state only while an entry lives
+  // here, so terminal runs are pruned oldest-first once the registry exceeds
+  // kMaxRetainedRuns — previously the map grew without bound over a long
+  // uptime (every completed ActiveRun kept its full log/events forever).
+  // Durable history is the Postgres run store's job; the app reconstructs
+  // older runs from workflow_runs/node_runs, not from this process.
+  static constexpr size_t kMaxRetainedRuns = 1024;
+
+  // Insert a run, then prune. Caller holds runs_mu_.
+  //
+  // Pruning JOINS a finished runner before erasing its entry: the runner
+  // lambdas read raw->org_id / bump metrics AFTER publishing done=true under
+  // runs_mu_, so erase-without-join could free ActiveRun mid-tail. The join is
+  // cheap there — done=true means only the metrics/log tail can remain — and
+  // it never deadlocks because that tail never re-acquires runs_mu_.
+  void register_run_locked(const std::string& rid,
+                           std::unique_ptr<ActiveRun> entry) {
+    run_order_.push_back(rid);
+    runs_.emplace(rid, std::move(entry));
+
+    size_t pruned = 0;
+    while (runs_.size() > kMaxRetainedRuns && !run_order_.empty()) {
+      const auto it = runs_.find(run_order_.front());
+      if (it == runs_.end()) {
+        run_order_.pop_front();  // already gone (defensive)
+        continue;
+      }
+      if (!it->second->done) break;  // oldest not terminal — keep ordering
+      if (it->second->runner.joinable()) it->second->runner.join();
+      runs_.erase(it);
+      run_order_.pop_front();
+      ++pruned;
+    }
+    if (pruned > 0) {
+      evo::log::info("runs_registry_pruned",
+                     {{"service", "evo-scheduler"},
+                      {"detail", "pruned=" + std::to_string(pruned)}});
+    }
+  }
 
   // M36: service-wide multi-tenant quota gate. Shared by every run loop (via
   // DistributedRunConfig.quota_gate) and consulted at SubmitRun admission.
@@ -954,9 +1011,15 @@ class ControlServiceImpl final
   std::string render_metrics() {
     {
       std::lock_guard lock(runs_mu_);
+      // Count only non-terminal entries: the registry retains finished runs
+      // up to the retention bound, so its size is no longer "active".
+      size_t active = 0;
+      for (const auto& [rid, entry] : runs_) {
+        if (!entry->done) ++active;
+      }
       metrics_.gauge_set("evo_scheduler_active_runs",
                          "Runs currently active (not terminal) in this scheduler.",
-                         {}, static_cast<double>(runs_.size()));
+                         {}, static_cast<double>(active));
     }
     const auto qc = quota_gate_.counters();
     metrics_.counter_set(

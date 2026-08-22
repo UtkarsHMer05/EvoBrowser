@@ -615,3 +615,11 @@ function ev(
 }
 
 console.log(`\nM28 run-view-model + transport tests: ${passed} passed`);
+
+if (process.env.VITEST) {
+  // Registration only: every assertion in this linear script already ran at
+  // module load (collection). A failure above marks this file red; this entry
+  // gives vitest a named test to track on success.
+  const { test } = await import("vitest");
+  test("M28 run view model + transport", () => {});
+}

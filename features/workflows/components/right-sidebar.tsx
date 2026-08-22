@@ -443,11 +443,11 @@ export function RightSidebar({
 }) {
   const [tab, setTab] = useState("toolbar");
 
-  // TODO: read the currently selected node from React Flow.
+  // The currently selected node drives the Editor tab: selecting a node on
+  // the canvas switches the sidebar to it.
   const selected = useStore((s) => s.nodes.find((n) => n.selected)) as
     StepNodeType | undefined;
 
-  // TODO: auto-switch to the Editor tab when the selection changes.
   const [prevSelectedId, setPrevSelectedId] = useState(selected?.id);
   if (selected && selected.id !== prevSelectedId) {
     setPrevSelectedId(selected.id);

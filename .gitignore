@@ -18,6 +18,7 @@ engine/Testing
 
 # next.js
 /.next/
+coverage/
 /out/
 
 # production

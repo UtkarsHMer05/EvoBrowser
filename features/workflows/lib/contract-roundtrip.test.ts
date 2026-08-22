@@ -193,3 +193,11 @@ interface ResultEnvelopeView {
 }
 
 console.log("\nALL PROTOBUF CONTRACT ROUND-TRIP TESTS PASSED! (4/4)");
+
+if (process.env.VITEST) {
+  // Registration only: every assertion in this linear script already ran at
+  // module load (collection). A failure above marks this file red; this entry
+  // gives vitest a named test to track on success.
+  const { test } = await import("vitest");
+  test("M21 Protobuf contract round-trip", () => {});
+}

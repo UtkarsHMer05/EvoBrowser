@@ -767,7 +767,16 @@ async function main() {
   console.log(`\nALL M23 WORKER INTEGRATION TESTS PASSED! (${passed}/${passed})`);
 }
 
+if (process.env.VITEST) {
+  // Under vitest the suite runs as one tracked test: failures attribute to
+  // this file instead of killing the worker with process.exit.
+  const { test } = await import("vitest");
+  test("M23 worker runtime integration", async () => {
+    await main();
+  });
+} else {
 main().catch((err) => {
   console.error("M23 worker test FAILED:", err);
   process.exit(1);
 });
+}

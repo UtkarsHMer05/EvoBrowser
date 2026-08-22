@@ -43,6 +43,13 @@
       "when": 1787259958348,
       "tag": "0005_phase2_node_retry",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787423047237,
+      "tag": "0006_phase2_run_dag_json",
+      "breakpoints": true
     }
   ]
 }

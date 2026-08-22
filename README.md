@@ -465,7 +465,7 @@ npm run lint
 npm run build
 ```
 
-`npm test` covers planning, conversion, editability, lifecycle, interpolation, Protobuf, workflow versions, cross-language envelopes, worker execution, browser session ownership, logging, engine adapters, gRPC, normalized views, and 9/9 legacy/Evo console parity scenarios. Distributed sections print `SKIP` when local Redis/Postgres is unavailable; start and migrate Phase 2 to exercise them.
+`npm test` runs the suites under Vitest (`npm run test:watch`, `npm run test:coverage` for watch mode and V8 coverage). Coverage spans planning, conversion, editability, lifecycle, interpolation, Protobuf, workflow versions, cross-language envelopes, worker execution, browser session ownership, logging, engine adapters, gRPC, normalized views, and 9/9 legacy/Evo console parity scenarios. Distributed sections print `SKIP` when local Redis/Postgres is unavailable; start and migrate Phase 2 to exercise them. Each suite can still be run standalone with `tsx <file>` outside the runner.
 
 Do not run `typecheck` concurrently with `build`: both use `.next/types`, and Next.js replaces generated route types during compilation.
 
@@ -520,7 +520,7 @@ GitHub Actions runs secret scanning; Node tests/typecheck/lint/build; GCC and Cl
 - Liveblocks tokens and rooms are organization-scoped.
 - Live view checks authentication, run/workflow ownership, and matching session ID.
 - Screenshots check organization ownership.
-- Replay checks auth and Pro entitlement; Browserbase credentials stay server-side.
+- Replay checks authentication, Pro entitlement, and that the run owning the session belongs to the caller's organization — the same shared ownership rule every per-run artifact route enforces via `authorizeRunAccess`.
 - Agent entitlement is checked before engine selection.
 - Evo uses constant-time engine-token comparison when configured.
 - Phase 2 validates identifiers and input sizes and redacts secrets, bearer tokens, and URL credentials from structured logs.
@@ -550,7 +550,7 @@ Limits and honest non-claims:
 - Distributed workers do not scale linearly for fine-grained work; Redis round-trips and single-threaded result consumption are the observed bottleneck.
 - Delivery is at least once with dedupe and at-most-once logical terminal application, not exactly-once external side effects.
 - Recovery has a detection window; there is no zero-downtime claim.
-- Phase 1 is sequential, uses one page/session, retries the whole task, and has no Resend idempotency key.
+- Phase 1 is sequential, uses one page/session, and retries the whole task; Stop is honored cooperatively at node boundaries (not-yet-run steps are published as canceled) and there is no Resend idempotency key.
 - Planner structure is validated, but instruction quality depends on the model.
 - Live view is bounded and best-effort; recording is the durable visual record.
 - gRPC is loopback insecure transport; the token is shared, not per org. Local Redis auth is disabled.
@@ -581,7 +581,9 @@ The canvas uses `@xyflow/react` 12.11.2 and Liveblocks bindings. Consult current
 | --------------------------------- | ----------------------------------------- |
 | `npm run dev`                     | Next.js webpack development server        |
 | `npm run build` / `npm start`     | Build and serve production                |
-| `npm test`                        | Node/TypeScript regression suites         |
+| `npm test`                        | Node/TypeScript regression suites (Vitest) |
+| `npm run test:watch`              | Vitest watch mode                          |
+| `npm run test:coverage`           | V8 coverage report for the Node suites     |
 | `npm run typecheck`               | TypeScript without emit                   |
 | `npm run lint`                    | ESLint                                    |
 | `npm run format`                  | Rewrite TS/TSX with Prettier              |
