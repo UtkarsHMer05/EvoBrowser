@@ -49,7 +49,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `02cc98e` |
 | M38 | Add observability, service security, and CI quality gates | ✅ DONE | `f9aa65e` |
 | M39 | Run the final reproducible performance, scaling, and chaos campaign | ✅ DONE | `200b6ee` |
-| M40 | Final Phase-2 audit, documentation, release, and resume evidence registry | ✅ DONE | `M40_SHA` |
+| M40 | Final Phase-2 audit, documentation, release, and resume evidence registry | ✅ DONE | `943e114` |
 
 ---
 
@@ -2933,6 +2933,6 @@ evidence registry committed, and no fabricated claim survives.
 - **Known limitations:** unchanged from the report §8 / registry E4,E14,E15 —
   distributed scaling ceiling, single-process recovery (not HA), loopback
   service bindings without TLS, no browser E2E performance claim.
-- **COMMIT:** `<M40_SHA>` — `phase2(m40): finalize evidence-backed distributed engine`
+- **COMMIT:** `943e114` — `phase2(m40): finalize evidence-backed distributed engine`
 - **NEXT:** Phase 2 complete (M01–M40). No further milestones. Push/merge of
   the `phase2` branch is the user's decision (RELEASE_CHECKLIST.md §4).
