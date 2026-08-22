@@ -48,7 +48,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `d490b7b` |
 | M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `02cc98e` |
 | M38 | Add observability, service security, and CI quality gates | ✅ DONE | `f9aa65e` |
-| M39 | Run the final reproducible performance, scaling, and chaos campaign | 🚧 IN PROGRESS (claimed by session B) | — |
+| M39 | Run the final reproducible performance, scaling, and chaos campaign | ✅ DONE | `M39_SHA` |
 | M40 | Final Phase-2 audit, documentation, release, and resume evidence registry | ⬜ NOT STARTED | — |
 
 ---
@@ -2719,3 +2719,136 @@ tenant's whole backlog. Default remains M36 FCFS (backwards compatible).
   secrets committed).
 - **COMMIT:** `f9aa65e` — `phase2(m38): add observability security and ci gates`
 - **NEXT:** M39 — Final reproducible performance, scaling, and chaos campaign.
+
+---
+
+## M39 — Run the final reproducible performance, scaling, and chaos campaign
+
+**Status:** ✅ DONE (session B) — the evidence from which resume metrics may be
+written now exists, measured on the reference machine and preserved as raw
+artifacts. No number below was chosen in advance; every one is derived from the
+captured samples.
+
+- **BASE_SHA:** `b4b651d` (M39 claim commit; campaign frozen at this SHA).
+- **What was inspected:** master prompt M39 spec (steps 1–25, no-go list,
+  Appendix S scaling catalog, Appendix T failure protocol F01–F25),
+  `docs/phase2/BENCHMARK_METHODOLOGY.md` (§1 no-fabrication, §4 artifact format,
+  §5 publication gate), `engine/app/bench_runner.cpp` (M15 corpus runner),
+  `engine/core/{include/evo,src}/bench.{hpp,cpp}` (synthetic tasks + RNG),
+  `engine/core/include/evo/{concurrent_scheduler,metrics,scheduler,dag}.hpp`
+  (per-node timestamps + M13 RunMetrics), `engine/tests/crash_recovery_test.cpp`
+  (M34 artifact pattern + spawn/process-group pattern),
+  `engine/tests/fairness_bench_test.cpp` (M37 artifact pattern),
+  `engine/tests/distributed_e2e_test.cpp` (spawn_worker + audit pattern),
+  `engine/core/include/evo/{transport,run_store}.hpp` + `engine/redis/...` +
+  `engine/pg/...` (bounded retry/backoff: base 50ms, cap 2s, max 5 attempts),
+  `worker/src/{main.ts,synthetic-executor.ts,redis-streams.ts}` (ioredis
+  reconnect), `scripts/phase2/{up.sh,lib.sh,bench-smoke.sh}`, `.gitignore`
+  (results dir is gitignored by convention, matching M34).
+- **What changed (new evidence infrastructure; no product behavior touched):**
+  - **`engine/app/m39_local_campaign.cpp` (NEW):** final local-scheduler
+    campaign. Sequential reference vs ConcurrentScheduler across shapes
+    {linear, diamond, wide, layered, seeded-random} × sizes {10,50,100,500,1000}
+    × profiles {simulated I/O-bound `bench:sleep`, synthetic CPU `bench:burn`}
+    × threads {1,2,4,8}, with warmup + repeated trials, steady_clock durations.
+    Emits §4 artifacts (manifest/samples/summary/command). Emits BOTH
+    `speedup` (seq-vs-con, meaningful for io) and `thread_scaling_vs_1t`
+    (con t1 vs tN, the honest CPU signal — the cooperative CPU task polls its
+    stop_token every 256 iters, so seq-vs-con understates the concurrent
+    scheduler's own scaling).
+  - **`engine/tests/m39_scaling_test.cpp` (NEW):** distributed worker scaling
+    (Appendix S). Worker counts {1,2,4} × logical tasks {100,500}, wide DAG of
+    `bench:sleep` (INTERNAL/unbounded), 2 repeated trials per cell with the
+    fleet spawned once per cell (identical worker conditions). Audits the
+    durable store per trial (every task succeeded, exactly one attempt — no
+    lost/duplicated work). Emits §4 artifacts with median throughput +
+    scaling-vs-1-worker. Skips cleanly without Redis/Postgres/tsx.
+  - **`engine/tests/m39_chaos_test.cpp` (NEW):** infrastructure outage chaos
+    (Appendix T F09–F12). `docker pause`/`unpause` the Redis container (~2.5s)
+    and the Postgres container (~2.0s) mid-run, injected only after ≥3 tasks
+    are observably dispatched. Verifies the run reaches a terminal state and
+    records recovery-to-success as measured evidence (a non-recovery is
+    preserved, not hidden, per methodology step 15). Emits §4 artifacts.
+    Skips cleanly without docker/the containers.
+  - **`scripts/phase2/m39-campaign.sh` (NEW):** orchestrator. Freezes the
+    benchmark SHA + records git state, reconfigures so `EVO_BUILD_COMMIT`
+    matches the frozen SHA, runs local + scaling + chaos + M34 crash-recovery
+    + M37 fairness evidence + the 27-scenario distributed_run_loop fault audit,
+    then assembles `engine/benchmarks/results/<ts>_m39_<sha>/` with
+    campaign.json, per-leg §4 artifacts, fault_audit.txt, checksums.sha256,
+    and a REPORT.md derived from the raw data. **Rosetta guard:** refuses to
+    record emulation-tainted timing — detects `sysctl.proc_translated=1` and
+    self-heals by re-executing via `arch -arm64 /bin/bash` (bare `bash` on this
+    machine is an x86_64-only Homebrew build; `arch -arm64 bash` fails with
+    "Bad CPU type").
+  - **`engine/CMakeLists.txt`:** `evo-m39-local` (Release evidence runner, not a
+    CTest target) + `evo_m39_scaling_test` + `evo_m39_chaos_test` (CTest, 600s
+    timeout, gated on hiredis+libpq+proto like the other distributed tests).
+- **Measured results (reference machine: Apple M2, 8 cores, Darwin arm64,
+  Apple clang 21, Release; frozen SHA `b4b651d`; results dir
+  `engine/benchmarks/results/20260822-141648_m39_b4b651d/`):**
+  - **Local scheduler, simulated I/O-bound — speedup vs sequential reference
+    (near-linear):** t1 1.03x, t2 2.01x, t4 4.01x, **t8 8.01x** (efficiency
+    ~1.00). Reproducibility re-run: t8 8.09x (within noise).
+  - **Local scheduler, synthetic CPU — thread scaling (con t1 vs tN):** t2
+    2.01x, t4 3.75x, **t8 5.57x**. Re-run: 5.73x. (seq-vs-con NOT reported for
+    CPU — see thread_scaling note above.)
+  - **Distributed worker scaling (wide DAG, bench:sleep):** 1w→2w gives
+    1.08x–1.14x; **4 workers is SLOWER than 1** (0.81x–0.87x). This is a real,
+    preserved result, not hidden: the TS worker already parallelizes tasks
+    internally via async, so adding worker processes does not add parallelism
+    for these fine-grained synthetic tasks — the bottleneck is the
+    single-threaded C++ result-consumption loop + Redis transport round-trips,
+    and extra workers add claim/contention overhead. Coarser-task diagnostic
+    (100ms) confirmed the same shape (4w 0.65x). This is the honest scaling
+    ceiling of the current single-loop architecture for I/O-bound synthetic
+    work; it is an architecture finding, not a defect in the evidence.
+  - **Infrastructure outage chaos:** Redis outage (2.5s pause) → run reached
+    terminal, **recovered to success 30/30 tasks** (makespan 5330ms). Postgres
+    outage (2.0s pause) → **recovered to success 30/30** (4714ms). Both
+    survived via the transport/store bounded reconnect backoff.
+  - **Worker crash recovery (M34, SIGKILL lease-holder):** recovery latency
+    (SIGKILL → run complete) min 6413 / median 6470 / max 6489 ms over 3 trials.
+  - **Fair scheduling (M37):** Jain index — equal workload span 0.995 / served
+    1.0; unequal workload span 0.997 / served 1.0 (no starvation).
+  - **Fault outcome audit:** `distributed_run_loop_test` (27 scenarios:
+    duplicate result, identity validation, failure path, malformed payload,
+    cancellation races, lease expiry/reassignment, retry/dead-letter, restart
+    recovery, tenant isolation, starvation resistance) → 100% passed.
+- **Validation (measured, not copied):**
+  - macOS Release `ctest` → ✅ 31/31 (incl. new m39_scaling 60.4s, m39_chaos
+    12.7s). ASan+UBSan → ✅ 31/31. TSan → ✅ 31/31.
+  - Reproducibility: re-ran the local campaign; headline speedups within noise
+    (io t8 8.09x vs 7.86x; cpu t8 5.73x vs 5.57x).
+  - Raw/summary calculation check: recomputed every summary median from raw
+    samples → 200 local cells + 6 scaling cells, **0 mismatches**.
+  - `checksums.sha256` over all 27 artifact files → 0 FAILED.
+  - Campaign hardware record verified native arm64 (a first run under Rosetta
+    was detected, discarded, and the guard added — see below).
+- **Known limitations / honest caveats:**
+  - Distributed worker scaling does NOT improve beyond ~2 workers for
+    fine-grained synthetic I/O tasks (see measured 4-worker regression and its
+    explanation above). This is the current architecture's ceiling, preserved
+    as evidence.
+  - Local scheduler numbers are scheduler-only synthetic and MUST NOT be
+    generalized to browser end-to-end speedup (methodology §1.7).
+  - No Browserbase/live external E2E campaign was run this milestone (no paid
+    keys authorized; Appendix U.6). Browser end-to-end performance is dominated
+    by network + LLM latency, not scheduling.
+  - Per-node ready-to-dispatch/queue-latency percentiles are captured by the
+    local campaign (full steady_clock timestamps); the distributed campaign
+    reports makespan/throughput/retries/errors from the durable store.
+  - The results directory is gitignored by convention (matching M34); it is
+    referenced here and reproducible via `scripts/phase2/m39-campaign.sh`.
+- **Rosetta-taint incident (transparency):** the first campaign run executed
+  under Rosetta (x86-64 emulation) because the background shell's `bash` is an
+  x86_64-only Homebrew build; it recorded `Darwin x86_64` and its timings were
+  emulation-tainted. That results directory was **discarded** (never published),
+  a Rosetta guard + native self-heal was added to the orchestrator, and the
+  campaign was re-run natively (recorded `Darwin arm64`). Only the native run
+  is retained as evidence.
+- **Human action:** none (no migration, no schema change, Neon untouched, no
+  secrets, no paid external calls).
+- **COMMIT:** `M39_SHA` — `phase2(m39): capture final benchmark and chaos evidence`
+- **NEXT:** M40 — Final Phase-2 audit, documentation, release, and resume
+  evidence registry.

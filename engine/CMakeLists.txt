@@ -384,6 +384,16 @@ add_executable(evo-bench app/bench_runner.cpp)
 target_link_libraries(evo-bench PRIVATE evo_scheduler_core)
 
 # ---------------------------------------------------------------------------
+# evo-m39-local — M39 final local-scheduler performance campaign. Evidence
+# runner (shapes x sizes x io/cpu profiles x thread counts) emitting
+# BENCHMARK_METHODOLOGY.md §4 artifacts. Not a CTest target: it is invoked by
+# scripts/phase2/m39-campaign.sh on the reference machine (evidence-grade
+# numbers never come from shared CI runners, methodology §1.8).
+# ---------------------------------------------------------------------------
+add_executable(evo-m39-local app/m39_local_campaign.cpp)
+target_link_libraries(evo-m39-local PRIVATE evo_scheduler_core)
+
+# ---------------------------------------------------------------------------
 # evo-scheduler-server — gRPC ControlService over the scheduler core (M17).
 # Milestone 29: when the Redis transport + Postgres RunStore are available,
 # product DAGs are driven by the DistributedRunLoop (EVO_HAVE_DISTRIBUTED);
@@ -772,6 +782,45 @@ if(EVO_HAVE_HIREDIS AND EVO_HAVE_LIBPQ AND EVO_HAVE_PROTO)
   set_tests_properties(scheduler_restart PROPERTIES
     ENVIRONMENT "EVO_M35_DRIVER_BIN=$<TARGET_FILE:evo-run-loop-driver>"
   )
+
+  # -------------------------------------------------------------------------
+  # evo_m39_scaling_test — M39: distributed worker scaling campaign (worker
+  # counts x logical-task counts over real Redis + Postgres + TS workers),
+  # emitting BENCHMARK_METHODOLOGY.md §4 artifacts (EVO_M39_ARTIFACT_DIR).
+  # Skips at runtime when Redis/Postgres/tsx are unavailable. Requires
+  # hiredis + libpq + proto.
+  # -------------------------------------------------------------------------
+  add_executable(evo_m39_scaling_test tests/m39_scaling_test.cpp)
+  target_link_libraries(evo_m39_scaling_test PRIVATE
+    evo_distributed evo_redis_transport evo_pg_run_store)
+  target_compile_options(evo_m39_scaling_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    ${EVO_CLANG_HIREDIS_FLAGS}  # hiredis headers (transitive)
+  )
+  target_compile_definitions(evo_m39_scaling_test PRIVATE
+    EVO_REPO_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+  add_test(NAME m39_scaling COMMAND evo_m39_scaling_test)
+  set_tests_properties(m39_scaling PROPERTIES TIMEOUT 600)
+
+  # -------------------------------------------------------------------------
+  # evo_m39_chaos_test — M39: infrastructure outage chaos (Appendix T F09-F12).
+  # docker pause/unpause the Redis and Postgres containers mid-run; verifies
+  # the run reaches a terminal state and records recovery as measured evidence.
+  # Skips at runtime when Redis/Postgres/docker/the containers are unavailable.
+  # -------------------------------------------------------------------------
+  add_executable(evo_m39_chaos_test tests/m39_chaos_test.cpp)
+  target_link_libraries(evo_m39_chaos_test PRIVATE
+    evo_distributed evo_redis_transport evo_pg_run_store)
+  target_compile_options(evo_m39_chaos_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    ${EVO_CLANG_HIREDIS_FLAGS}  # hiredis headers (transitive)
+  )
+  target_compile_definitions(evo_m39_chaos_test PRIVATE
+    EVO_REPO_ROOT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+  add_test(NAME m39_chaos COMMAND evo_m39_chaos_test)
+  set_tests_properties(m39_chaos PROPERTIES TIMEOUT 600)
 endif()
 # Point the integration test at the real server binary so it runs instead of
 # skipping (the test also honors an EVO_SCHEDULER_SERVER_BIN env override).
