@@ -48,7 +48,7 @@ Commit subjects follow `phase2(mNN): <description>`.
 | M36 | Add multi-tenant quotas and backpressure | ✅ DONE | `d490b7b` |
 | M37 | Implement fair scheduling and starvation resistance | ✅ DONE | `02cc98e` |
 | M38 | Add observability, service security, and CI quality gates | ✅ DONE | `f9aa65e` |
-| M39 | Run the final reproducible performance, scaling, and chaos campaign | ✅ DONE | `M39_SHA` |
+| M39 | Run the final reproducible performance, scaling, and chaos campaign | ✅ DONE | `200b6ee` |
 | M40 | Final Phase-2 audit, documentation, release, and resume evidence registry | ⬜ NOT STARTED | — |
 
 ---
@@ -2849,6 +2849,6 @@ captured samples.
   is retained as evidence.
 - **Human action:** none (no migration, no schema change, Neon untouched, no
   secrets, no paid external calls).
-- **COMMIT:** `M39_SHA` — `phase2(m39): capture final benchmark and chaos evidence`
+- **COMMIT:** `200b6ee` — `phase2(m39): capture final benchmark and chaos evidence`
 - **NEXT:** M40 — Final Phase-2 audit, documentation, release, and resume
   evidence registry.
