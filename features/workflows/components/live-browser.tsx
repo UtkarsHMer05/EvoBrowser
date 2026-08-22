@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Globe, Loader2, MonitorOff, WifiOff } from "lucide-react";
 import { useLatestRunSteps } from "@/features/workflows/components/workflow-runs-provider";
+import { RunStartupDiagnosisBanner } from "@/features/workflows/components/run-startup-diagnosis-banner";
 
 // How often to retry fetching the live-view URL while we're waiting for the
 // Browserbase session to become available for debugging. Browserbase returns
@@ -199,6 +200,12 @@ export function LiveBrowser({ sessionId, runId, isRunLive }: LiveBrowserProps) {
             <p className="text-[10px] text-muted-foreground/60">
               The live view will appear when a browser step starts running.
             </p>
+          </div>
+          {/* Same diagnosis the console shows, scoped for this panel: if a run
+              is live but nothing is executing it, say so here where the user
+              is already looking. */}
+          <div className="w-full max-w-sm">
+            <RunStartupDiagnosisBanner />
           </div>
         </div>
       )}

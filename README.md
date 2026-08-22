@@ -319,6 +319,49 @@ npm run build
 npm start
 ```
 
+### Deploying runs to production (e.g. Railway + Trigger.dev cloud)
+
+There are TWO runtimes in a production Phase 1 setup, and mixing them up is the
+most common "Run does nothing in production" cause:
+
+1. **The Next.js app** (Railway) — renders UI, triggers runs via the SDK.
+2. **The run task itself** — executes on **Trigger.dev infrastructure**, NOT on
+   Railway. `npx trigger.dev dev` only executes tasks on your laptop; it never
+   runs for a deployed app.
+
+Setup checklist:
+
+- **Deploy the task to the production environment** (once, and after every task
+  code change), from the repo with the PROD secret key in your shell:
+
+  ```bash
+  TRIGGER_SECRET_KEY=tr_prod_… npx trigger.dev@v4 deploy --env prod
+  ```
+
+- **Give the TASK its own env vars** in the Trigger.dev dashboard
+  (Project → Environments → Prod → Env Vars). Task execution cannot read
+  Railway's variables:
+
+  | Variable | Why |
+  | ------------------- | ---------------------------------------------- |
+  | `DATABASE_URL` | The task loads the workflow graph from Neon |
+  | `BROWSERBASE_API_KEY` | Stagehand sessions, screenshots, live view |
+  | `RESEND_API_KEY` | Send Email node |
+  | `SENTRY_DSN` | Optional task telemetry |
+
+- **Railway app vars** need their own full set: Clerk keys (+ redirect URLs
+  pointing at the Railway domain), `DATABASE_URL`, Liveblocks keys,
+  `BROWSERBASE_API_KEY` (the live-view/replay/screenshot proxies call it),
+  `TOKENROUTER_API_KEY`, and `TRIGGER_SECRET_KEY` — which must be the key of
+  the SAME project/environment you deployed the task to.
+
+Verify in the Trigger.dev dashboard → Runs: a triggered run should appear
+immediately. Stuck in **Queued** forever ⇒ no worker is deployed to that
+environment (step 1). **Failed** within seconds ⇒ open the run's log — usually
+a missing task env var (step 2). The console UI also surfaces both cases with
+an amber banner ("No worker has picked up this run") instead of hanging
+silently.
+
 ## Run Phase 2 (Evo engine)
 
 Phase 2 uses isolated local Redis at `127.0.0.1:6390` and Postgres at `127.0.0.1:5433`.

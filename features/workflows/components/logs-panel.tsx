@@ -6,6 +6,7 @@ import { Lock, MonitorPlay } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { NodeIcon } from "@/features/workflows/components/node-icon";
+import { RunStartupDiagnosisBanner } from "@/features/workflows/components/run-startup-diagnosis-banner";
 import { useProPlan } from "@/features/workflows/hooks/use-pro-plan";
 import {
   consoleRunStatusLabel,
@@ -152,6 +153,9 @@ export function LogsPanel({
 
   return (
     <div className="flex size-full flex-col gap-3 overflow-y-auto p-2">
+      {/* Explains the "Running… 0/0 forever" case instead of leaving it silent:
+          nothing executed the run (task not deployed / env vars missing). */}
+      <RunStartupDiagnosisBanner />
       {runs.map((run) => {
         const isSummarySelected =
           selected?.kind === "summary" && selected.runId === run.id;

@@ -160,6 +160,13 @@ export function useConsoleRuns(): ConsoleRun[] {
   return consoleRuns;
 }
 
+// The realtime subscription's error, when the Trigger.dev socket itself fails.
+// Consumers use it to distinguish "run is stuck" from "we can't see the runs".
+export function useRunsConnectionError(): string | undefined {
+  const { error } = useWorkflowRuns();
+  return error?.message;
+}
+
 interface LatestRunSteps {
   steps: RunStep[];
   // True while the latest run is queued or executing — i.e. still producing steps.
