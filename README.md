@@ -508,7 +508,7 @@ npm run lint
 npm run build
 ```
 
-`npm test` runs the suites under Vitest (`npm run test:watch`, `npm run test:coverage` for watch mode and V8 coverage). Coverage spans planning, conversion, editability, lifecycle, interpolation, Protobuf, workflow versions, cross-language envelopes, worker execution, browser session ownership, logging, engine adapters, gRPC, normalized views, and 9/9 legacy/Evo console parity scenarios. Distributed sections print `SKIP` when local Redis/Postgres is unavailable; start and migrate Phase 2 to exercise them. Each suite can still be run standalone with `tsx <file>` outside the runner.
+`npm test` runs the suites under Vitest (`npm run test:watch`, `npm run test:coverage` for watch mode and V8 coverage). Coverage spans planning, conversion, editability, lifecycle, interpolation, Protobuf, workflow versions, cross-language envelopes, the server-action boundary (shape validation, Pro gate, engine routing), run authorization, every per-run artifact proxy route, worker execution, browser session ownership, logging, engine adapters, gRPC, normalized views, and 9/9 legacy/Evo console parity scenarios. Distributed sections print `SKIP` when local Redis/Postgres is unavailable; start and migrate Phase 2 to exercise them — CI runs them inside its `distributed` job, where both services exist. Each suite can still be run standalone with `tsx <file>` outside the runner (mock-based unit suites are Vitest-only). Coverage thresholds ratchet: a modest global floor plus strict per-file floors on the security-critical authorization and route-handler code.
 
 Do not run `typecheck` concurrently with `build`: both use `.next/types`, and Next.js replaces generated route types during compilation.
 
@@ -541,7 +541,7 @@ scripts/secret-scan.sh
 scripts/phase2/bench-smoke.sh engine/build/evo-bench
 ```
 
-GitHub Actions runs secret scanning; Node tests/typecheck/lint/build; GCC and Clang; ASan/UBSan; TSan; real Redis/Postgres/gRPC integration; and benchmark-structure smoke without paid external keys or timing assertions.
+GitHub Actions runs secret scanning; Node tests/typecheck/lint/build with a coverage report artifact and ratcheting thresholds; GCC and Clang; ASan/UBSan; TSan; real Redis/Postgres/gRPC integration (including the Vitest distributed sections, which only execute where the services exist); and benchmark-structure smoke without paid external keys or timing assertions.
 
 ### Manual integration smoke test
 

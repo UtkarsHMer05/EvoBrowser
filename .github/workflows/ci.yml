@@ -75,8 +75,15 @@ jobs:
           cache: "npm"
       - name: Install dependencies
         run: npm ci
-      - name: Unit / regression suites
-        run: npm test
+      - name: Unit / regression suites (with coverage)
+        run: npm test -- --coverage
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-coverage
+          path: coverage
+          retention-days: 7
       - name: Type check
         run: npm run typecheck
       - name: Lint
@@ -255,6 +262,12 @@ jobs:
         run: bash third_party/build-hiredis.sh
       - name: Migrate isolated Phase-2 Postgres (direct TCP)
         run: bash scripts/phase2/migrate-local.sh
+      # The vitest distributed sections (worker runtime, engine e2e) SKIP
+      # themselves when 127.0.0.1:6390 / :5433 are unreachable — this is the
+      # only CI job where both services are up, so it must run the suites or
+      # they never execute anywhere.
+      - name: Unit / regression suites (Redis + Postgres up)
+        run: npm test
       - name: "Configure (full: proto + gRPC + redis + pg)"
         working-directory: engine
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
