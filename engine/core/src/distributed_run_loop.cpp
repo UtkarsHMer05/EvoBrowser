@@ -724,7 +724,14 @@ std::string DistributedRunLoop::run() {
       return run_status::kCanceled;
     }
 
-    dispatch_ready();
+    {
+      const auto t0 = std::chrono::steady_clock::now();
+      dispatch_ready();
+      const auto d_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - t0);
+      timing_.dispatch_ms += static_cast<std::int64_t>(d_ms.count());
+      ++timing_.dispatch_calls;
+    }
     drain_resource_blocked();
 
     // Milestone 31: periodically reap expired attempt leases (lost workers).
@@ -762,35 +769,66 @@ std::string DistributedRunLoop::run() {
       return run_status::kCanceled;
     }
 
-    // Consume one result (blocking slice honors stop via stop_token).
-    auto msg = transport_.read(result_stream, config_.result_group,
-                               config_.consumer_id, config_.read_block_ms,
-                               stop_source_.get_token());
-    if (!msg) continue;
-
-    execution::v1::ResultEnvelope result;
-    if (!result.ParseFromString(msg->payload)) {
-      // Malformed payload: quarantine + ack so it cannot poison the group.
-      transport_.ack(result_stream, config_.result_group, msg->id);
+    // Consume a BATCH of results in one transport round trip (M41), apply in
+    // order, then ack the whole batch in one call. Crash between apply and
+    // ack is safe: redelivery re-applies nothing (durable idempotency ledger)
+    // and late results are ignored. Blocking slice honors stop via stop_token.
+    const auto consume_t0 = std::chrono::steady_clock::now();
+    auto batch = transport_.read_batch(result_stream, config_.result_group,
+                                       config_.consumer_id,
+                                       config_.result_batch_size,
+                                       config_.read_block_ms,
+                                       stop_source_.get_token());
+    if (batch.empty()) {
+      timing_.consume_ms +=
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - consume_t0)
+              .count();
       continue;
     }
-    const bool applied = apply_result(result);
-    // Ack applied AND ignored results alike: duplicates/late results are
-    // consumed, never reprocessed.
-    transport_.ack(result_stream, config_.result_group, msg->id);
+    ++timing_.batches_read;
+    timing_.results_consumed += batch.size();
 
-    // Free the node's resource slot only when this result actually drove the
-    // node to a terminal state (apply_result returns true exactly once per
-    // node). Releasing on duplicates/late results would double-free capacity.
-    if (applied) {
-      const ResourcePolicy pol = policy_for_node(NodeId{result.node_id()});
-      if (!pol.affinity_key.empty()) {
-        auto it = resource_usage_.find(pol.affinity_key);
-        if (it != resource_usage_.end() && it->second > 0) it->second--;
+    std::vector<std::string> ack_ids;
+    ack_ids.reserve(batch.size());
+    for (auto& msg : batch) {
+      execution::v1::ResultEnvelope result;
+      if (!result.ParseFromString(msg.payload)) {
+        // Malformed payload: quarantine + ack so it cannot poison the group.
+        ack_ids.push_back(std::move(msg.id));
+        continue;
       }
-      // M36: return the cross-run quota slot too (idempotent via quota_held_).
-      release_quota_slot(NodeId{result.node_id()});
+      const auto apply_t0 = std::chrono::steady_clock::now();
+      const bool applied = apply_result(result);
+      timing_.apply_ms +=
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - apply_t0)
+              .count() /
+          1000;
+      // Ack applied AND ignored results alike: duplicates/late results are
+      // consumed, never reprocessed.
+      ack_ids.push_back(std::move(msg.id));
+
+      // Free the node's resource slot only when this result actually drove the
+      // node to a terminal state (apply_result returns true exactly once per
+      // node). Releasing on duplicates/late results would double-free capacity.
+      if (applied) {
+        const ResourcePolicy pol = policy_for_node(NodeId{result.node_id()});
+        if (!pol.affinity_key.empty()) {
+          auto it = resource_usage_.find(pol.affinity_key);
+          if (it != resource_usage_.end() && it->second > 0) it->second--;
+        }
+        // M36: return the cross-run quota slot too (idempotent via quota_held_).
+        release_quota_slot(NodeId{result.node_id()});
+      }
     }
+    if (!ack_ids.empty()) {
+      transport_.ack_many(result_stream, config_.result_group, ack_ids);
+    }
+    timing_.consume_ms +=
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - consume_t0)
+            .count();
   }
 
   // Stop requested mid-run: leave in-flight work for redelivery; mark the

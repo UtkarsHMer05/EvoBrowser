@@ -26,6 +26,38 @@ std::string event_stream_key(const std::string& env_prefix) {
   return env_prefix + ":events";
 }
 
+// Default batch read: loop single reads until max_count, stop, or timeout.
+// Transports with native multi-message reads override this.
+std::vector<TransportMessage> TaskTransport::read_batch(
+    const std::string& stream_key, const std::string& group,
+    const std::string& consumer, std::size_t max_count,
+    std::chrono::milliseconds timeout, std::stop_token st) {
+  std::vector<TransportMessage> out;
+  if (max_count == 0) return out;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (out.size() < max_count && !st.stop_requested()) {
+    const auto remaining =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+    if (remaining <= std::chrono::milliseconds::zero()) break;
+    auto msg = read(stream_key, group, consumer, remaining, st);
+    if (!msg) break;
+    out.push_back(std::move(*msg));
+  }
+  return out;
+}
+
+// Default batch ack: loop single acks.
+std::size_t TaskTransport::ack_many(const std::string& stream_key,
+                                    const std::string& group,
+                                    const std::vector<std::string>& ids) {
+  std::size_t ok = 0;
+  for (const auto& id : ids) {
+    if (ack(stream_key, group, id)) ++ok;
+  }
+  return ok;
+}
+
 InMemoryTransport::Stream& InMemoryTransport::stream_locked(
     const std::string& key) {
   return streams_[key];

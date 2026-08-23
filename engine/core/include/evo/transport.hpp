@@ -63,6 +63,29 @@ class TaskTransport {
       const std::string& consumer, std::chrono::milliseconds timeout,
       std::stop_token st = std::stop_token{}) = 0;
 
+  // Batch read: up to `max_count` undelivered messages in ONE transport round
+  // trip where the transport supports it (Redis XREADGROUP COUNT n). Returns
+  // as soon as at least one message is available (batches form naturally under
+  // load; the call never waits to fill `max_count`). Empty result on timeout,
+  // stop, or failure. Every returned message is pending until acked
+  // (at-least-once). Default implementation loops read(), so transports
+  // without native batching inherit correct semantics.
+  virtual std::vector<TransportMessage> read_batch(
+      const std::string& stream_key, const std::string& group,
+      const std::string& consumer, std::size_t max_count,
+      std::chrono::milliseconds timeout,
+      std::stop_token st = std::stop_token{});
+
+  // Acknowledge a batch of delivered messages in ONE round trip where
+  // supported (Redis XACK accepts multiple ids). Returns the number of ids
+  // the transport reports acknowledged; a partial or failed ack is harmless —
+  // unacked messages are redelivered later and their re-application is
+  // suppressed by the caller's durable dedupe ledger (at-least-once).
+  // Default implementation loops ack().
+  virtual std::size_t ack_many(const std::string& stream_key,
+                               const std::string& group,
+                               const std::vector<std::string>& message_ids);
+
   // Acknowledge a delivered message. Only the worker that processed the
   // message may call this (the scheduler never acks on behalf of workers).
   // Idempotent: acking an unknown/already-acked id returns true (harmless).

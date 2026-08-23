@@ -2936,3 +2936,41 @@ evidence registry committed, and no fabricated claim survives.
 - **COMMIT:** `943e114` — `phase2(m40): finalize evidence-backed distributed engine`
 - **NEXT:** Phase 2 complete (M01–M40). No further milestones. Push/merge of
   the `phase2` branch is the user's decision (RELEASE_CHECKLIST.md §4).
+
+## M41 — Batched result consumption + weighted-fairness and 1,000-task evidence
+
+- **Motivation:** registry row E4 documented the distributed scaling ceiling
+  (4 workers at 0.81–0.87x of one) caused by the serial consume→apply→ack
+  result loop (`DistributedRunLoop::run`).
+- **Engine change (M41):** `TaskTransport::read_batch()` /
+  `ack_many()` with native Redis overrides — `XREADGROUP ... COUNT n BLOCK ms`
+  returns a batch in one round trip; one multi-id `XACK` acknowledges it.
+  The run loop consumes a configurable batch (`result_batch_size`, default 32),
+  applies results in order, then acks the whole batch. Crash between apply and
+  ack stays safe: redelivery is suppressed by the durable idempotency ledger
+  (at-least-once delivery, at-most-once logical application, unchanged).
+- **Instrumentation:** `DistributedRunLoop::TimingStats`
+  (batches/results/dispatch_ms/consume_ms/apply_ms) printed per trial by the
+  M39 scaling test; batch size recorded in the artifact manifest.
+- **Measured impact** (artifact `20260823-163858_m41_ee304d3/scaling`,
+  commit `ee304d3`+): sustained 500-task throughput 107.8 → **182.3 tasks/s**
+  median at 1 worker (**+69%**); 4-worker relative scaling 0.81x → **0.998x**
+  (regression eliminated). Scaling across worker counts remains ~flat BY
+  DESIGN for this workload shape: a single async TS worker already overlaps
+  the synthetic sleeps, so extra processes add no execution capacity once the
+  scheduler pipeline stops being the cap. Flat ≠ regression; E16 documents the
+  scope, E4 marks the original limitation RESOLVED.
+- **New evidence:**
+  - E17 — 1,000-task wide DAGs end-to-end across 1/2/4 workers at 175–214
+    tasks/s, zero lost or duplicated tasks (durable-store audit per trial)
+    (`scaling-1000/`).
+  - E18 — first WEIGHTED fairness measurement (workload C + equal-weight
+    control): under explicit 2:1 entitlements the contended-window service
+    ratio is 1.75 vs 1.00 control, Jain(normalized) 0.996, final grants
+    exactly 2:1, no starvation (`faults/fairness/summary.json`).
+  - E19 — SIGKILL recovery latency distribution over 7 trials: median
+    6,468 ms (min 6,347 / max 6,508), every trial recovered
+    (`faults/crash_recovery/summary.json`).
+- **Validation:** full C++ suite green post-change (31/31 incl. distributed
+  e2e, crash recovery, chaos); fairness bench extended assertions green;
+  Node suite unaffected (engine-core only change).

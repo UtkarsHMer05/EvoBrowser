@@ -213,17 +213,31 @@ struct FairnessOutcome {
   std::size_t deferred_tasks = 0;               // total deferred dispatches
 };
 
+// Numbers from the weighted-fairness workload (C), stashed for artifact
+// emission at the end of main().
+struct WeightedSummary {
+  double jain_normalized = 0.0;   // Jain over normalized CONTENDED service
+  double contended_ratio = 0.0;   // weighted contended service ratio
+  double control_ratio = 0.0;     // equal-weight control contended ratio
+};
+WeightedSummary g_weighted_summary;
+
 // Run one controlled fairness workload. K tenants each run a browser FAN-OUT of
 // `tasks_per_org` nodes against a global browser capacity of 1. `work_ms_per_org`
-// gives each tenant its browser-task duration. Fills `samples` with per-task
-// dispatch/complete records. Returns per-tenant completion spans + served counts.
+// gives each tenant its browser-task duration. `weights` (optional) configures
+// explicit per-org weights for weighted fair scheduling; an absent map means
+// every org keeps weight 1. Fills `samples` with per-task dispatch/complete
+// records. Returns per-tenant completion spans + served counts.
 FairnessOutcome run_fairness_workload(
     const std::vector<std::string>& orgs,
     const std::map<std::string, std::chrono::milliseconds>& work_ms_per_org,
-    int tasks_per_org, bool fair, std::vector<TaskSample>* samples) {
+    int tasks_per_org, bool fair,
+    const std::map<std::string, int>* weights,
+    std::vector<TaskSample>* samples) {
   QuotaConfig qcfg;
   qcfg.global_class_capacity[ResourceClass::Browser] = 1;
   qcfg.fair_scheduling = fair;
+  if (weights != nullptr) qcfg.org_weights = *weights;
   TenantQuotaGate gate(qcfg);
 
   std::mutex sample_mu;
@@ -343,8 +357,9 @@ int main() {
   std::map<std::string, std::chrono::milliseconds> equal_work;
   for (const auto& o : orgs) equal_work[o] = 15ms;
   const std::int64_t t0a = evo::now_wall_ms();
-  FairnessOutcome a =
-      run_fairness_workload(orgs, equal_work, tasks, /*fair=*/true, &samples_a);
+  FairnessOutcome a = run_fairness_workload(orgs, equal_work, tasks,
+                                            /*fair=*/true, /*weights=*/nullptr,
+                                            &samples_a);
 
   std::vector<double> span_a, served_a;
   for (const auto& o : orgs) {
@@ -382,7 +397,8 @@ int main() {
     unequal_work[orgs[i]] = (i == 0) ? 45ms : 15ms;  // org-0 is 3x slower
   }
   FairnessOutcome b = run_fairness_workload(orgs, unequal_work, tasks,
-                                            /*fair=*/true, &samples_b);
+                                            /*fair=*/true, /*weights=*/nullptr,
+                                            &samples_b);
   std::vector<double> span_b, served_b;
   for (const auto& o : orgs) {
     span_b.push_back(static_cast<double>(b.span_ms[o]));
@@ -428,6 +444,217 @@ int main() {
           "aggregate (durations exercised)");
   }
 
+  // --- Workload C: WEIGHTED fairness (explicit 2:1 weights) -----------------
+  // Two tenants, org-0 weighted 2x org-1, equal task durations, global browser
+  // capacity 1, UNEQUAL demand (org-0 submits 2x the tasks of org-1) so the
+  // contended window is well defined. Measured three ways
+  // (BENCHMARK_METHODOLOGY §2 "Fairness", weighted extension):
+  //   - CONTENDED-WINDOW service: every slot granted from demand-start until
+  //     the light tenant's LAST dispatch — the interval where both tenants
+  //     actually compete. Compared against an equal-weight CONTROL run on the
+  //     identical demand: weighting must move the contended service ratio
+  //     from ~alternating (1.0) toward the entitlement ratio (2.0).
+  //   - Jain's index over NORMALIZED contended service xᵢ = servedᵢ / weightᵢ
+  //     (~1.0 when service is proportional to entitlement).
+  //   - Completion: both tenants finish (no starvation), and the FINAL served
+  //     counts land at exactly 2:1 (both drains complete).
+  std::vector<std::string> worgs = {"worg-heavy", "worg-light"};
+  const int light_tasks_c = tasks;
+  const int heavy_tasks_c = 2 * tasks;
+  std::map<std::string, int> weights;
+  weights[worgs[0]] = 2;
+  weights[worgs[1]] = 1;
+
+  std::vector<TaskSample> samples_w;
+  std::vector<TaskSample> samples_ctl;
+  {
+    QuotaConfig qcfg;
+    qcfg.global_class_capacity[ResourceClass::Browser] = 1;
+    qcfg.fair_scheduling = true;
+    qcfg.org_weights = weights;
+    TenantQuotaGate gate(qcfg);
+
+    std::mutex sample_mu;
+    std::map<std::string, std::int64_t> finished_wall;
+    const std::int64_t t0c = evo::now_wall_ms();
+    (void)t0c;
+
+    // One transport + worker pair PER RUN (mirrors run_fairness_workload);
+    // the QUOTA GATE is the only shared object — exactly the cross-run
+    // contention surface the scheduler enforces in production.
+    InMemoryTransport tx_heavy;
+    InMemoryTransport tx_light;
+    InMemoryRunStore store_heavy;
+    InMemoryRunStore store_light;
+
+    DistributedRunConfig heavy_cfg;
+    heavy_cfg.run_id = "run-wf-heavy";
+    heavy_cfg.org_id = worgs[0];
+    heavy_cfg.workflow_id = "wf-heavy";
+    heavy_cfg.env_prefix = "evo:m37wf:heavy";
+    heavy_cfg.read_block_ms = 2ms;
+    heavy_cfg.run_timeout = 60s;
+    heavy_cfg.quota_gate = &gate;
+
+    DistributedRunConfig light_cfg = heavy_cfg;
+    light_cfg.run_id = "run-wf-light";
+    light_cfg.org_id = worgs[1];
+    light_cfg.workflow_id = "wf-light";
+    light_cfg.env_prefix = "evo:m37wf:light";
+
+    FairBenchWorker worker_heavy(tx_heavy, heavy_cfg.env_prefix, 15ms,
+                                 &sample_mu, &samples_w);
+    FairBenchWorker worker_light(tx_light, light_cfg.env_prefix, 15ms,
+                                 &sample_mu, &samples_w);
+    worker_heavy.start();
+    worker_light.start();
+
+    DistributedRunLoop heavy_loop(make_browser_fanout(worgs[0], heavy_tasks_c),
+                                  tx_heavy, store_heavy, heavy_cfg,
+                                  [&](const RunEvent& ev) {
+                                    if (ev.kind == "run_finished") {
+                                      std::lock_guard lk(sample_mu);
+                                      finished_wall[worgs[0]] = ev.wall_ms;
+                                    }
+                                  });
+    DistributedRunLoop light_loop(make_browser_fanout(worgs[1], light_tasks_c),
+                                  tx_light, store_light, light_cfg,
+                                  [&](const RunEvent& ev) {
+                                    if (ev.kind == "run_finished") {
+                                      std::lock_guard lk(sample_mu);
+                                      finished_wall[worgs[1]] = ev.wall_ms;
+                                    }
+                                  });
+    std::thread heavy_th([&] { (void)heavy_loop.run(); });
+    std::thread light_th([&] { (void)light_loop.run(); });
+    heavy_th.join();
+    light_th.join();
+    worker_heavy.stop();
+    worker_light.stop();
+
+    const std::size_t wf_deferrals = gate.counters().fair_order_deferrals;
+
+    // Contended window: from demand-start to the light tenant's LAST dispatch.
+    std::int64_t light_last_dispatch = 0;
+    for (const auto& s : samples_w) {
+      if (s.org == worgs[1]) {
+        light_last_dispatch =
+            std::max(light_last_dispatch, s.dispatch_wall_ms);
+      }
+    }
+    std::int64_t heavy_contended = 0, light_contended = 0;
+    for (const auto& s : samples_w) {
+      if (s.dispatch_wall_ms <= light_last_dispatch) {
+        if (s.org == worgs[0]) ++heavy_contended;
+        else if (s.org == worgs[1]) ++light_contended;
+      }
+    }
+
+    const std::int64_t served_heavy = gate.served_count(worgs[0],
+                                                        ResourceClass::Browser);
+    const std::int64_t served_light = gate.served_count(worgs[1],
+                                                        ResourceClass::Browser);
+    const double cw_ratio =
+        light_contended > 0
+            ? static_cast<double>(heavy_contended) /
+                  static_cast<double>(light_contended)
+            : 0.0;
+    const double jain_weighted = jain_index(
+        {static_cast<double>(heavy_contended) / 2.0,
+         static_cast<double>(light_contended)});
+
+    printf("  info workload C (weighted 2:1, fair=on): "
+           "final served=%lld/%lld (ideal ratio 2.000) "
+           "contended service=%lld/%lld ratio=%.3f "
+           "Jain(normalized)=%.4f deferrals=%zu\n",
+           static_cast<long long>(served_heavy),
+           static_cast<long long>(served_light),
+           static_cast<long long>(heavy_contended),
+           static_cast<long long>(light_contended),
+           cw_ratio, jain_weighted, wf_deferrals);
+    check(finished_wall[worgs[0]] > 0 && finished_wall[worgs[1]] > 0,
+          "m37: weighted 2:1 — both tenants complete (no starvation)");
+    check(served_heavy == 2 * served_light,
+          "m37: weighted 2:1 — final served counts are exactly 2:1");
+    check(light_contended == light_tasks_c,
+          "m37: weighted 2:1 — light tenant fully served inside the contended "
+          "window");
+    check(cw_ratio >= 1.5,
+          "m37: weighted 2:1 — contended service ratio >= 1.5 (entitlement "
+          "pulls service toward the heavy tenant)");
+    check(jain_weighted >= 0.95,
+          "m37: weighted 2:1 — Jain(normalized contended service) >= 0.95");
+
+    g_weighted_summary.jain_normalized = jain_weighted;
+    g_weighted_summary.contended_ratio = cw_ratio;
+
+    // --- Control: identical demand, NO weights ------------------------------
+    QuotaConfig ctrl_cfg;
+    ctrl_cfg.global_class_capacity[ResourceClass::Browser] = 1;
+    ctrl_cfg.fair_scheduling = true;
+    TenantQuotaGate ctrl_gate(ctrl_cfg);
+
+    InMemoryTransport ctx_heavy;
+    InMemoryTransport ctx_light;
+    InMemoryRunStore cstore_heavy;
+    InMemoryRunStore cstore_light;
+
+    DistributedRunConfig ch_cfg = heavy_cfg;
+    ch_cfg.org_id = "ctl-heavy";
+    ch_cfg.env_prefix = "evo:m37ctl:heavy";
+    ch_cfg.quota_gate = &ctrl_gate;
+    DistributedRunConfig cl_cfg = light_cfg;
+    cl_cfg.org_id = "ctl-light";
+    cl_cfg.env_prefix = "evo:m37ctl:light";
+    cl_cfg.quota_gate = &ctrl_gate;
+
+    FairBenchWorker cworker_h(ctx_heavy, ch_cfg.env_prefix, 15ms, &sample_mu,
+                              &samples_ctl);
+    FairBenchWorker cworker_l(ctx_light, cl_cfg.env_prefix, 15ms, &sample_mu,
+                              &samples_ctl);
+    cworker_h.start();
+    cworker_l.start();
+    DistributedRunLoop ch_loop(make_browser_fanout("ctl-heavy", heavy_tasks_c),
+                               ctx_heavy, cstore_heavy, ch_cfg,
+                               [](const RunEvent&) {});
+    DistributedRunLoop cl_loop(make_browser_fanout("ctl-light", light_tasks_c),
+                               ctx_light, cstore_light, cl_cfg,
+                               [](const RunEvent&) {});
+    std::thread cth([&] { (void)ch_loop.run(); });
+    std::thread ctl([&] { (void)cl_loop.run(); });
+    cth.join();
+    ctl.join();
+    cworker_h.stop();
+    cworker_l.stop();
+
+    std::int64_t ctl_light_last = 0;
+    for (const auto& s : samples_ctl) {
+      if (s.org == "ctl-light") {
+        ctl_light_last = std::max(ctl_light_last, s.dispatch_wall_ms);
+      }
+    }
+    std::int64_t ctl_heavy_n = 0, ctl_light_n = 0;
+    for (const auto& s : samples_ctl) {
+      if (s.dispatch_wall_ms <= ctl_light_last) {
+        s.org == "ctl-heavy" ? ++ctl_heavy_n : ++ctl_light_n;
+      }
+    }
+    const double ctl_ratio =
+        ctl_light_n > 0
+            ? static_cast<double>(ctl_heavy_n) /
+                  static_cast<double>(ctl_light_n)
+            : 0.0;
+    printf("  info workload C control (no weights): contended service=%lld/"
+           "%lld ratio=%.3f\n",
+           static_cast<long long>(ctl_heavy_n),
+           static_cast<long long>(ctl_light_n), ctl_ratio);
+    check(ctl_ratio <= cw_ratio,
+          "m37: weighted 2:1 — weighting moves the contended service ratio "
+          "above the equal-weight control");
+
+    g_weighted_summary.control_ratio = ctl_ratio;
+  }
+
   // --- Per-tenant queue-wait distribution (workload A) ---------------------
   auto waits_a = per_org_waits(samples_a, orgs, t0a);
   printf("  info workload A per-org queue wait (eligible->dispatch):\n");
@@ -458,7 +685,8 @@ int main() {
       manifest << "{\n"
                << "  \"slug\": \"m37_fair_scheduling\",\n"
                << "  \"workload\": \"K tenants x T browser fan-out tasks, "
-                  "global browser capacity 1, fair scheduling on\",\n"
+                  "global browser capacity 1, fair scheduling on; workload C "
+                  "adds explicit 2:1 org weights\",\n"
                << "  \"resource_class\": \"BROWSER (global capacity 1)\",\n"
                << "  \"build_mode\": \""
                << env_or("EVO_M37_BUILD_MODE", "Release") << "\",\n"
@@ -485,6 +713,18 @@ int main() {
                << s.dispatch_wall_ms << ",\"complete_wall_ms\":"
                << s.complete_wall_ms << "}\n";
     }
+    for (const auto& s : samples_w) {
+      samplesf << "{\"workload\":\"weighted2to1\",\"org\":\"" << s.org
+               << "\",\"node\":\"" << s.node << "\",\"dispatch_wall_ms\":"
+               << s.dispatch_wall_ms << ",\"complete_wall_ms\":"
+               << s.complete_wall_ms << "}\n";
+    }
+    for (const auto& s : samples_ctl) {
+      samplesf << "{\"workload\":\"weighted_control\",\"org\":\"" << s.org
+               << "\",\"node\":\"" << s.node << "\",\"dispatch_wall_ms\":"
+               << s.dispatch_wall_ms << ",\"complete_wall_ms\":"
+               << s.complete_wall_ms << "}\n";
+    }
     std::ofstream summary(artifact_dir + "/summary.json");
     if (summary) {
       summary << "{\n"
@@ -494,6 +734,12 @@ int main() {
               << "  \"workload_unequal_jain_span\": " << jain_span_b << ",\n"
               << "  \"workload_unequal_jain_served\": " << jain_served_b
               << ",\n"
+              << "  \"workload_weighted_contended_ratio\": "
+              << g_weighted_summary.contended_ratio << ",\n"
+              << "  \"workload_weighted_control_ratio\": "
+              << g_weighted_summary.control_ratio << ",\n"
+              << "  \"workload_weighted_jain_normalized_service\": "
+              << g_weighted_summary.jain_normalized << ",\n"
               << "  \"tenants\": " << tenants << ",\n"
               << "  \"tasks_per_tenant\": " << tasks << "\n"
               << "}\n";

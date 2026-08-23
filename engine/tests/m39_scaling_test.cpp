@@ -358,9 +358,18 @@ int main() {
         s.run_succeeded = run_ok;
         samples.push_back(s);
 
+        const auto ts = loop.timing_stats();
         printf("  info m39 workers=%d tasks=%d trial=%d makespan=%lldms "
                "throughput=%.2f/s\n",
                nw, tasks, trial, (long long)s.makespan_ms, s.throughput_nps);
+        printf("  info   loop timings: batches=%llu results=%llu "
+               "dispatch_calls=%llu dispatch_ms=%lld consume_ms=%lld "
+               "apply_ms=%lld\n",
+               (unsigned long long)ts.batches_read,
+               (unsigned long long)ts.results_consumed,
+               (unsigned long long)ts.dispatch_calls,
+               (long long)ts.dispatch_ms, (long long)ts.consume_ms,
+               (long long)ts.apply_ms);
       }
 
       // Shut down the worker fleet (whole process groups) after all trials.
@@ -399,6 +408,8 @@ int main() {
       manifest << "],\n"
                << "  \"build_mode\": \""
                << env_or("EVO_M39_BUILD_MODE", "Release") << "\",\n"
+               << "  \"result_batch_size\": "
+               << DistributedRunConfig{}.result_batch_size << ",\n"
                << "  \"commit\": \"" << EVO_BUILD_COMMIT << "\",\n"
                << "  \"hardware\": \"" << hw << "\",\n"
                << "  \"clock\": \"wall-clock UTC ms (makespan)\",\n"

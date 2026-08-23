@@ -582,15 +582,17 @@ Phase 2 evidence was captured on an Apple M2 Release build. See [`RESUME_EVIDENC
 | -------------------------------- | ---------------------------------------------------------------------- |
 | Simulated I/O local scheduler    | 2.01× at 2 threads, 4.01× at 4, 8.01× at 8 vs sequential               |
 | Synthetic CPU thread scaling     | 2.01× at 2, 3.75× at 4, 5.57× at 8 vs concurrent one-thread            |
-| Distributed fine-grained scaling | About 1.08–1.14× from one to two workers; four workers slower than one |
+| Distributed pipeline throughput  | Batched result consumption raised sustained 500-task throughput 107.8 → 182.3 tasks/s median at 1 worker (+69%) |
+| Distributed worker scaling       | Pre-M41: 2 workers ≈ 1.08–1.14×, 4 workers 0.81–0.87×; after batching the regression is gone (4 workers ≈ 0.998× of 1 worker) — flat by design for this workload shape, since one async worker already overlaps the synthetic sleeps |
+| Distributed audit range          | Zero lost or duplicated tasks across 100 / 500 / 1,000-task DAGs at 1/2/4 workers (durable-store audit per trial) |
 | Redis/Postgres outage injection  | Both recovered to 30/30 task completion                                |
-| Worker SIGKILL recovery          | 6.413–6.489 s; 6.470 s median across three trials                      |
-| Fair scheduling                  | No starvation in equal/unequal campaigns                               |
+| Worker SIGKILL recovery          | Median 6.468 s across 7 trials (min 6.347 / max 6.508)                 |
+| Weighted fair scheduling         | Under explicit 2:1 entitlements: contended-window service ratio 1.75 vs 1.00 unweighted control, Jain(normalized) 0.996, final grants exactly 2:1, no starvation |
 
 Limits and honest non-claims:
 
 - Synthetic scheduler results are not browser end-to-end speedups; no paid Browserbase campaign ran.
-- Distributed workers do not scale linearly for fine-grained work; Redis round-trips and single-threaded result consumption are the observed bottleneck.
+- Distributed workers do not scale linearly for fine-grained work: after M41 batched result consumption the 4-worker regression is gone (≈1.00× relative), but throughput stays ~flat across worker counts because a single asynchronous worker already overlaps the synthetic sleeps — the benchmark measures pipeline throughput, not compute scaling.
 - Delivery is at least once with dedupe and at-most-once logical terminal application, not exactly-once external side effects.
 - Recovery has a detection window; there is no zero-downtime claim.
 - Phase 1 is sequential, uses one page/session, and retries the whole task; Stop is honored cooperatively at node boundaries (not-yet-run steps are published as canceled) and there is no Resend idempotency key.
@@ -705,4 +707,4 @@ See [`specs/`](specs/) for UI/product chapters and [`design/`](design/) for scre
 - Phase 1 is implemented and remains the default.
 - Phase 2 milestones M01–M40 are implemented behind the Evo flag.
 - Automated coverage includes Node, C++, sanitizers, distributed integration, secret scanning, scaling, and chaos.
-- Production-hardening opportunities include TLS and stronger service identity, authenticated production Redis, multi-threaded result consumption, provider-wide idempotency, paginated durable history, and paid browser end-to-end measurement.
+- Production-hardening opportunities include TLS and stronger service identity, authenticated production Redis, provider-wide idempotency, paginated durable history, and paid browser end-to-end measurement. (Batched result consumption — formerly on this list — shipped as M41.)

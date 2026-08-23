@@ -235,6 +235,103 @@ bool RedisTransport::ack(const std::string& stream_key, const std::string& group
   return ok;
 }
 
+std::vector<TransportMessage> RedisTransport::read_batch(
+    const std::string& stream_key, const std::string& group,
+    const std::string& consumer, std::size_t max_count,
+    std::chrono::milliseconds timeout, std::stop_token st) {
+  std::vector<TransportMessage> out;
+  if (max_count == 0) return out;
+  // Same short-block-slice pattern as read(): XREADGROUP blocks server-side,
+  // so stop_token responsiveness comes from polling between slices.
+  const auto slice = std::chrono::milliseconds(100);
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (out.size() < max_count) {
+    if (st.stop_requested()) break;
+    const auto remaining =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+    if (remaining <= std::chrono::milliseconds::zero()) break;
+    const auto block = std::min(slice, remaining);
+
+    bool got_any = false;
+    {
+      std::lock_guard lock(mu_);
+      void* raw = run_with_retry(config_, ctx_, [&](redisContext* c) {
+        // NOTE: hiredis's format parser has no %zu — pass the count as an
+        // explicit 64-bit value.
+        return static_cast<void*>(redisCommand(
+            c, "XREADGROUP GROUP %s %s COUNT %llu BLOCK %lld STREAMS %s >",
+            group.c_str(), consumer.c_str(),
+            static_cast<unsigned long long>(max_count),
+            static_cast<long long>(block.count()), stream_key.c_str()));
+      });
+      if (raw == nullptr) {
+        // Connection failure after retries: surface as no-batch; avoid a
+        // tight loop by sleeping one slice.
+        std::this_thread::sleep_for(slice);
+        continue;
+      }
+      auto* reply = static_cast<redisReply*>(raw);
+      // Reply shape: array of streams -> [ [stream, [ [id, [f,v,...]] ] ...] ]
+      if (reply->type == REDIS_REPLY_ARRAY && reply->elements > 0 &&
+          reply->element[0]->type == REDIS_REPLY_ARRAY &&
+          reply->element[0]->elements >= 2) {
+        redisReply* messages = reply->element[0]->element[1];
+        if (messages != nullptr && messages->type == REDIS_REPLY_ARRAY) {
+          for (std::size_t i = 0; i < messages->elements; ++i) {
+            redisReply* msg = messages->element[i];
+            if (msg->type != REDIS_REPLY_ARRAY || msg->elements < 2 ||
+                msg->element[0]->type != REDIS_REPLY_STRING) {
+              continue;
+            }
+            TransportMessage m;
+            m.id = std::string(msg->element[0]->str, msg->element[0]->len);
+            // fields: [ "payload", <bytes> ]
+            redisReply* fields = msg->element[1];
+            if (fields->type == REDIS_REPLY_ARRAY &&
+                fields->elements >= 2 &&
+                fields->element[1]->type == REDIS_REPLY_STRING) {
+              m.payload = std::string(fields->element[1]->str,
+                                      fields->element[1]->len);
+            }
+            out.push_back(std::move(m));
+            got_any = true;
+          }
+        }
+      }
+      freeReplyObject(raw);
+    }
+    // Return as soon as any batch arrives — never wait to fill max_count.
+    if (got_any) break;
+  }
+  return out;
+}
+
+std::size_t RedisTransport::ack_many(const std::string& stream_key,
+                                     const std::string& group,
+                                     const std::vector<std::string>& ids) {
+  if (ids.empty()) return 0;
+  std::lock_guard lock(mu_);
+  // One XACK carries any number of ids: a single round trip for the batch.
+  // Ids are transport-generated tokens, so string assembly is safe.
+  std::string cmd = "XACK " + stream_key + " " + group;
+  for (const auto& id : ids) {
+    cmd.push_back(' ');
+    cmd += id;
+  }
+  void* raw = run_with_retry(config_, ctx_, [&](redisContext* c) {
+    return static_cast<void*>(redisCommand(c, "%s", cmd.c_str()));
+  });
+  if (raw == nullptr) return 0;  // unacked ids are redelivered; dedupe applies
+  auto* reply = static_cast<redisReply*>(raw);
+  std::size_t acked = 0;
+  if (reply->type == REDIS_REPLY_INTEGER && reply->integer > 0) {
+    acked = static_cast<std::size_t>(reply->integer);
+  }
+  freeReplyObject(raw);
+  return acked > ids.size() ? ids.size() : acked;
+}
+
 std::optional<TransportMessage> RedisTransport::read_pending(
     const std::string& stream_key, const std::string& group,
     const std::string& consumer, std::stop_token st) {

@@ -80,8 +80,20 @@ class RedisTransport final : public TaskTransport {
                                        std::stop_token st =
                                            std::stop_token{}) override;
 
+  // Native batch read: XREADGROUP ... COUNT n BLOCK ms in one round trip.
+  std::vector<TransportMessage> read_batch(
+      const std::string& stream_key, const std::string& group,
+      const std::string& consumer, std::size_t max_count,
+      std::chrono::milliseconds timeout,
+      std::stop_token st = std::stop_token{}) override;
+
   bool ack(const std::string& stream_key, const std::string& group,
            const std::string& message_id) override;
+
+  // Native multi-id ack: one XACK carries every id (single round trip).
+  std::size_t ack_many(const std::string& stream_key,
+                       const std::string& group,
+                       const std::vector<std::string>& message_ids) override;
 
   std::optional<TransportMessage> read_pending(
       const std::string& stream_key, const std::string& group,

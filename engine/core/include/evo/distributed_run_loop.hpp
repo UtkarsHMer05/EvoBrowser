@@ -97,6 +97,16 @@ struct DistributedRunConfig {
   // granularity.
   std::chrono::milliseconds read_block_ms{100};
 
+  // --- Batched result consumption (M41) ---
+  // Results are consumed in batches: one transport round trip reads up to
+  // `result_batch_size` messages (XREADGROUP COUNT n), every batch is applied
+  // in order, then the whole batch is acked in ONE call (multi-id XACK).
+  // Crash-safety is unchanged: a batch applied but not fully acked before a
+  // crash is redelivered later and its re-application is suppressed by the
+  // durable idempotency ledger (at-least-once delivery, at-most-once logical
+  // application). 1 => one message per round trip (pre-M41 behavior).
+  std::size_t result_batch_size = 32;
+
   // Overall run deadline (steady clock) to bound tests; 0 => no deadline.
   std::chrono::milliseconds run_timeout{0};
 
@@ -199,6 +209,18 @@ class DistributedRunLoop {
 
   // Events emitted so far (test/observability helper; in emission order).
   std::vector<RunEvent> events() const;
+
+  // Where the loop spent its time (M41). Valid after run() returns; the
+  // numbers are diagnostic (single-threaded loop accounting, steady clock).
+  struct TimingStats {
+    std::uint64_t batches_read = 0;    // read_batch calls returning >=1 message
+    std::uint64_t results_consumed = 0;  // messages read (applied or ignored)
+    std::uint64_t dispatch_calls = 0;  // dispatch_ready() invocations
+    std::int64_t dispatch_ms = 0;      // total time inside dispatch_ready()
+    std::int64_t consume_ms = 0;       // total time reading+applying+acking
+    std::int64_t apply_ms = 0;         // total time inside apply_result()
+  };
+  TimingStats timing_stats() const { return timing_; }
 
  private:
   // Dispatch every READY node whose resource capacity permits.
@@ -312,6 +334,10 @@ class DistributedRunLoop {
   // is not terminal, so all_nodes_terminal() keeps the run alive until its
   // backoff elapses and it is re-dispatched.
   std::map<NodeId, std::int64_t> retry_due_;
+
+  // M41: loop timing accounting (mutated by the loop thread only; read after
+  // run() returns, so no synchronization needed).
+  TimingStats timing_;
 
   mutable std::mutex events_mu_;
   std::vector<RunEvent> events_;
